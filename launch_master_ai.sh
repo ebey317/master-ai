@@ -12,7 +12,16 @@ SUPERVISOR='cd ~ && while true; do python3 ~/scripts/master_ai.py; EXIT=$?; if [
 
 engine_alive() { pgrep -f "python3.*master_ai.py" >/dev/null 2>&1; }
 
+# ── Defensive: always force pane to match the terminal we're launching from ──
+# Without this, a session created yesterday with different dims would persist.
+# Customer should never have to manually kill tmux to get a full-screen Sensei.
+tmux set-window-option -g aggressive-resize on 2>/dev/null || true
+COLS=$(tput cols 2>/dev/null || echo 120)
+LINES=$(tput lines 2>/dev/null || echo 40)
+
 if tmux has-session -t "$SESSION" 2>/dev/null; then
+    # Resize to match current terminal before attaching
+    tmux resize-window -t "$SESSION" -x "$COLS" -y "$LINES" 2>/dev/null || true
     if engine_alive; then
         echo "Master AI already running — reattaching..."
     else
@@ -22,8 +31,8 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
 else
     echo "Starting Master AI persistent session..."
-    # Don't hardcode -x/-y — tmux resizes to the attaching client (aggressive-resize in .tmux.conf)
-    tmux new-session -d -s "$SESSION"
+    # Create with current terminal dims; aggressive-resize handles later changes
+    tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES"
     tmux send-keys -t "$SESSION" "$SUPERVISOR" Enter
 fi
 

@@ -110,6 +110,37 @@ def load_behavior():
     except Exception:
         return ""
 
+# ── THREAD LABEL (editable chat-thread locator on top rule line) ──
+THREAD_FILE  = Path.home() / ".master_ai_thread"
+
+def load_thread_label():
+    try:
+        return THREAD_FILE.read_text().strip()
+    except Exception:
+        return ""
+
+def save_thread_label(name):
+    try:
+        THREAD_FILE.write_text((name or "").strip())
+    except Exception:
+        pass
+
+def print_thread_box_top():
+    """Full-width rule line with the current thread label right-aligned.
+    No label → plain rule. Adapts to current terminal width every call."""
+    try:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        cols = 80
+    label = load_thread_label()
+    if label:
+        tag = f" {label} "
+        left = max(2, cols - len(tag) - 3)
+        line = "─" * left + "──" + tag + "──"
+    else:
+        line = "─" * max(2, cols - 1)
+    print(f"{BC}{line[:cols]}{X}")
+
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
 # Worker thread pops FIFO, runs handle() serially, prints reply.
@@ -2774,6 +2805,12 @@ def main():
 
     startup_check()
 
+    # ── Auto-resize tmux pane to match attached client (no manual kill needed) ──
+    if os.environ.get("TMUX"):
+        subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
+                       check=False, capture_output=True)
+        subprocess.run(["tmux", "resize-window", "-A"], check=False, capture_output=True)
+
     # ── Collect boot status silently (no heavy output yet) ────────
     # Count loaded cloud KEYS — skip usage counters / metadata (names with '_')
     cloud_keys_loaded = [k for k, v in (KEYS or {}).items()
@@ -2878,8 +2915,10 @@ def main():
 
     while True:
         draw_status_bar()
-        # Persistent legend — always visible right above the prompt
-        print(f"{BC}  hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit")
+        # Top rule line — thread label acts as "where am I in my chat" locator
+        print_thread_box_top()
+        # Persistent legend — TYPE these words at the prompt, don't click
+        print(f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}label{X} · {BC}x{X}=exit")
         # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
         start_idle_tips()
         # Prompt shows queue depth when non-zero so user can see what's pending
@@ -3171,6 +3210,16 @@ def main():
             print(f"  {R}💥 Kicking engine — supervisor will restart in 3 sec...{X}", flush=True)
             sys.exit(42)
 
+        # ── Resize: snap tmux pane to attached-client dims (full-screen fix) ──
+        if lo in ("resize", "maximize", "fit"):
+            if os.environ.get("TMUX"):
+                subprocess.run(["tmux", "resize-window", "-A"], check=False)
+                subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"], check=False)
+                print(f"  {G}✅ pane snapped to terminal dims.{X}")
+            else:
+                print(f"  {Y}not in tmux — resize is automatic in plain terminals.{X}")
+            continue
+
         # ── Refresh: restart engine in-place (for screen glitches) ────
         if lo in ("refresh", "reload", "restart"):
             try:
@@ -3191,6 +3240,53 @@ def main():
         if lo in ("clear", "clear history"):
             history = [h for h in history if h.get("role") == "system"]
             print(f"  {G}✅ Conversation cleared.{X}")
+            continue
+
+        # ── Thread label: show / set / suggest ───────────────────
+        if lo == "label":
+            current = load_thread_label()
+            if current:
+                print(f"  {C}current label:{X} {BC}{current}{X}")
+            else:
+                print(f"  {D}no label set.{X}")
+            try:
+                new_name = sanitize(input(f"  {C}new label (Enter to keep, 'clear' to remove, 'suggest' for AI suggestion):{X} "))
+            except (EOFError, KeyboardInterrupt):
+                print()
+                continue
+            new_name = new_name.strip()
+            if not new_name:
+                continue
+            if new_name.lower() == "clear":
+                save_thread_label("")
+                print(f"  {G}✅ label cleared.{X}")
+                continue
+            if new_name.lower() == "suggest":
+                msgs = [m for m in history if m.get("role") in ("user", "assistant")][-8:]
+                if not msgs:
+                    print(f"  {Y}not enough context yet — type a few messages first.{X}")
+                    continue
+                transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
+                prompt = (f"Give a 2-4 word kebab-case label for this conversation "
+                          f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
+                suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+                suggested = suggested.strip().split("\n")[0].strip().lower()
+                suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested).strip('-')[:40]
+                if suggested:
+                    save_thread_label(suggested)
+                    print(f"  {G}✅ label set to:{X} {BC}{suggested}{X}")
+                else:
+                    print(f"  {Y}suggestion failed.{X}")
+                continue
+            save_thread_label(new_name)
+            print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
+            continue
+
+        if lo.startswith("label:") or lo.startswith("label "):
+            new_name = cmd.split(":", 1)[1].strip() if ":" in cmd else cmd.split(None, 1)[1].strip() if len(cmd.split()) > 1 else ""
+            if new_name:
+                save_thread_label(new_name)
+                print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
             continue
         if lo == "clear approved":
             APPROVED_FILE.write_text("")
