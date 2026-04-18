@@ -6,7 +6,7 @@
 # ============================================================
 
 import os, sys, json, subprocess, tempfile, urllib.request, urllib.error
-import base64, re, time, shutil, hashlib, platform, atexit, signal, threading
+import base64, re, time, shutil, hashlib, platform, atexit, signal, threading, queue
 from datetime import datetime
 from pathlib import Path
 
@@ -109,6 +109,13 @@ def load_behavior():
         return BEHAVIOR_FILE.read_text().strip()
     except Exception:
         return ""
+
+# ── QUERY QUEUE (up to 3 live) ───────────────────────────────
+# User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
+# Worker thread pops FIFO, runs handle() serially, prints reply.
+_QUERY_QUEUE = queue.Queue(maxsize=3)
+_WORKER_BUSY = threading.Event()
+_WORKER_LOCK = threading.Lock()
 
 # ── LOAD KEYS ────────────────────────────────────────────────
 def load_keys():
@@ -1446,6 +1453,20 @@ def _idle_tips_runner():
             return False
 
     while not _IDLE_STOP.is_set():
+        # Pause while the worker is busy replying — its prints would collide with the tip line
+        if _WORKER_BUSY.is_set():
+            if tip_on_screen:
+                try:
+                    sys.stdout.write("\x1b[s\x1b[1A\r\x1b[2K\x1b[u")
+                    sys.stdout.flush()
+                except Exception: pass
+                tip_on_screen = False
+            idle_since = time.time()
+            last_rotate = 0.0
+            if _IDLE_STOP.wait(0.4):
+                break
+            continue
+
         if _buffer_has_text():
             # User is composing — wipe tip, reset the idle counter
             if tip_on_screen:
@@ -1454,7 +1475,7 @@ def _idle_tips_runner():
                     sys.stdout.flush()
                 except Exception: pass
                 tip_on_screen = False
-            idle_since = time.time()   # whenever they clear the line, 15s starts fresh
+            idle_since = time.time()   # whenever they clear the line, 30s starts fresh
             last_rotate = 0.0
             if _IDLE_STOP.wait(0.4):
                 break
@@ -2677,6 +2698,36 @@ def _auto_save_background(history):
     except Exception:
         pass
 
+def _query_worker(history_ref):
+    """Serial worker: pop queued queries, run handle(), handle reply+cache+tts+autosave.
+    Runs forever as a daemon thread. history_ref is the main loop's live history list."""
+    while True:
+        item = _QUERY_QUEUE.get()
+        if item is None:            # sentinel = shutdown
+            _QUERY_QUEUE.task_done()
+            break
+        user_text, image_path = item
+        _WORKER_BUSY.set()
+        try:
+            stop_idle_tips()        # don't overlap with reply output
+            reply = handle(user_text, history_ref, image_path=image_path)
+            reply = sanitize(reply) if reply else reply
+            cache_store(user_text, reply)
+            if TTS_ENABLED:
+                threading.Thread(target=speak, args=(reply,), daemon=True).start()
+            globals()['CHARS_SINCE_SAVE'] = CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
+            if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
+                threading.Thread(target=_auto_save_background, args=(list(history_ref),), daemon=True).start()
+            remaining = _QUERY_QUEUE.qsize()
+            if remaining > 0:
+                print(f"  {D}— next in queue ({remaining} left) —{X}")
+        except Exception as e:
+            log(f"WORKER_ERROR: {e}")
+            print(f"  {R}worker error: {e}{X}")
+        finally:
+            _WORKER_BUSY.clear()
+            _QUERY_QUEUE.task_done()
+
 def handle_save_refresh(history):
     """Snapshot session, flag a full-history resume, soft re-exec. Mirrors L2831-2843 refresh."""
     print(f"\n{C}  🥷 Taking notes before turning the page — hold tight.{X}", flush=True)
@@ -2822,14 +2873,20 @@ def main():
     signal.signal(signal.SIGTERM, _exit_save)
     signal.signal(signal.SIGHUP, _exit_save)   # fires when terminal window closes
 
+    # ── Start the serial query worker (pops _QUERY_QUEUE, runs handle()) ──
+    threading.Thread(target=_query_worker, args=(history,), daemon=True).start()
+
     while True:
         draw_status_bar()
         # Persistent legend — always visible right above the prompt
         print(f"{BC}  hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit")
         # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
         start_idle_tips()
+        # Prompt shows queue depth when non-zero so user can see what's pending
+        _qdepth = _QUERY_QUEUE.qsize()
+        _prompt = f"🥷 [{_qdepth} queued]  " if _qdepth > 0 else "🥷  "
         try:
-            cmd = sanitize(input(f"🥷  "))
+            cmd = sanitize(input(_prompt))
         except KeyboardInterrupt:
             stop_idle_tips()
             save_session(history, silent=True)
@@ -3382,24 +3439,15 @@ def main():
             threading.Thread(target=speak, args=(cached,), daemon=True).start()
             continue
 
-        # Only print "thinking..." for cloud routes (local streams immediately)
-        _route, _, _ = detect_route(user_text, has_image=bool(image_path))
-        if _route not in ("local", "vision"):
-            print(f"{C}  thinking...{X}")
-            start_thinking_tips()
+        # ── Enqueue the query — serial worker thread handles it ──
+        # Queue holds up to 3; you can type Q2/Q3 while Q1 is still replying.
         try:
-            reply = handle(user_text, history, image_path=image_path)
-        finally:
-            stop_thinking_tips()
-        reply = sanitize(reply) if reply else reply
-        cache_store(user_text, reply)
-        if TTS_ENABLED:
-            threading.Thread(target=speak, args=(reply,), daemon=True).start()
-
-        # Auto-save every ~3000 chars accumulated since last save
-        globals()['CHARS_SINCE_SAVE'] = CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
-        if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
-            threading.Thread(target=_auto_save_background, args=(list(history),), daemon=True).start()
+            _QUERY_QUEUE.put_nowait((user_text, image_path))
+            depth = _QUERY_QUEUE.qsize()
+            if depth > 1:
+                print(f"  {C}✓ queued ({depth} waiting in line){X}")
+        except queue.Full:
+            print(f"  {R}queue full (3 max) — wait for a reply before adding more{X}")
 
 if __name__ == "__main__":
     main()
