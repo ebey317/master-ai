@@ -1788,6 +1788,18 @@ print()
             log "PC_CONTROL exited"
             exit 0
             ;;
+        kick|"force restart"|"hard restart")
+            echo -e "\n${R}  💥 KICKING PC CONTROL — re-launching...${X}\n"
+            log "PC_CONTROL kick — re-exec"
+            sleep 0.5
+            exec bash "$HOME/scripts/pc_control.sh"
+            ;;
+        refresh|reload|restart)
+            echo -e "\n${C}  🔄 REFRESHING PC CONTROL — re-launching...${X}\n"
+            log "PC_CONTROL refresh — re-exec"
+            sleep 0.3
+            exec bash "$HOME/scripts/pc_control.sh"
+            ;;
     esac
 
     if [[ "$lower" == project\ * ]]; then

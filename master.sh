@@ -212,29 +212,50 @@ main_menu() {
     clear
     banner_master_ai
     echo ""
-    echo -e "${Y}  1)${W} Full startup (all services)${X}"
-    echo -e "${Y}  2)${W} Check Ollama${X}"
-    echo -e "${Y}  3)${W} Check RustDesk${X}"
-    echo -e "${Y}  4)${W} Launch Master AI terminal (tmux)${X}"
-    echo -e "${Y}  5)${W} Launch Master AI Web Chat (:8080)${X}"
-    echo -e "${Y}  6)${W} Launch Sunkissed Soul (:5173)${X}"
-    echo -e "${Y}  7)${W} PC Control (bash AI agent)${X}"
-    echo -e "${Y}  8)${W} View chat sessions / transcripts${X}"
-    echo -e "${Y}  9)${W} Log a new idea / POC${X}"
-    echo -e "${Y} 10)${W} How we work${X}"
-    echo -e "${Y} 11)${W} Update API keys${X}"
-    echo -e "${Y} 12)${W} PC Clean + tune-up${X}"
-    echo -e "${Y} 13)${W} Learn Python + Build AI Apps${X}"
-    echo -e "${Y} 14)${W} Uninstall${X}"
-    echo -e "${Y}  x)${W} Exit${X}"
+
+    # 2-column row helper — if right col empty, print left col full-width
+    row() {
+        if [ -z "$3" ]; then
+            printf "  ${Y}%3s)${W} %s${X}\n" "$1" "$2"
+        else
+            printf "  ${Y}%3s)${W} %-32s${Y}%4s)${W} %s${X}\n" "$1" "$2" "$3" "$4"
+        fi
+    }
+    section() { echo -e "\n  ${BC}── $1 ──${X}"; }
+
+    section "LAUNCH"
+    row  "1" "Full startup (all services)"    "4" "Master AI terminal (tmux)"
+    row  "5" "Master AI Web Chat (:8080)"     "6" "Sunkissed Soul (:5173)"
+    row  "7" "PC Control (bash AI agent)"     ""  ""
+
+    section "CHECKS"
+    row  "2" "Check Ollama"                   "3" "Check RustDesk"
+
+    section "WORK"
+    row  "8" "View chat sessions"             "9" "Log a new idea / POC"
+
+    section "SYSTEM"
+    row "10" "How we work"                   "11" "Update API keys"
+    row "12" "PC Clean + tune-up"            "13" "Learn Python + Build AI"
+    row "14" "Uninstall"                     ""   ""
+
+    echo ""
+    echo -e "  ${Y}x)${W} Exit${X}"
     echo ""
     echo -ne "${C}  Choose: ${X}"
     read -r CHOICE
 
+    # Short pause after read-only check commands so output is readable
+    # before the menu redraws. Enter to continue, or auto-skip after 8 sec.
+    pause_read() {
+        echo ""
+        read -t 8 -rp "  [press Enter to return — or wait 8s] " _ || true
+    }
+
     case "$CHOICE" in
         1)  startup ;;
-        2)  check_ollama ;;
-        3)  check_rustdesk ;;
+        2)  check_ollama; pause_read ;;
+        3)  check_rustdesk; pause_read ;;
         4)  launch_master_ai_terminal ;;
         5)  launch_master_ai ;;
         6)  launch_sunkissed ;;
