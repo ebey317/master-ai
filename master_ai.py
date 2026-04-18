@@ -3412,6 +3412,22 @@ def main():
                 save_thread_label(new_name)
                 print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
             continue
+
+        # ── Natural-language label setters ──────────────────────────
+        # "save this as X" / "save as X" / "save with X" / "save it as X"
+        # "name this X" / "call this X" / "label this X"
+        _m_label = re.match(
+            r'^(?:save\s+(?:this\s+|it\s+)?(?:as|with)|'
+            r'name\s+this|call\s+this|label\s+this|'
+            r'set\s+label\s+(?:to|as))\s+(.+)$',
+            lo
+        )
+        if _m_label:
+            new_name = _m_label.group(1).strip().strip(".,!?\"'").strip()
+            if new_name:
+                save_thread_label(new_name)
+                print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
+            continue
         if lo == "clear approved":
             APPROVED_FILE.write_text("")
             print(f"  {G}✅ Approved list cleared.{X}")
