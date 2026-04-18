@@ -214,15 +214,18 @@ def _is_ambiguous(stripped, words, history):
     prior_assistant = [m for m in history if m.get("role") == "assistant"]
     first = words[0].lower().strip(".,!?") if words else ""
 
-    # Opening pronoun with no antecedent to reference
-    if first in _PRONOUNS_NEED_ANTECEDENT and not prior_assistant:
-        return f"pronoun '{words[0]}' with no antecedent"
+    # Opening pronoun — ambiguous if the query is 1-2 words total (e.g. "it", "this one").
+    # Full sentences starting with a pronoun (e.g. "it works great") are exempt via len cap.
+    if first in _PRONOUNS_NEED_ANTECEDENT and len(words) <= 2:
+        return f"pronoun '{words[0]}' with no clear target"
 
-    # Bare action verb with no object and no prior turn (e.g. "do it", "run", "fix")
-    if first in _ACTION_VERBS and len(words) <= 2 and not prior_assistant:
+    # Bare action verb with ≤2 words — always ambiguous even mid-chat
+    # ("do it" after a list of 5 options — which?).
+    if first in _ACTION_VERBS and len(words) <= 2:
         return f"action verb '{first}' with no target"
 
-    # Lone non-greeting word with no prior assistant turn ("apothacary", "foo")
+    # Lone non-greeting word — only ambiguous at the START of a fresh session
+    # (mid-conversation "apothecary" could be a valid follow-up topic).
     if len(words) == 1 and first and first not in _GREETINGS and not prior_assistant:
         return f"lone word '{first}' with no context"
 
