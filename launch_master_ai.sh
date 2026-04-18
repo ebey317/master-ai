@@ -22,7 +22,8 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
 else
     echo "Starting Master AI persistent session..."
-    tmux new-session -d -s "$SESSION" -x 220 -y 50
+    # Don't hardcode -x/-y — tmux resizes to the attaching client (aggressive-resize in .tmux.conf)
+    tmux new-session -d -s "$SESSION"
     tmux send-keys -t "$SESSION" "$SUPERVISOR" Enter
 fi
 
