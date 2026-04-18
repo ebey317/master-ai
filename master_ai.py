@@ -2973,15 +2973,28 @@ def main():
         cloud_status = "LOCAL ONLY"
 
     # ── Clear screen so banner is always at TOP of the visible pane ─
-    # This runs on EVERY startup: first launch, refresh, kick, supervisor auto-respawn
-    os.system('clear')
+    # (classic mode only — TUI manages its own scrollback region)
+    if _SENSEI_APP is None:
+        os.system('clear')
 
     # ── Use the SAME banner as master.sh main menu (brand.sh banner_master_ai) ─
+    # In TUI mode we must CAPTURE the subprocess output and push it through
+    # sys.stdout (the shim); otherwise the bash child writes directly to the
+    # real terminal FD, bypassing the scrollable output region.
     try:
-        subprocess.run(
-            "source ~/scripts/brand.sh && banner_master_ai",
-            shell=True, executable="/bin/bash", check=False,
-        )
+        if _SENSEI_APP is not None:
+            res = subprocess.run(
+                "source ~/scripts/brand.sh && banner_master_ai",
+                shell=True, executable="/bin/bash",
+                capture_output=True, text=True, check=False,
+            )
+            sys.stdout.write(res.stdout or "")
+            sys.stdout.flush()
+        else:
+            subprocess.run(
+                "source ~/scripts/brand.sh && banner_master_ai",
+                shell=True, executable="/bin/bash", check=False,
+            )
     except Exception:
         # Fallback if brand.sh is missing
         print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
