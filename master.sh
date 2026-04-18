@@ -224,9 +224,8 @@ main_menu() {
     section() { echo -e "\n  ${BC}── $1 ──${X}"; }
 
     section "LAUNCH  (local apps shown by port)"
-    row  "1" "Full startup (all services)"    "4" "Master AI (tmux, no port)"
+    row  "1" "Full startup (all services)"    "4" "Sensei (tmux AI)"
     row  "5" ":8080 — Master AI Web Chat"     "6" ":5173 — Sunkissed Soul"
-    row  "7" "Sensei (AI agent)"              ""  ""
 
     section "CHECKS"
     row  "2" "Check Ollama"                   "3" "Check RustDesk"
@@ -259,7 +258,7 @@ main_menu() {
         4)  launch_master_ai_terminal ;;
         5)  launch_master_ai ;;
         6)  launch_sunkissed ;;
-        7)  bash ~/scripts/pc_control.sh ;;
+        # 7) removed — pc_control.sh deleted; Sensei lives at option 4 now
         8)  view_sessions ;;
         9)  echo -n "Idea: "; read -r IDEA; alert_idea "$IDEA" ;;
         10) less ~/scripts/howwework.txt ;;

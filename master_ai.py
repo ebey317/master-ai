@@ -2217,7 +2217,7 @@ def draw_status_bar():
     model_label = PINNED_MODEL if PINNED_MODEL else ("AUTO+CLOUD" if has_cloud else "AUTO")
     cols = shutil.get_terminal_size().columns
     task_part = f"  │  TASKS:{tasks}" if tasks else ""
-    content = f" 🥷 MASTER AI  │  MEM:{mem}{task_part}  │  MODEL:{model_label}  │  MODE:{MODE.upper()}  │  x=exit "
+    content = f" 🥷 SENSEI  │  MEM:{mem}{task_part}  │  MODEL:{model_label}  │  MODE:{MODE.upper()}  │  x=exit "
     display_len = len(content) + 1  # 🥷 emoji is 2 display cols, len() counts 1
     pad = max(0, cols - display_len)
     # Truncate if still too wide (narrow terminals)
