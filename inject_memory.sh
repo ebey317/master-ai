@@ -1,6 +1,6 @@
 #!/bin/bash
 # Injects compact project context into ~/.master_ai_memory
-# Both pc_control.sh and master_ai.py read this file into their [MEMORY] system prompt block
+# master_ai.py (Sensei) reads this file into its [MEMORY] system prompt block
 # Cron: 0 * * * * bash ~/scripts/inject_memory.sh
 
 MEMORY_FILE="$HOME/.master_ai_memory"
@@ -25,8 +25,7 @@ USER: Elijah | no mouse/no keyboard | voice input | NEVER use grey text in termi
 KEY FILES:
   ~/scripts/howwework.txt     — full stack + services reference (READ THIS FIRST)
   ~/scripts/master_ai.html    — web UI (localhost:8080, keyboard mode: Ctrl+Shift+K)
-  ~/scripts/pc_control.sh     — this terminal AI agent
-  ~/scripts/master_ai.py      — AI engine (STT/TTS/routing)
+  ~/scripts/master_ai.py      — Sensei: tmux AI engine (STT/TTS/routing)
   ~/.master_ai_settings       — no-mouse/phone mode flags
   ~/.master_ai_chats/         — ALL chat history (all apps, shared)
   ~/Desktop/AI_CONTEXT/       — session snapshots (context_latest.zip)

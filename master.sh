@@ -88,15 +88,62 @@ load_session() {
     fi
 }
 
-alert_idea() {
-    local IDEA="$1"
-    TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
-    log "🚨 NEW IDEA/POC: $IDEA"
-    echo "╔══════════════════════════════════════════╗"
-    echo "║  🚨 NEW IDEA / POC DISCOVERED            ║"
-    echo "║  [$TIMESTAMP]"
-    echo "║  $IDEA"
-    echo "╚══════════════════════════════════════════╝"
+PROJECTS_FILE="$HOME/scripts/PROJECTS.md"
+
+prompt_idea() {
+    local TITLE DESC STATUS TODAY
+    TODAY=$(date "+%Y-%m-%d")
+
+    echo -ne "${BC}Title:${X} "
+    read -r TITLE
+    [ -z "$TITLE" ] && { echo "  (cancelled — empty title)"; return 1; }
+
+    echo -ne "${BC}Description:${X} "
+    read -r DESC
+    [ -z "$DESC" ] && { echo "  (cancelled — empty description)"; return 1; }
+
+    echo -ne "${BC}Status${X} [idea/built/live] (default: idea): "
+    read -r STATUS
+    STATUS="${STATUS:-idea}"
+    case "$STATUS" in idea|built|live) ;; *) STATUS="idea" ;; esac
+
+    # Show alert/preview first — user decides whether to persist
+    echo
+    echo -e "${Y}╔══════════════════════════════════════════╗${X}"
+    echo -e "${Y}║  🚨 IDEA ALERT — review before saving    ║${X}"
+    echo -e "${Y}║${X}  [$TODAY] ${BC}$TITLE${X} (_${STATUS}_)"
+    echo -e "${Y}║${X}  $DESC"
+    echo -e "${Y}╚══════════════════════════════════════════╝${X}"
+    echo
+    echo -ne "${BC}Add to PROJECTS.md?${X} [y/N]: "
+    read -r CONFIRM
+    case "$CONFIRM" in
+        y|Y|yes|YES) ;;
+        *)
+            log "IDEA DISCARDED: $TITLE"
+            echo -e "${D}  ✗ not added. Idea discarded.${X}"
+            return 0
+            ;;
+    esac
+
+    # Ensure PROJECTS.md exists with the Ideas/POCs section
+    if [ ! -f "$PROJECTS_FILE" ]; then
+        log "WARN — PROJECTS.md missing, creating stub"
+        {
+            echo "# Elijah's Projects"
+            echo
+            echo "## Ideas / POCs"
+            echo "<!-- auto-appended by master.sh option 9 -->"
+        } > "$PROJECTS_FILE"
+    fi
+    grep -q "^## Ideas / POCs" "$PROJECTS_FILE" || {
+        printf '\n## Ideas / POCs\n<!-- auto-appended by master.sh option 9 -->\n' >> "$PROJECTS_FILE"
+    }
+
+    printf -- '- [%s] **%s** (_%s_) — %s\n' "$TODAY" "$TITLE" "$STATUS" "$DESC" >> "$PROJECTS_FILE"
+
+    log "NEW IDEA: [$STATUS] $TITLE — $DESC"
+    echo -e "${BG}  ✅ added to ~/scripts/PROJECTS.md${X}"
 }
 
 startup() {
@@ -260,7 +307,7 @@ main_menu() {
         6)  launch_sunkissed ;;
         # 7) removed — pc_control.sh deleted; Sensei lives at option 4 now
         8)  view_sessions ;;
-        9)  echo -n "Idea: "; read -r IDEA; alert_idea "$IDEA" ;;
+        9)  prompt_idea ;;
         10) less ~/scripts/howwework.txt ;;
         11) bash ~/scripts/update_keys.sh ;;
         12) sudo bash ~/scripts/system_tune.sh ;;

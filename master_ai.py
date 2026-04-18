@@ -98,6 +98,18 @@ AUTO_SAVE_THRESHOLD = 3000        # update session file every ~3000 chars
 SESSION_TS          = int(time.time())  # fixed for entire session — overwrites same file
 _SAVE_LOCK          = threading.Lock()
 
+# ── ORCHESTRATOR STATE ────────────────────────────────────────
+CONTEXT_WATERMARK   = 60000                      # total history chars → save-and-refresh
+BEHAVIOR_FILE       = Path.home() / ".sensei_behavior.md"
+RESUME_FLAG         = Path.home() / ".master_ai_resume"
+
+def load_behavior():
+    """Read ~/.sensei_behavior.md into the system prompt. Returns empty string if missing."""
+    try:
+        return BEHAVIOR_FILE.read_text().strip()
+    except Exception:
+        return ""
+
 # ── LOAD KEYS ────────────────────────────────────────────────
 def load_keys():
     try:
@@ -177,6 +189,144 @@ def detect_route(text, has_image=False):
         return "local", MODELS["qwen3"], "complex → qwen3.5:cloud (397B)"
     return "local", MODELS["master"], "general → master-ai"
 
+# ── SMART ORCHESTRATOR ───────────────────────────────────────
+# Returns a decision dict instead of dispatching a model directly.
+# Possible routes: local | cloud_fast | cloud_vision | ask_user | recall_memory | save_refresh
+# First match wins.
+
+_RECALL_TRIGGERS = (
+    "remember", "recall", "what did we", "earlier you", "before we",
+    "last time", "previously", "you said", "we talked about",
+)
+_PRONOUNS_NEED_ANTECEDENT = {"it", "this", "that", "them", "those", "these"}
+
+_ACTION_VERBS = {"do", "run", "fix", "delete", "remove", "edit", "change", "update",
+                 "install", "start", "stop", "restart", "kill", "try"}
+
+_GREETINGS = {"hi", "hello", "hey", "yo", "sup", "howdy", "hola",
+              "thanks", "thank", "thx", "ty",
+              "ok", "okay", "k", "cool", "nice", "great", "good",
+              "yes", "yep", "yeah", "y", "no", "nope", "nah", "n",
+              "bye", "goodbye", "cya", "later"}
+
+def _is_ambiguous(stripped, words, history):
+    low = stripped.lower()
+    prior_assistant = [m for m in history if m.get("role") == "assistant"]
+    first = words[0].lower().strip(".,!?") if words else ""
+
+    # Opening pronoun with no antecedent to reference
+    if first in _PRONOUNS_NEED_ANTECEDENT and not prior_assistant:
+        return f"pronoun '{words[0]}' with no antecedent"
+
+    # Bare action verb with no object and no prior turn (e.g. "do it", "run", "fix")
+    if first in _ACTION_VERBS and len(words) <= 2 and not prior_assistant:
+        return f"action verb '{first}' with no target"
+
+    # Lone non-greeting word with no prior assistant turn ("apothacary", "foo")
+    if len(words) == 1 and first and first not in _GREETINGS and not prior_assistant:
+        return f"lone word '{first}' with no context"
+
+    # Explicit which/did-you-mean — user is asking US to choose; flip it back
+    if any(p in low for p in ("did you mean", "which one", "which of", "pick for me")):
+        return "explicit which/did-you-mean"
+
+    return None
+
+def _clarifying_question(stripped, reason):
+    if reason.startswith("pronoun"):
+        return f"Which one? I don't have a recent reference for '{stripped.split()[0]}' — tell me what you mean."
+    if reason.startswith("action verb"):
+        verb = stripped.split()[0]
+        return f"'{verb}' what? Give me a target."
+    if reason.startswith("lone word"):
+        word = stripped.split()[0]
+        return f"'{word}' — just one word? Tell me what you want done with it, or ask a full question."
+    if "which" in reason.lower():
+        return "I'd rather not guess between options. Which one do you want?"
+    return "I'm not sure what you're asking — rephrase?"
+
+def _memory_recall_payload(user_text):
+    """Explicit recall triggers pull a memory snippet. Returns str or None."""
+    low = user_text.lower()
+    if not any(t in low for t in _RECALL_TRIGGERS):
+        return None
+    try:
+        mem = MEMORY_FILE.read_text().strip()
+    except Exception:
+        return None
+    if not mem:
+        return None
+    # Return the last 800 chars of memory — most recent session summaries live at the end
+    return mem[-800:]
+
+def orchestrate(history, user_text, image_path=None):
+    """Pick a route. Returns decision dict with 'route' and optional 'reason'/'question'/'payload'/'model'.
+
+    Preference order (local-first, nothing idle):
+      1. save_refresh (context pressure)
+      2. explicit 'fast:' prefix → Groq (user override)
+      3. vision (image or keyword) → kimi-k2.5:cloud (1T, free via Ollama cloud)
+      4. ambiguous → ask_user
+      5. recall trigger → recall_memory
+      6. code keywords → qwen2.5-coder:7b (local)
+      7. reasoning/complex keywords → qwen3.5:cloud (397B, free via Ollama cloud)
+      8. long (>100 words) but not deep → qwen2.5:14b (local)
+      9. default → master-ai:latest (local)
+    """
+    stripped = (user_text or "").strip()
+    low = stripped.lower()
+    words = stripped.split()
+    word_set = set(w.lower().strip(".,!?") for w in words)
+
+    # 1. Context pressure — save & refresh before we blow context
+    total_chars = sum(len(m.get("content", "") or "") for m in history)
+    if total_chars >= CONTEXT_WATERMARK:
+        return {"route": "save_refresh",
+                "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK}"}
+
+    # 2. Explicit 'fast:' prefix → force Groq (user override for speed)
+    if low.startswith("fast:"):
+        return {"route": "cloud_fast", "model": "groq",
+                "stripped_text": stripped[5:].strip(),
+                "reason": "explicit 'fast:' prefix → Groq"}
+
+    # 3. Vision — image path or vision keyword
+    if image_path or any(w in low for w in VISION_WORDS):
+        return {"route": "cloud_vision", "model": MODELS["kimi"],
+                "reason": "vision → kimi-k2.5:cloud (1T free)"}
+
+    # 4. Ambiguous → ask the user
+    amb = _is_ambiguous(stripped, words, history)
+    if amb:
+        return {"route": "ask_user",
+                "question": _clarifying_question(stripped, amb),
+                "reason": f"ambiguous: {amb}"}
+
+    # 5. Recall-memory trigger (explicit)
+    payload = _memory_recall_payload(stripped)
+    if payload:
+        return {"route": "recall_memory", "payload": payload,
+                "reason": "explicit recall trigger"}
+
+    # 6. Code keywords → local coder model (fast, specialized, free)
+    if word_set & CODE_WORDS:
+        return {"route": "local", "model": MODELS["coder"],
+                "reason": "code → qwen2.5-coder:7b (local)"}
+
+    # 7. Reasoning / complex → Ollama cloud 397B (free)
+    if any(w in low for w in REASONING_WORDS) or (word_set & COMPLEX_WORDS):
+        return {"route": "cloud_deep", "model": MODELS["qwen3"],
+                "reason": "deep → qwen3.5:cloud (397B free)"}
+
+    # 8. Long but not flagged deep → local qwen2.5:14b (general workhorse)
+    if len(words) > 100:
+        return {"route": "local", "model": "qwen2.5:14b",
+                "reason": f"long ({len(words)} words) → qwen2.5:14b (local)"}
+
+    # 9. Default — master-ai:latest (local)
+    return {"route": "local", "model": MODELS["master"],
+            "reason": "default → master-ai (local)"}
+
 # ── WEB SEARCH ───────────────────────────────────────────────
 def web_search(query, max_results=4):
     log(f"WEB_SEARCH: {query}")
@@ -210,7 +360,8 @@ def download_file(url, dest=None):
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
-    payload = {"model": model, "messages": messages, "stream": False}
+    payload = {"model": model, "messages": messages, "stream": False,
+               "keep_alive": "30m"}
     if image_path:
         try:
             with open(image_path, "rb") as f:
@@ -224,7 +375,7 @@ def ask_local(messages, model=None, image_path=None):
         headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        with urllib.request.urlopen(req, timeout=180) as resp:
             result = json.loads(resp.read())
             return result["message"]["content"]
     except Exception as e:
@@ -233,10 +384,12 @@ def ask_local(messages, model=None, image_path=None):
 
 # ── LOCAL AI STREAMING ───────────────────────────────────────
 def ask_local_stream(messages, model=None, image_path=None):
-    """Stream tokens from Ollama directly to terminal. Returns full text."""
+    """Stream tokens from Ollama directly to terminal. Returns full text.
+    Shows a rotating 'thinking' animation until the first token lands."""
     model = model or MODELS["master"]
     log(f"LOCAL_STREAM [{model}]")
-    payload = {"model": model, "messages": messages, "stream": True}
+    payload = {"model": model, "messages": messages, "stream": True,
+               "keep_alive": "30m"}
     if image_path:
         try:
             with open(image_path, "rb") as f:
@@ -249,10 +402,11 @@ def ask_local_stream(messages, model=None, image_path=None):
         f"{OLLAMA_URL}/api/chat", data=data,
         headers={"Content-Type": "application/json"}
     )
+    _anim = local_thinking_start()
     try:
-        print(f"\n{M}  AI:{X} ", end="", flush=True)
         full_text = []
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        first_token_seen = False
+        with urllib.request.urlopen(req, timeout=180) as resp:
             for line in resp:
                 if not line.strip():
                     continue
@@ -260,19 +414,72 @@ def ask_local_stream(messages, model=None, image_path=None):
                     chunk = json.loads(line.decode())
                     token = chunk.get("message", {}).get("content", "")
                     if token:
+                        if not first_token_seen:
+                            local_thinking_stop(_anim)
+                            _anim = None
+                            print(f"\n{M}  AI:{X} ", end="", flush=True)
+                            first_token_seen = True
                         print(token, end="", flush=True)
                         full_text.append(token)
                     if chunk.get("done"):
                         break
                 except Exception:
                     pass
+        if not first_token_seen:
+            # No tokens ever arrived — stop the animation cleanly
+            local_thinking_stop(_anim)
+            _anim = None
         print(f"\n", flush=True)
         result = "".join(full_text)
         return result if result else None
     except Exception as e:
+        local_thinking_stop(_anim)
+        _anim = None
         print(flush=True)
         log(f"STREAM_ERROR: {e}")
         return None
+    finally:
+        local_thinking_stop(_anim)
+
+# ── LOCAL "THINKING" ANIMATION (before first Ollama token arrives) ──
+_LOCAL_THINKING_LINES = [
+    "reviewing your notes",
+    "checking memory",
+    "going over what we discussed",
+    "looking at your question",
+    "lining up the answer",
+    "warming the model",
+]
+
+def local_thinking_start():
+    """Rotating narrative while Ollama loads/generates. Returns (stop_event, thread) or None."""
+    try:
+        stop = threading.Event()
+        def _run():
+            i = 0
+            while not stop.is_set():
+                line = _LOCAL_THINKING_LINES[i % len(_LOCAL_THINKING_LINES)]
+                sys.stdout.write(f"\r  {C}🥷 [thinking] {line}...{X}" + " " * 20)
+                sys.stdout.flush()
+                stop.wait(1.8)
+                i += 1
+            sys.stdout.write("\r" + " " * 70 + "\r")
+            sys.stdout.flush()
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return (stop, t)
+    except Exception:
+        return None
+
+def local_thinking_stop(handle):
+    if not handle:
+        return
+    try:
+        stop, t = handle
+        stop.set()
+        t.join(timeout=1)
+    except Exception:
+        pass
 
 # ── CLOUD PROGRESS INDICATOR ─────────────────────────────────
 def cloud_thinking_start():
@@ -2160,13 +2367,22 @@ def startup_check():
     print(f"{D}  │{X}  {C}⚙  System Check{X}")
     print(f"{D}  └─────────────────────────────────────────────┘{X}\n")
 
-    # Ollama
-    try:
-        with urllib.request.urlopen(
-                urllib.request.Request(f"{OLLAMA_URL}/api/tags"), timeout=3):
-            pass
+    # Ollama — retry to survive boot race against ollama.service
+    ollama_ok = False
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(f"{OLLAMA_URL}/api/tags"), timeout=3):
+                ollama_ok = True
+                break
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+    if ollama_ok:
         print(f"  {G}✅ Ollama       {C}running at {OLLAMA_URL}{X}")
-    except (Exception, KeyboardInterrupt):
+    else:
         print(f"  {R}❌ Ollama       {C}not running — start with: ollama serve{X}")
         errors += 1
 
@@ -2228,11 +2444,50 @@ def draw_status_bar():
 
 # ── MAIN HANDLER ─────────────────────────────────────────────
 def handle(user_text, history, image_path=None):
+    # ── Smart orchestrator: short-circuit special routes before model dispatch ─
+    decision = orchestrate(history, user_text, image_path=image_path)
+    log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason','')}")
+
+    if decision["route"] == "save_refresh":
+        handle_save_refresh(history)  # execvp — never returns
+        return ""
+
+    if decision["route"] == "ask_user":
+        q = decision["question"]
+        print(f"\n  {BC}[thinking: need clarification]{X}")
+        print(f"  {M}Sensei:{X} {q}\n", flush=True)
+        # Record so history stays coherent
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": q})
+        return q
+
+    if decision["route"] == "recall_memory":
+        print(f"  {BC}[thinking: checking memory]{X}")
+        user_text = f"[RECALLED MEMORY]\n{decision['payload']}\n\n[USER ASK]\n{user_text}"
+
+    # Strip 'fast:' prefix if orchestrator identified one
+    if decision.get("stripped_text"):
+        user_text = decision["stripped_text"]
+
+    # ── Fall through to existing route/model pick, with orchestrator overrides ─
     route, model, reason = detect_route(user_text, has_image=bool(image_path))
+    if decision["route"] == "cloud_fast":
+        route, model, reason = "cloud", "groq", decision["reason"]
+        print(f"  {BC}[thinking: cloud-fast → Groq]{X}")
+    elif decision["route"] == "cloud_vision":
+        route, model, reason = "vision", decision["model"], decision["reason"]
+    elif decision["route"] == "cloud_deep":
+        # qwen3.5:cloud is Ollama-routed — use local streaming path
+        route, model, reason = "local", decision["model"], decision["reason"]
+        print(f"  {BC}[thinking: deep → qwen3.5:cloud (397B)]{X}")
+    elif decision["route"] == "local" and decision.get("model"):
+        # Orchestrator picked a specific local model (coder, qwen2.5:14b, or master)
+        route, model, reason = "local", decision["model"], decision["reason"]
     log(f"ROUTE: {route} | {reason}")
 
     # Build system prompt with current memory + context
     memory_content = load_memory()
+    behavior_content = load_behavior()
     how_we_work = ""
     try:
         hww_path = Path.home() / "scripts" / "howwework.txt"
@@ -2249,11 +2504,13 @@ def handle(user_text, history, image_path=None):
     project_ctx = f"\n[ACTIVE PROJECT]\n{ACTIVE_PROJECT}" if ACTIVE_PROJECT else ""
     git_block = f"\n\n{git_ctx}" if git_ctx else ""
 
+    _behavior_block = f"[BEHAVIOR]\n{behavior_content}\n\n" if behavior_content else ""
     LOCAL_SYSTEM = (
         f"You are Master AI on Madam-Mary ({os_info}). "
         "Execute tasks using RUN:/READ:/CREATE:/EDIT: directives. "
         "Do the task immediately — no explanations. "
         "NEVER emit: rm -rf / | mkfs | dd if=\n\n"
+        f"{_behavior_block}"
         f"[MEMORY]\n{memory_content}"
         f"{project_ctx}"
     )
@@ -2274,6 +2531,7 @@ def handle(user_text, history, image_path=None):
         "EDIT: <filepath>\n<<<FIND\n<text>\n>>>FIND\n<<<REPLACE\n<text>\n>>>REPLACE\n\n"
         "Rules: DO the task. One [PLAN] line for multi-step. [DONE] when complete. "
         "READ before editing. Full working code. No placeholders.\n\n"
+        f"{_behavior_block}"
         f"[HOW WE WORK]\n{how_we_work}\n\n"
         f"[MEMORY]\n{memory_content}"
         f"{project_ctx}"
@@ -2436,6 +2694,26 @@ def _auto_save_background(history):
     except Exception:
         pass
 
+def handle_save_refresh(history):
+    """Snapshot session, flag a full-history resume, soft re-exec. Mirrors L2831-2843 refresh."""
+    print(f"\n{C}  🥷 Taking notes before turning the page — hold tight.{X}", flush=True)
+    try:
+        save_session(list(history), silent=True)
+    except Exception as e:
+        log(f"SAVE_REFRESH_SAVE_ERROR: {e}")
+    try:
+        chat_path = CHATS_DIR / f"{SESSION_TS}.chat"
+        RESUME_FLAG.write_text(str(chat_path))
+    except Exception as e:
+        log(f"SAVE_REFRESH_FLAG_ERROR: {e}")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
+
 def show_last_summary():
     """Compact 1-line session note. 'load summary' reveals the full bullets."""
     try:
@@ -2498,23 +2776,44 @@ def main():
     history = []
     globals()['GLOBAL_HISTORY'] = history
 
-    # ── Auto-restore last session into context ─────────────────
+    # ── Auto-resume from save-refresh flag (full history, not summary) ──
+    resumed_from_notes = False
     try:
-        summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
-        if summaries:
-            last = summaries[0].read_text().strip()
-            # Only auto-load if summary is from today or yesterday (recent session)
-            import stat as _stat
-            age_hours = (time.time() - summaries[0].stat().st_mtime) / 3600
-            if age_hours < 48:
-                history.append({"role": "user",
-                    "content": f"[Resuming from last session — context loaded automatically]\n{last}"})
-                history.append({"role": "assistant",
-                    "content": "Got it — I have your last session loaded. Continue where we left off."})
-                print(f"  {G}✅ Last session restored into context.{X}")
-                print(f"  {D}(type 'clear history' to start fresh){X}\n")
-    except Exception:
-        pass
+        if RESUME_FLAG.exists():
+            chat_path = Path(RESUME_FLAG.read_text().strip())
+            if chat_path.exists():
+                for line in chat_path.read_text().splitlines():
+                    m = re.match(r'^\[[\d\-]+\s+[\d:]+\]\s+(You|AI):\s+(.*)$', line)
+                    if m:
+                        role = "user" if m.group(1) == "You" else "assistant"
+                        history.append({"role": role, "content": m.group(2)})
+                print(f"  {G}🥷 Resumed from notes — {len(history)} turns loaded.{X}\n")
+                resumed_from_notes = True
+            try:
+                RESUME_FLAG.unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        log(f"RESUME_ERROR: {e}")
+
+    # ── Auto-restore last session summary (only if not already resumed) ─
+    if not resumed_from_notes:
+        try:
+            summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
+            if summaries:
+                last = summaries[0].read_text().strip()
+                # Only auto-load if summary is from today or yesterday (recent session)
+                import stat as _stat
+                age_hours = (time.time() - summaries[0].stat().st_mtime) / 3600
+                if age_hours < 48:
+                    history.append({"role": "user",
+                        "content": f"[Resuming from last session — context loaded automatically]\n{last}"})
+                    history.append({"role": "assistant",
+                        "content": "Got it — I have your last session loaded. Continue where we left off."})
+                    print(f"  {G}✅ Last session restored into context.{X}")
+                    print(f"  {D}(type 'clear history' to start fresh){X}\n")
+        except Exception:
+            pass
 
     # Save on any exit — force-close, terminal close, Ctrl+C, SIGTERM
     def _exit_save(signum=None, frame=None):
@@ -2529,17 +2828,16 @@ def main():
         draw_status_bar()
         # Persistent legend — always visible right above the prompt
         print(f"{BC}  hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit")
-        # Idle thought-cloud DISABLED — its cursor save/restore raced with
-        # readline and caused typed text to disappear/truncate.
-        # start_idle_tips()
+        # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
+        start_idle_tips()
         try:
             cmd = sanitize(input(f"🥷  "))
         except KeyboardInterrupt:
-            # stop_idle_tips()
+            stop_idle_tips()
             save_session(history, silent=True)
             break
-        # finally:
-        #     stop_idle_tips()
+        finally:
+            stop_idle_tips()
 
         if not cmd:
             continue
