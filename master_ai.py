@@ -2805,11 +2805,26 @@ def main():
 
     startup_check()
 
-    # ── Auto-resize tmux pane to match attached client (no manual kill needed) ──
+    # ── Auto-resize tmux pane to match the ACTUAL client terminal dims ──
+    # resize-window -A uses the client's bounds, but we also fetch them
+    # explicitly so we can log the mismatch if the pane is still small.
     if os.environ.get("TMUX"):
         subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
                        check=False, capture_output=True)
-        subprocess.run(["tmux", "resize-window", "-A"], check=False, capture_output=True)
+        try:
+            r = subprocess.run(
+                ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            dims = (r.stdout or "").strip()
+            if "x" in dims:
+                w, h = dims.split("x", 1)
+                subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
+                               check=False, capture_output=True)
+                subprocess.run(["tmux", "refresh-client", "-S"],
+                               check=False, capture_output=True)
+        except Exception as e:
+            log(f"RESIZE_ERROR: {e}")
 
     # ── Collect boot status silently (no heavy output yet) ────────
     # Count loaded cloud KEYS — skip usage counters / metadata (names with '_')
@@ -3213,11 +3228,44 @@ def main():
         # ── Resize: snap tmux pane to attached-client dims (full-screen fix) ──
         if lo in ("resize", "maximize", "fit"):
             if os.environ.get("TMUX"):
-                subprocess.run(["tmux", "resize-window", "-A"], check=False)
-                subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"], check=False)
-                print(f"  {G}✅ pane snapped to terminal dims.{X}")
+                try:
+                    r = subprocess.run(
+                        ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
+                        capture_output=True, text=True, timeout=2, check=False,
+                    )
+                    dims = (r.stdout or "").strip()
+                    if "x" in dims:
+                        w, h = dims.split("x", 1)
+                        subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
+                                       check=False, capture_output=True)
+                        subprocess.run(["tmux", "refresh-client", "-S"],
+                                       check=False, capture_output=True)
+                        print(f"  {G}✅ pane snapped to client dims: {dims}{X}")
+                    else:
+                        subprocess.run(["tmux", "resize-window", "-A"], check=False)
+                        print(f"  {G}✅ pane resized (fallback to -A).{X}")
+                except Exception as e:
+                    print(f"  {R}resize failed: {e}{X}")
+                subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
+                               check=False, capture_output=True)
             else:
                 print(f"  {Y}not in tmux — resize is automatic in plain terminals.{X}")
+            continue
+
+        # ── Only: kill every other tmux pane so Sensei owns the whole window ──
+        # Dots (·····) on the side = another pane is splitting your screen.
+        if lo in ("only", "full", "fullpane", "alone"):
+            if os.environ.get("TMUX"):
+                before = subprocess.run(["tmux", "list-panes"], capture_output=True, text=True)
+                n = len([l for l in (before.stdout or "").splitlines() if l.strip()])
+                if n > 1:
+                    subprocess.run(["tmux", "kill-pane", "-a"], check=False)
+                    subprocess.run(["tmux", "resize-window", "-A"], check=False)
+                    print(f"  {G}✅ killed {n-1} other pane(s) — Sensei is alone now.{X}")
+                else:
+                    print(f"  {D}already the only pane.{X}")
+            else:
+                print(f"  {Y}not in tmux.{X}")
             continue
 
         # ── Refresh: restart engine in-place (for screen glitches) ────
