@@ -1,6 +1,7 @@
 #!/bin/bash
 # ============================================================
-# PC CONTROL — AI Agent with Memory + 4-Option Confirm
+# SENSEI — AI Agent with Memory + 4-Option Confirm
+# (File name stays pc_control.sh for backward compat with master.sh)
 # Run: bash ~/scripts/pc_control.sh
 # ============================================================
 
@@ -1466,7 +1467,7 @@ draw_status_bar() {
         auto) mode_bar="MODE:AUTO" ;;
         *)    mode_bar="MODE:SAFE" ;;
     esac
-    echo -e "\n${BC}  🥷 MASTER AI${X}  ${W}│${X}  ${G}${mode_bar}${X}  ${W}│  MEM:${mem_count}  │  APPROVED:${app_count}  │  ${tts_label}  │  ${model_label}  │  ${web_label}${proj_label}  │  x=exit${X}\n"
+    echo -e "\n${BC}  🥷 SENSEI${X}  ${W}│${X}  ${G}${mode_bar}${X}  ${W}│  MEM:${mem_count}  │  APPROVED:${app_count}  │  ${tts_label}  │  ${model_label}  │  ${web_label}${proj_label}  │  x=exit${X}\n"
 }
 
 show_plan_preview() {

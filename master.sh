@@ -223,10 +223,10 @@ main_menu() {
     }
     section() { echo -e "\n  ${BC}── $1 ──${X}"; }
 
-    section "LAUNCH"
-    row  "1" "Full startup (all services)"    "4" "Master AI terminal (tmux)"
-    row  "5" "Master AI Web Chat (:8080)"     "6" "Sunkissed Soul (:5173)"
-    row  "7" "PC Control (bash AI agent)"     ""  ""
+    section "LAUNCH  (local apps shown by port)"
+    row  "1" "Full startup (all services)"    "4" "Master AI (tmux, no port)"
+    row  "5" ":8080 — Master AI Web Chat"     "6" ":5173 — Sunkissed Soul"
+    row  "7" "Sensei (AI agent)"              ""  ""
 
     section "CHECKS"
     row  "2" "Check Ollama"                   "3" "Check RustDesk"
