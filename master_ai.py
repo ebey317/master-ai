@@ -2437,6 +2437,7 @@ def _auto_save_background(history):
         pass
 
 def show_last_summary():
+    """Compact 1-line session note. 'load summary' reveals the full bullets."""
     try:
         summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
         if not summaries:
@@ -2444,15 +2445,8 @@ def show_last_summary():
         latest = summaries[0]
         content = latest.read_text().strip()
         lines = content.splitlines()
-        date_line = lines[0] if lines else ""
-        bullets = [l for l in lines[1:] if l.strip().startswith("•")][:3]
-        if not bullets:
-            return
-        print(f"\n{D}  ┌─ Last session: {date_line} {'─'*30}{X}")
-        for b in bullets:
-            print(f"{D}  │{X}  {Y}{b}{X}")
-        print(f"{D}  └{'─'*50}{X}")
-        print(f"  {C}type 'load summary' to restore that context | 'load session' for full thread{X}\n")
+        date_line = (lines[0] if lines else "").replace("[", "").replace("]", "")
+        print(f"  {D}◉ last session: {date_line}  {C}→ 'load summary' to restore{X}")
     except Exception:
         pass
 
@@ -2468,67 +2462,34 @@ def main():
 
     startup_check()
 
-    # ── Ninja mask logo ──
-    play_anim(_A_APPEAR, delay=0.15, color=BC)
-    print(f"{BC}           ___________           {X}")
-    print(f"{BC}          /           \\          {X}")
-    print(f"{BC}    ══════{X}{BW}  ◉       ◉  {X}{BC}══════{X}")
-    print(f"{BC}    ══════{X}{BW}  ~~~     ~~~  {X}{BC}══════{X}")
-    print(f"{BC}          \\___________/          {X}")
-    print(f"{BC}           //         \\\\          {X}")
-    print()
-    print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
-    print(f"{BC}  ║{X}  {BOLD}{BW}           MASTER  AI                 {X}  {BC}║{X}")
-    print(f"{BC}  ║{X}  {BG}  Vision · Voice · Web · Cloud · Code {X}  {BC}║{X}")
-    print(f"{BC}  ╚══════════════════════════════════════════╝{X}")
-
-    # ── Boot sequence ─────────────────────────────────────────
+    # ── Collect boot status silently (no heavy output yet) ────────
     has_cloud = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter'])
     mem_count = 0
     try:
         mem_count = len([l for l in MEMORY_FILE.read_text().splitlines() if l.strip()])
     except Exception:
         pass
-    sys_parts = []
-    for chk, label in [("hostname","host"),("whoami","user"),("uptime -p | sed 's/up //'","up"),
-                        ("df -h / | tail -1 | awk '{print $5}'","disk")]:
-        try:
-            out = subprocess.run(chk, shell=True, capture_output=True, text=True, timeout=3).stdout.strip()
-            if out:
-                sys_parts.append(f"{label}: {out}")
-        except Exception:
-            pass
-    cloud_status = f"ACTIVE  ({sum(1 for k in ['groq','gemini','openrouter'] if KEYS.get(k))} providers)" if has_cloud else "LOCAL ONLY"
-    boot_lines = [
-        (f"[*] kernel link {'.' * 14} OK",                              G),
-        (f"[*] neural engine {'.' * 12} ONLINE  (14B local)",           G),
-        (f"[*] cloud chain {'.' * 14} {cloud_status}",                  G if has_cloud else Y),
-        (f"[*] memory {'.' * 19} {mem_count} facts loaded",             G),
-        (f"[*] {'─' * 43}",                                             C),
-        (f"[*] {' │ '.join(sys_parts)}",                                C),
-        (f"[*] {'─' * 43}",                                             C),
-        (f"[>] SYSTEM READY — type a message or 'help'",                G),
-    ]
-    print()
-    for line, color in boot_lines:
-        print(f"  {color}{line}{X}")
-        time.sleep(0.04)
+    cloud_status = f"ACTIVE ({sum(1 for k in ['groq','gemini','openrouter'] if KEYS.get(k))} cloud providers)" if has_cloud else "LOCAL ONLY"
+
+    # ── Clear screen so banner is always at TOP of the visible pane ─
+    # This runs on EVERY startup: first launch, refresh, kick, supervisor auto-respawn
+    os.system('clear')
+
+    # ── Use the SAME banner as master.sh main menu (brand.sh banner_master_ai) ─
+    try:
+        subprocess.run(
+            "source ~/scripts/brand.sh && banner_master_ai",
+            shell=True, executable="/bin/bash", check=False,
+        )
+    except Exception:
+        # Fallback if brand.sh is missing
+        print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
+        print(f"{BC}  ║  🥷  MASTER  AI  — ready                  ║{X}")
+        print(f"{BC}  ╚══════════════════════════════════════════╝{X}")
+    print(f"  {G}● engine ONLINE  │  {cloud_status}  │  {mem_count} facts{X}")
     print()
 
     show_last_summary()
-
-    # ── Quick tips under ninja ─────────────────────────────────
-    tts_state = "ON" if TTS_ENABLED else "OFF"
-    print(f"  {D}┌{'─'*54}┐{X}")
-    print(f"  {D}│{X}  {C}QUICK TIPS{' '*44}{D}│{X}")
-    print(f"  {D}│{X}  {Y}v{X}            voice input (5s)              {D}│{X}")
-    print(f"  {D}│{X}  {Y}mode plan{X}    AI plans first, 'go' to run   {D}│{X}")
-    print(f"  {D}│{X}  {Y}tts on/off{X}   voice replies [{tts_state}]              {D}│{X}")
-    print(f"  {D}│{X}  {Y}remember:{X}    teach a fact that persists     {D}│{X}")
-    print(f"  {D}│{X}  {Y}model{X}        pick any AI model              {D}│{X}")
-    print(f"  {D}│{X}  {Y}tips{X}         full tips screen                {D}│{X}")
-    print(f"  {D}│{X}  {Y}Tab{X}          auto-complete commands          {D}│{X}")
-    print(f"  {D}└{'─'*54}┘{X}\n")
 
     if not TUTORIAL_FILE.exists():
         show_hint("First time? Try the tutorial",
@@ -2568,15 +2529,17 @@ def main():
         draw_status_bar()
         # Persistent legend — always visible right above the prompt
         print(f"{BC}  hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit")
-        start_idle_tips()
+        # Idle thought-cloud DISABLED — its cursor save/restore raced with
+        # readline and caused typed text to disappear/truncate.
+        # start_idle_tips()
         try:
             cmd = sanitize(input(f"🥷  "))
         except KeyboardInterrupt:
-            stop_idle_tips()
+            # stop_idle_tips()
             save_session(history, silent=True)
             break
-        finally:
-            stop_idle_tips()
+        # finally:
+        #     stop_idle_tips()
 
         if not cmd:
             continue
@@ -3057,10 +3020,18 @@ def main():
 
         # ── Image ─────────────────────────────────────────────
         elif lo.startswith("i "):
-            image_path = cmd[2:].strip()
-            user_text = input(f"{C}  What about this image? {X}").strip()
-            if not user_text:
-                user_text = "Describe this image in detail."
+            candidate = cmd[2:].strip()
+            # Only treat as image command if the arg actually looks like a path
+            # (contains / or ~ or has an image extension). Otherwise pass through.
+            if (os.path.sep in candidate or candidate.startswith("~") or
+                candidate.lower().endswith((".png",".jpg",".jpeg",".gif",".webp",".bmp",".svg"))):
+                image_path = os.path.expanduser(candidate)
+                user_text = input(f"{C}  What about this image? {X}").strip()
+                if not user_text:
+                    user_text = "Describe this image in detail."
+            else:
+                # Not an image path — let the message flow to the AI as normal
+                user_text = cmd
 
         # ── Voice: explicit ───────────────────────────────────
         elif lo in ("v", "r"):

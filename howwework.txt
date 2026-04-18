@@ -141,6 +141,23 @@ Closing the terminal does NOT kill it.
   tmux attach -t master-ai             — direct reattach
 Auto-starts on login via: ~/.config/autostart/master-ai.desktop
 
+## RECOVERY — if Master AI freezes, glitches, or won't respond
+Escalate from gentle to aggressive. Each layer does more than the last.
+
+  1. inside Master AI:  refresh                — soft re-exec, same process
+  2. inside Master AI:  kick                   — exit 42, supervisor respawns in 3s
+  3. any shell:         ~/scripts/master_ai_refresh.sh   — kill engine, supervisor respawns
+  4. any shell:         ~/scripts/master_ai_kick.sh      — kill tmux session + relaunch
+  5. any shell:         pkill -KILL -f "python3.*master_ai.py"
+                        — FORCE-kill the Python engine process directly.
+                        Use when refresh/kick commands aren't responding.
+                        Supervisor loop will auto-restart within 3 seconds.
+  6. any shell:         tmux kill-session -t master-ai && bash ~/scripts/launch_master_ai.sh
+                        — nuke + start over (full rebuild).
+
+Crash log (if non-zero exit): ~/scripts/master.crash.log
+Engine PID check:             pgrep -af "python3.*master_ai.py"
+
 ## SERVICES
 Ollama API:   http://localhost:11434  (systemd managed, auto-starts)
 Master AI UI: http://localhost:8080/master_ai.html

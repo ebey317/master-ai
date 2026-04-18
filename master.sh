@@ -215,43 +215,37 @@ main_menu() {
     echo -e "${Y}  1)${W} Full startup (all services)${X}"
     echo -e "${Y}  2)${W} Check Ollama${X}"
     echo -e "${Y}  3)${W} Check RustDesk${X}"
-    echo -e "${Y}  4)${W} Launch Master AI (terminal + UI)${X}"
-    echo -e "${Y}  5)${W} Open Firefox tabs${X}"
-    echo -e "${Y}  6)${W} Save session${X}"
-    echo -e "${Y}  7)${W} Load session${X}"
-    echo -e "${Y}  8)${W} Log a new idea / POC 🚨${X}"
-    echo -e "${Y}  9)${W} Launch Sunkissed Soul (localhost:5173)${X}"
+    echo -e "${Y}  4)${W} Launch Master AI terminal (tmux)${X}"
+    echo -e "${Y}  5)${W} Launch Master AI Web Chat (:8080)${X}"
+    echo -e "${Y}  6)${W} Launch Sunkissed Soul (:5173)${X}"
+    echo -e "${Y}  7)${W} PC Control (bash AI agent)${X}"
+    echo -e "${Y}  8)${W} View chat sessions / transcripts${X}"
+    echo -e "${Y}  9)${W} Log a new idea / POC${X}"
     echo -e "${Y} 10)${W} How we work${X}"
-    echo -e "${Y} 11)${W} Launch Master AI UI (localhost:8080)${X}"
-    echo -e "${Y} 12)${W} Update API keys${X}"
-    echo -e "${Y} 13)${W} PC Clean + tune-up${X}"
-    echo -e "${Y} 14)${W} PC Control (AI agent)${X}"
-    echo -e "${Y} 15)${W} Uninstall${X}"
-    echo -e "${Y} 16)${W} Learn Python + Build AI Apps${X}"
-    echo -e "${Y} 17)${W} View chat sessions / transcripts${X}"
+    echo -e "${Y} 11)${W} Update API keys${X}"
+    echo -e "${Y} 12)${W} PC Clean + tune-up${X}"
+    echo -e "${Y} 13)${W} Learn Python + Build AI Apps${X}"
+    echo -e "${Y} 14)${W} Uninstall${X}"
     echo -e "${Y}  x)${W} Exit${X}"
     echo ""
     echo -ne "${C}  Choose: ${X}"
     read -r CHOICE
 
     case "$CHOICE" in
-        1) startup ;;
-        2) check_ollama ;;
-        3) check_rustdesk ;;
-        4) launch_master_ai_terminal ;;
-        5) open_firefox_tabs ;;
-        6) echo -n "Session name: "; read -r SNAME; save_session "$SNAME" ;;
-        7) echo -n "Session to load: "; read -r SNAME; load_session "$SNAME" ;;
-        8) echo -n "Idea: "; read -r IDEA; alert_idea "$IDEA" ;;
-        9) launch_sunkissed ;;
+        1)  startup ;;
+        2)  check_ollama ;;
+        3)  check_rustdesk ;;
+        4)  launch_master_ai_terminal ;;
+        5)  launch_master_ai ;;
+        6)  launch_sunkissed ;;
+        7)  bash ~/scripts/pc_control.sh ;;
+        8)  view_sessions ;;
+        9)  echo -n "Idea: "; read -r IDEA; alert_idea "$IDEA" ;;
         10) less ~/scripts/howwework.txt ;;
-        11) launch_master_ai ;;
-        12) bash ~/scripts/update_keys.sh ;;
-        13) sudo bash ~/scripts/system_tune.sh ;;
-        14) bash ~/scripts/launch_master_ai.sh ;;
-        15) bash ~/scripts/uninstall.sh ;;
-        16) bash ~/scripts/learn.sh ;;
-        17) view_sessions ;;
+        11) bash ~/scripts/update_keys.sh ;;
+        12) sudo bash ~/scripts/system_tune.sh ;;
+        13) bash ~/scripts/learn.sh ;;
+        14) bash ~/scripts/uninstall.sh ;;
         x|X) log "--- Script Exited ---"; echo -e "${G}Goodbye.${X}"; exit 0 ;;
         *) echo "Invalid option." ;;
     esac
