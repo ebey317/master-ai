@@ -272,10 +272,13 @@ main_menu() {
 
     section "LAUNCH  (local apps shown by port)"
     row  "1" "Full startup (all services)"    "4" "Sensei (tmux AI)"
-    row  "5" ":8080 — Master AI Web Chat"     "6" ":5173 — Sunkissed Soul"
+    row  "5" ":8080 — Master AI Web Chat"     "6" ":5173 — SKS Hub Client"
 
     section "CHECKS"
     row  "2" "Check Ollama"                   "3" "Check RustDesk"
+
+    section "RECOVER"
+    row  "7" "Restart Sensei (force rebuild)" ""   ""
 
     section "WORK"
     row  "8" "View chat sessions"             "9" "Log a new idea / POC"
@@ -305,7 +308,9 @@ main_menu() {
         4)  launch_master_ai_terminal ;;
         5)  launch_master_ai ;;
         6)  launch_sunkissed ;;
-        # 7) removed — pc_control.sh deleted; Sensei lives at option 4 now
+        7)  echo -e "  ${Y}🔄 Force-rebuilding Sensei (kills tmux session, fresh start)...${X}"
+            bash ~/scripts/master_ai_kick.sh
+            pause_read ;;
         8)  view_sessions ;;
         9)  prompt_idea ;;
         10) less ~/scripts/howwework.txt ;;
