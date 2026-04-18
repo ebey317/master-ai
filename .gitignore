@@ -1,0 +1,20 @@
+# Master AI — never commit runtime/secret files
+
+# Logs
+*.log
+*.log.1.gz
+
+# Runtime state + python bytecode
+*.pyc
+__pycache__/
+sessions/
+voices/
+.cache
+
+# Package output
+master-ai-v*.tar.gz
+
+# Secrets (these actually live in $HOME, but defensive)
+.master_ai_keys
+*.key
+*.pem
