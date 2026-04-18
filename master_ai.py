@@ -442,13 +442,16 @@ def ask_local_stream(messages, model=None, image_path=None):
         local_thinking_stop(_anim)
 
 # ── LOCAL "THINKING" ANIMATION (before first Ollama token arrives) ──
+# Ninja mood — shown while Sensei is actively working (model loading/generating).
+# Grammatically clean; ellipsis = still in progress.
 _LOCAL_THINKING_LINES = [
-    "reviewing your notes",
-    "checking memory",
-    "going over what we discussed",
-    "looking at your question",
-    "lining up the answer",
-    "warming the model",
+    "Grinding...",
+    "Pushing through...",
+    "In deep meditation...",
+    "Leveling up...",
+    "Getting to the goal...",
+    "Ninja-ing...",
+    "Doing what ninjas do...",
 ]
 
 def local_thinking_start():
@@ -459,7 +462,7 @@ def local_thinking_start():
             i = 0
             while not stop.is_set():
                 line = _LOCAL_THINKING_LINES[i % len(_LOCAL_THINKING_LINES)]
-                sys.stdout.write(f"\r  {C}🥷 [thinking] {line}...{X}" + " " * 20)
+                sys.stdout.write(f"\r  {C}🥷 [thinking] {line}{X}" + " " * 20)
                 sys.stdout.flush()
                 stop.wait(1.8)
                 i += 1
@@ -480,30 +483,6 @@ def local_thinking_stop(handle):
         t.join(timeout=1)
     except Exception:
         pass
-
-# ── CLOUD PROGRESS INDICATOR ─────────────────────────────────
-def cloud_thinking_start():
-    """Start animated dots on same line. Returns (stop_event, thread)."""
-    stop = threading.Event()
-    def _spin():
-        dots = 0
-        while not stop.is_set():
-            d = '.' * (dots % 3 + 1)
-            print(f"\r{C}  ⏳ thinking {d:<3}{X}", end="", flush=True)
-            dots += 1
-            stop.wait(0.4)  # interruptible sleep — exits within 0.4s of stop
-        print(f"\r{' '*28}\r", end="", flush=True)
-    t = threading.Thread(target=_spin, daemon=True)
-    t.start()
-    return stop, t
-
-def cloud_thinking_stop(state):
-    if not state:
-        return
-    stop_event, thread = state if isinstance(state, tuple) else (state, None)
-    stop_event.set()
-    if thread:
-        thread.join(timeout=1.0)  # wait for spinner to fully clear before returning
 
 # ── CLOUD AI ──────────────────────────────────────────────────
 def ask_cloud_groq(messages):
@@ -1436,6 +1415,7 @@ _IDLE_TIPS = [
     ("save session",     "archive now + summary"),
     ("tts on",           "replies spoken aloud"),
 ]
+
 _IDLE_STOP = threading.Event()
 _IDLE_THREAD = None
 _IDLE_IDX = 0
@@ -1451,7 +1431,7 @@ def _idle_tips_runner():
     global _IDLE_IDX
     tip_on_screen = False
     idle_since = time.time()   # reset whenever buffer becomes non-empty or stays non-empty
-    GRACE_SEC = 15.0
+    GRACE_SEC = 30.0
     ROTATE_SEC = 5.0
     last_rotate = 0.0
 
@@ -2562,14 +2542,14 @@ def handle(user_text, history, image_path=None):
             "role": "user",
             "content": f"{user_text}\n\n[Web search results]\n{search_results}"
         }]
-        _spin = cloud_thinking_start()
+        _spin = local_thinking_start()
         reply = ask_cloud(augmented, provider="gemini") or ask_cloud(augmented, provider="groq") or ask_local(augmented)
-        cloud_thinking_stop(_spin)
+        local_thinking_stop(_spin)
 
     elif route == "cloud":
-        _spin = cloud_thinking_start()
+        _spin = local_thinking_start()
         reply = ask_cloud(history, provider=model) or ask_local(history)
-        cloud_thinking_stop(_spin)
+        local_thinking_stop(_spin)
 
     elif route == "vision":
         print(f"{D}  [kimi-k2.5:cloud — vision]{X}")
@@ -2577,9 +2557,9 @@ def handle(user_text, history, image_path=None):
         if not reply:
             reply = ask_local_stream(history, model=MODELS["master"], image_path=image_path)
         if not reply:
-            _spin = cloud_thinking_start()
+            _spin = local_thinking_start()
             reply = ask_cloud(history, provider="gemini") or ask_cloud(history, provider="groq")
-            cloud_thinking_stop(_spin)
+            local_thinking_stop(_spin)
             streamed = False
         else:
             streamed = True
@@ -2588,9 +2568,9 @@ def handle(user_text, history, image_path=None):
         reply = ask_local_stream(history, model=model)
         if not reply:
             print(f"{D}  [local timeout — falling back to cloud]{X}")
-            _spin = cloud_thinking_start()
+            _spin = local_thinking_start()
             reply = ask_cloud(history, provider="groq") or ask_cloud(history, provider="hermes-405b")
-            cloud_thinking_stop(_spin)
+            local_thinking_stop(_spin)
         else:
             streamed = True
 
@@ -2602,9 +2582,9 @@ def handle(user_text, history, image_path=None):
     # READ: was triggered — re-ask with injected file content
     if result is None:
         if route in ("cloud", "web"):
-            _spin2 = cloud_thinking_start()
+            _spin2 = local_thinking_start()
             reply2 = ask_cloud(history)
-            cloud_thinking_stop(_spin2)
+            local_thinking_stop(_spin2)
         else:
             reply2 = ask_local_stream(history, model=model)
             streamed = True
@@ -2741,13 +2721,19 @@ def main():
     startup_check()
 
     # ── Collect boot status silently (no heavy output yet) ────────
-    has_cloud = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter'])
+    # Count loaded cloud KEYS — skip usage counters / metadata (names with '_')
+    cloud_keys_loaded = [k for k, v in (KEYS or {}).items()
+                         if v and "_" not in k]
     mem_count = 0
     try:
         mem_count = len([l for l in MEMORY_FILE.read_text().splitlines() if l.strip()])
     except Exception:
         pass
-    cloud_status = f"ACTIVE ({sum(1 for k in ['groq','gemini','openrouter'] if KEYS.get(k))} cloud providers)" if has_cloud else "LOCAL ONLY"
+    if cloud_keys_loaded:
+        n = len(cloud_keys_loaded)
+        cloud_status = f"LOCAL + {n} cloud key{'s' if n != 1 else ''}"
+    else:
+        cloud_status = "LOCAL ONLY"
 
     # ── Clear screen so banner is always at TOP of the visible pane ─
     # This runs on EVERY startup: first launch, refresh, kick, supervisor auto-respawn
@@ -2776,7 +2762,7 @@ def main():
     history = []
     globals()['GLOBAL_HISTORY'] = history
 
-    # ── Auto-resume from save-refresh flag (full history, not summary) ──
+    # ── Auto-resume from save-refresh flag (compacted, not full) ──
     resumed_from_notes = False
     try:
         if RESUME_FLAG.exists():
@@ -2787,7 +2773,16 @@ def main():
                     if m:
                         role = "user" if m.group(1) == "You" else "assistant"
                         history.append({"role": role, "content": m.group(2)})
-                print(f"  {G}🥷 Resumed from notes — {len(history)} turns loaded.{X}\n")
+                total_loaded = len(history)
+                # Compact immediately so we don't re-trigger save_refresh on the next turn
+                compact_history(history)
+                # If STILL over half the watermark, trim further (keep last 20 turns)
+                total_chars = sum(len(m.get("content", "") or "") for m in history)
+                if total_chars > CONTEXT_WATERMARK // 2 and len(history) > 20:
+                    history[:] = history[-20:]
+                    total_chars = sum(len(m.get("content", "") or "") for m in history)
+                print(f"  {G}🥷 Resumed from notes — {total_loaded} turns loaded, "
+                      f"compacted to {len(history)} ({total_chars} chars).{X}\n")
                 resumed_from_notes = True
             try:
                 RESUME_FLAG.unlink()
