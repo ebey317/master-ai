@@ -126,20 +126,28 @@ def save_thread_label(name):
         pass
 
 def print_thread_box_top():
-    """Full-width rule line with the current thread label right-aligned.
-    No label → plain rule. Adapts to current terminal width every call."""
+    """Plain full-width top rule — no label in the blue section."""
     try:
         cols = shutil.get_terminal_size((80, 24)).columns
     except Exception:
         cols = 80
-    label = load_thread_label()
-    if label:
-        tag = f" {label} "
-        left = max(2, cols - len(tag) - 3)
-        line = "─" * left + "──" + tag + "──"
-    else:
-        line = "─" * max(2, cols - 1)
+    line = "─" * max(2, cols - 1)
     print(f"{BC}{line[:cols]}{X}")
+
+def print_legend_with_label():
+    """Legend on the left, small ✏ <label> on the right. Click-like affordance."""
+    try:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    except Exception:
+        cols = 80
+    left = f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit"
+    label = load_thread_label()
+    right_plain = f"✏ {label}" if label else f"✏ (type 'e' to name this chat)"
+    right_colored = f"{D}✏ {X}{BC}{label}{X}" if label else f"{D}✏ (type 'e' to name this chat){X}"
+    # Plain-text length of left side for alignment (ANSI codes don't count)
+    left_plain = re.sub(r'\x1b\[[0-9;]*m', '', left)
+    gap = max(2, cols - len(left_plain) - len(right_plain))
+    print(left + (" " * gap) + right_colored)
 
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
@@ -2930,10 +2938,10 @@ def main():
 
     while True:
         draw_status_bar()
-        # Top rule line — thread label acts as "where am I in my chat" locator
+        # Top rule line (plain blue, no label)
         print_thread_box_top()
-        # Persistent legend — TYPE these words at the prompt, don't click
-        print(f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}label{X} · {BC}x{X}=exit")
+        # Legend on the left, ✏ label on the right — type 'e' to edit label inline
+        print_legend_with_label()
         # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
         start_idle_tips()
         # Prompt shows queue depth when non-zero so user can see what's pending
@@ -3288,6 +3296,42 @@ def main():
         if lo in ("clear", "clear history"):
             history = [h for h in history if h.get("role") == "system"]
             print(f"  {G}✅ Conversation cleared.{X}")
+            continue
+
+        # ── Quick label edit: 'e', 'edit', or the pencil glyph ───────
+        if lo in ("e", "edit", "✏", "✎"):
+            current = load_thread_label()
+            try:
+                suffix = f" (current: {current})" if current else ""
+                new_name = sanitize(input(f"  {D}✏{X}  label{suffix}: "))
+            except (EOFError, KeyboardInterrupt):
+                print()
+                continue
+            new_name = new_name.strip()
+            if not new_name:
+                continue
+            if new_name.lower() == "clear":
+                save_thread_label("")
+                print(f"  {G}✅ label cleared.{X}")
+                continue
+            if new_name.lower() == "suggest":
+                msgs = [m for m in history if m.get("role") in ("user", "assistant")][-8:]
+                if not msgs:
+                    print(f"  {Y}not enough context yet — chat a bit first.{X}")
+                    continue
+                transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
+                prompt = (f"Give a 2-4 word kebab-case label for this conversation "
+                          f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
+                suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+                suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested.strip().split("\n")[0].strip().lower()).strip('-')[:40]
+                if suggested:
+                    save_thread_label(suggested)
+                    print(f"  {G}✅ label:{X} {BC}{suggested}{X}")
+                else:
+                    print(f"  {Y}couldn't generate a label — try again later.{X}")
+                continue
+            save_thread_label(new_name)
+            print(f"  {G}✅ label:{X} {BC}{new_name}{X}")
             continue
 
         # ── Thread label: show / set / suggest ───────────────────
