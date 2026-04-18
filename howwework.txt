@@ -1,5 +1,5 @@
 # MASTER AI — HOW WE WORK
-# [2026-04-17] Consolidated & verified
+# [2026-04-18] v1.8 — Sensei TUI (pinned input box), Auto-mode disclaimer
 
 ## WHO MASTER AI IS
 Master AI is a personal AI agent that lives on Elijah's computer (Madam-Mary).
@@ -20,8 +20,9 @@ Access: No mouse, no keyboard — Elijah uses voice-to-text input only.
   bash ~/scripts/master.sh             — main menu (all services)
 
 Option 1  = Full startup (Ollama, TTS, UI, Firefox)
-Option 11 = Web UI only (localhost:8080)
-Option 14 = PC Control — AI agent in terminal (uses master_ai.py)
+Option 4  = Sensei (tmux AI) — primary terminal UI, uses master_ai.py
+Option 5  = :8080 Master AI Web Chat (browser)
+Option 6  = :5173 SKS Hub Client (local harness for base44 Sunkissed Soul)
 
 ## LOCAL MODELS (on-device, free, private, no limits)
 master-ai:latest     — 14B general AI (based on qwen2.5:14b) — general + agent loop
@@ -67,17 +68,37 @@ Local timeout     → auto-fallback to cloud (45s timeout)
 - Memory (facts) injected into every message for both local and cloud
 - Active tasks injected automatically so AI always knows what you're working on
 
-## PC CONTROL COMMANDS (inside master_ai.py — option 14)
+## SENSEI COMMANDS (inside master_ai.py — menu option 4)
+
+### INPUT BOX (v1.8+ prompt_toolkit TUI)
+The input box is a 4-sided Frame pinned to the bottom of the terminal.
+Text wraps cleanly inside the box; cursor always lands in the same spot.
+Output scrolls above the box — typing is never interrupted.
+On RustDesk-from-phone: arrow keys are flaky, prefer typed words.
 
 ### NAVIGATION
-Tab         — auto-complete any command
-↑ / ↓       — scroll command history
+Tab         — auto-complete any command from the 60+ word list
+↑ / ↓       — scroll command history (readline, arrows only)
+PgUp/PgDn   — scroll the output region above the input box
+up / down   — scroll output by a page (typed word, works on mobile)
+top / bottom— jump to top / back to latest output
+last        — re-print the last AI reply inline
 Ctrl+C      — interrupt + save session
 
 ### MODES
 mode safe   — ask before every command (default)
 mode plan   — AI shows plan first, type 'go' to run, 'cancel' to clear
-mode auto   — commands run without asking (careful!)
+mode auto   — ⚠  commands run without asking. See disclaimer below.
+
+### AUTO MODE DISCLAIMER (shown when you type 'mode auto')
+Turning on auto mode means you allow:
+  1. Execute immediately — RUN: / EDIT: / CREATE: fire with no confirmation.
+  2. Minimize interruptions — Sensei won't pause to ask routine questions.
+  3. Prefer action over planning — skips plan review, starts working.
+  4. Expect course corrections — type 'mode safe' any time to take back control.
+  5. No destructive blast-radius actions — rm -rf, drop tables, force-push,
+     and package uninstall STILL pause for explicit OK.
+  6. No data exfiltration — secrets/keys never sent to external services.
 
 ### AI FILE ACTIONS (AI uses these — you confirm)
 RUN: <cmd>          — run a shell command
@@ -154,6 +175,34 @@ Escalate from gentle to aggressive. Each layer does more than the last.
                         Supervisor loop will auto-restart within 3 seconds.
   6. any shell:         tmux kill-session -t master-ai && bash ~/scripts/launch_master_ai.sh
                         — nuke + start over (full rebuild).
+
+## MANUAL REBOOT — if Sensei exited cleanly and won't auto-restart
+If you see "Master AI exited cleanly." at your shell prompt, the supervisor
+loop intentionally broke out (that happens on exit 0 — e.g. after typing 'x',
+or after a clean shutdown). The tmux session is still alive; you just need to
+relaunch the engine. Pick ONE of these and run it in any shell:
+
+  A. PREFERRED — reattach + relaunch engine inside the existing session:
+       bash ~/scripts/launch_master_ai.sh
+     The launcher detects tmux is still up, sends the supervisor command back
+     in, and attaches you. This is the normal restart path.
+
+  B. Classic I/O fallback (if the prompt_toolkit TUI is misbehaving and you
+     want the plain readline input back for this session):
+       SENSEI_TUI=0 bash ~/scripts/launch_master_ai.sh
+     Set SENSEI_TUI=0 in your shell env to persist across restarts.
+
+  C. Full nuke if tmux itself is wedged:
+       tmux kill-session -t master-ai
+       bash ~/scripts/launch_master_ai.sh
+
+  D. Start from the master menu instead:
+       bash ~/scripts/master.sh   → option 4 (Sensei tmux AI)
+     Option 4 calls launch_master_ai.sh under the hood — same effect as A.
+
+If 'refresh' inside Sensei no longer works, step up to 'kick' (exit 42 forces
+the supervisor to respawn). If even that fails and you're stuck at the shell,
+follow steps A or C above.
 
 Crash log (if non-zero exit): ~/scripts/master.crash.log
 Engine PID check:             pgrep -af "python3.*master_ai.py"

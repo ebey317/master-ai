@@ -6,9 +6,15 @@
 
 SESSION="master-ai"
 
-# The supervisor loop: runs master_ai.py forever, restarts on crash (non-zero exit),
-# breaks cleanly on exit 0 so user's 'x' command actually quits.
-SUPERVISOR='cd ~ && while true; do python3 ~/scripts/master_ai.py; EXIT=$?; if [ $EXIT -eq 0 ]; then echo "Master AI exited cleanly."; break; fi; if [ $EXIT -eq 42 ]; then echo "kick requested — restarting..."; sleep 1; continue; fi; echo "[$(date)] Master AI crashed (exit=$EXIT) — restarting in 3s..." | tee -a ~/scripts/master.crash.log; sleep 3; done'
+# Supervisor loop: runs master_ai.py forever.
+#   exit 99  — explicit user quit ('x' command). Break out, shell returns.
+#   exit 42  — 'kick' soft-restart (1s wait).
+#   any other exit (0 included) — treat as crash, relaunch after 3s.
+# Rationale: a consumer app must always come back up. Clean exit 0 used to
+# break the loop, but any bug that happened to exit 0 would leave the user
+# stranded at the shell with no obvious way back in. Now only a deliberate
+# 'x' (exit 99) ends the session.
+SUPERVISOR='cd ~ && while true; do python3 ~/scripts/master_ai.py; EXIT=$?; if [ $EXIT -eq 99 ]; then echo "Master AI exited cleanly."; break; fi; if [ $EXIT -eq 42 ]; then echo "kick requested — restarting..."; sleep 1; continue; fi; echo "[$(date)] Master AI exited (code=$EXIT) — auto-restarting in 3s..." | tee -a ~/scripts/master.crash.log; sleep 3; done'
 
 engine_alive() { pgrep -f "python3.*master_ai.py" >/dev/null 2>&1; }
 

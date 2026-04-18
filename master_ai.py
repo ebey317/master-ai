@@ -39,6 +39,17 @@ try:
 except ImportError:
     pass
 
+# ── SENSEI TUI — full-screen app, default ON; opt out with SENSEI_TUI=0 ──
+_SENSEI_APP = None
+_SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
+if _SENSEI_ENABLED:
+    try:
+        from sensei_tui import SenseiApp
+        _SENSEI_APP = SenseiApp()
+    except Exception as _e:
+        _SENSEI_APP = None
+        _SENSEI_ENABLED = False
+
 # ── CONFIG ───────────────────────────────────────────────────
 KEYS_FILE     = Path.home() / ".master_ai_keys"
 CHATS_DIR     = Path.home() / ".master_ai_chats"
@@ -57,6 +68,7 @@ WHISPER_MODEL = "base"
 # ── MODE / PLAN STATE ────────────────────────────────────────
 MODE                 = "safe"
 PENDING_PLAN_TEXT    = ""
+PENDING_USER_NOTE    = ""
 PENDING_PLAN_REQUEST = ""
 HINTS                = 0 if Path.home().joinpath(".master_ai_hints_off").exists() else 1
 ACTIVE_PROJECT       = ""
@@ -125,21 +137,26 @@ def save_thread_label(name):
     except Exception:
         pass
 
-def print_thread_box_top():
-    """Top rule with ✏ pencil + label right-aligned in the blue rule itself.
-    No label set → still shows a pencil hint so user knows it's editable.
-    Adapts to current terminal width every call."""
+def _term_cols():
     try:
-        cols = shutil.get_terminal_size((80, 24)).columns
+        return shutil.get_terminal_size((80, 24)).columns
     except Exception:
-        cols = 80
+        return 80
+
+def print_thread_box_top():
+    """Top rule of input frame — label sits BOTTOM-LEFT (inside the rule)."""
+    cols = _term_cols()
     label = load_thread_label()
-    if label:
-        tag = f" ✏ {label} "
-    else:
-        tag = f" ✏ "
-    left = max(2, cols - len(tag) - 3)
-    line = "─" * left + "──" + tag + "──"
+    tag = f" ✏ {label} " if label else f" ✏ "
+    # Left-align the label on the rule (what user asked for: banner bottom-left)
+    right = max(2, cols - 2 - len(tag))
+    line = "┌──" + tag + "─" * (right - 3) + "┐"
+    print(f"{BC}{line[:cols]}{X}")
+
+def print_thread_box_bottom():
+    """Closing rule with └ ┘ corners — drawn right after input is captured."""
+    cols = _term_cols()
+    line = "└" + "─" * (cols - 2) + "┘"
     print(f"{BC}{line[:cols]}{X}")
 
 def print_legend():
@@ -982,13 +999,23 @@ except ImportError:
     pass
 
 def render_reply(text, prefix=None, suffix=None):
-    """Render AI reply as markdown (tables, code blocks, lists, bold) via rich
-    when available. Falls back to plain colored print."""
+    """Render AI reply as markdown via rich when available. Falls back to
+    plain colored print.
+
+    NOTE: rich.console.Console caches sys.stdout at construction time, so the
+    module-level _RICH_CONSOLE points at the ORIGINAL stdout. Under the TUI
+    shim that means AI replies never reach the scrollable output region.
+    We construct a fresh Console each call so it picks up whatever stdout
+    is live right now (shim or original).
+    """
     if prefix:
         print(prefix, end="", flush=True)
     if _RICH_OK:
         try:
-            _RICH_CONSOLE.print(_RichMarkdown(text or "", code_theme="monokai"))
+            # Fresh console → always writes to CURRENT sys.stdout.
+            _RichConsole(soft_wrap=True, file=sys.stdout).print(
+                _RichMarkdown(text or "", code_theme="monokai")
+            )
         except Exception:
             print(text or "")
     else:
@@ -2144,12 +2171,13 @@ def confirm_run(cmd):
     print(f"{D}║  🥷 {BOLD}AI wants to run:{X}")
     print(f"{D}║  {Y}  {cmd}{X}")
     print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    print(f"{D}║  {BTN_G} 1) Yes     — run once          {X}")
-    print(f"{D}║  {BTN_C} 2) Always  — never ask again  {X}")
-    print(f"{D}║  {BTN_R} 3) No      — skip              {X}")
-    print(f"{D}║  {BTN_Y} 4) Edit    — modify before run {X}")
+    print(f"{D}║  {BTN_G} 1) Yes     — run once                      {X}")
+    print(f"{D}║  {BTN_C} 2) Always  — never ask again              {X}")
+    print(f"{D}║  {BTN_R} 3) No      — skip                          {X}")
+    print(f"{D}║  {BTN_Y} 4) Edit    — tweak the shell command      {X}")
+    print(f"{D}║  {BTN_C} 5) Ask     — send new instructions to AI  {X}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    choice = input(f"  {BOLD}Choose (1/2/3/4): {X}").strip()
+    choice = input(f"  {BOLD}Choose (1/2/3/4/5): {X}").strip()
 
     if choice == '1':
         return run_command(cmd)
@@ -2159,16 +2187,58 @@ def confirm_run(cmd):
         return run_command(cmd)
     elif choice == '4':
         try:
-            edited = input(f"{C}  Edit command: {X}").strip() or cmd
+            edited = input(f"{C}  Edit command (shell): {X}").strip() or cmd
         except Exception:
             edited = cmd
+        # Heuristic: if the edit clearly isn't a shell command (spaces + no
+        # leading bin/flag + mostly alpha), reroute to option 5 behavior so
+        # "save as project" doesn't get `exec`'d as a binary.
+        if _looks_like_english(edited):
+            print(f"{Y}  That looks like an instruction, not a shell command — sending it back to the AI instead.{X}")
+            globals()['PENDING_USER_NOTE'] = edited
+            return None
         if is_blocked(edited):
             print(f"{R}  🚫 BLOCKED.{X}")
             return None
         return run_command(edited)
+    elif choice == '5':
+        try:
+            note = input(f"{C}  Tell the AI what to do instead: {X}").strip()
+        except Exception:
+            note = ""
+        if note:
+            globals()['PENDING_USER_NOTE'] = note
+            print(f"{C}  → will send to AI on next turn.{X}")
+        else:
+            print(f"{Y}  ⏭  Skipped.{X}")
+        return None
     else:
         print(f"{Y}  ⏭  Skipped.{X}")
         return None
+
+
+def _looks_like_english(s: str) -> bool:
+    """True if `s` looks like a natural-language instruction rather than a
+    shell command. Heuristic only — users can force-run via plain `edit`
+    and a proper command string."""
+    s = (s or "").strip()
+    if not s or len(s.split()) < 2:
+        return False
+    # A shell command usually has a recognizable first token (binary, path,
+    # sudo, env var, pipe, redirect). English sentences tend to be all-alpha
+    # words with no slashes/dashes on the first token.
+    first = s.split()[0]
+    if any(c in first for c in "/-=\"'|&><$"):
+        return False
+    if first in ("sudo", "bash", "sh", "python3", "python", "git", "npm",
+                 "pip", "curl", "wget", "ls", "cd", "cat", "echo", "mkdir",
+                 "rm", "cp", "mv", "chmod", "chown", "ssh", "rsync",
+                 "tmux", "systemctl", "apt", "snap"):
+        return False
+    # If all tokens are plain alpha words → probably a sentence.
+    tokens = s.split()
+    alpha_tokens = sum(1 for t in tokens if t.replace("'", "").isalpha())
+    return alpha_tokens >= max(2, len(tokens) - 1)
 
 # ── FILE CREATE CONFIRM ───────────────────────────────────────
 def confirm_create(filepath, content):
@@ -2495,6 +2565,9 @@ def startup_check():
 
 # ── STATUS BAR ───────────────────────────────────────────────
 def draw_status_bar():
+    """Active status — bold blue, right-aligned at TOP RIGHT. No bg color.
+    Shows only what's currently ON/active (modes, TTS, memory, tasks, model).
+    """
     def _count(f):
         try:
             return len([l for l in f.read_text().splitlines() if l.strip()])
@@ -2504,16 +2577,32 @@ def draw_status_bar():
     tasks = active_task_count()
     has_cloud = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter'])
     model_label = PINNED_MODEL if PINNED_MODEL else ("AUTO+CLOUD" if has_cloud else "AUTO")
-    cols = shutil.get_terminal_size().columns
-    task_part = f"  │  TASKS:{tasks}" if tasks else ""
-    content = f" 🥷 SENSEI  │  MEM:{mem}{task_part}  │  MODEL:{model_label}  │  MODE:{MODE.upper()}  │  x=exit "
-    display_len = len(content) + 1  # 🥷 emoji is 2 display cols, len() counts 1
+    tts_on = os.path.exists(Path.home() / ".master_ai_tts_on")
+
+    parts = [f"MODE:{MODE.upper()}"]
+    if tts_on:
+        parts.append("TTS:ON")
+    parts.append(f"MODEL:{model_label}")
+    if mem:
+        parts.append(f"MEM:{mem}")
+    if tasks:
+        parts.append(f"TASKS:{tasks}")
+
+    content = "  │  ".join(parts)
+    tag = f"🥷 {content}"
+
+    # In TUI mode, the status lives in the top-right overlay — not the scrollback.
+    if _SENSEI_APP is not None:
+        _SENSEI_APP.set_status(tag)
+        return
+
+    cols = _term_cols()
+    display_len = len(tag) + 3  # ninja emoji = 2 cols + padding
     pad = max(0, cols - display_len)
-    # Truncate if still too wide (narrow terminals)
     if display_len > cols:
-        content = content[:cols - 2] + " "
+        tag = tag[:cols - 1]
         pad = 0
-    print(f"\n\033[42m\033[30m{content}{' ' * pad}\033[0m\n")
+    print(f"\n{' ' * pad}{BC}{tag}{X}")
 
 # ── MAIN HANDLER ─────────────────────────────────────────────
 def handle(user_text, history, image_path=None):
@@ -2833,7 +2922,11 @@ def show_last_summary():
 
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def main():
-    os.system('clear')
+    # In TUI mode prompt_toolkit owns the alternate screen — don't shell out
+    # to `clear`, it writes ANSI directly to the real terminal and confuses
+    # the full-screen rendering, often causing a 2-second silent exit.
+    if _SENSEI_APP is None:
+        os.system('clear')
     log("=== MASTER AI STARTED ===")
 
     # Permissions wizard — first time only (type 'perms' to replay)
@@ -2960,31 +3053,58 @@ def main():
         sys.exit(0)
 
     atexit.register(lambda: save_session(GLOBAL_HISTORY, silent=True))
-    signal.signal(signal.SIGTERM, _exit_save)
-    signal.signal(signal.SIGHUP, _exit_save)   # fires when terminal window closes
+    # signal.signal() only works in the MAIN thread. In TUI mode main() runs
+    # in a worker thread, so installing handlers here would raise ValueError
+    # and silently exit. atexit still covers normal shutdown; the TUI owner
+    # installs its own signal handling in the main thread.
+    if _SENSEI_APP is None:
+        signal.signal(signal.SIGTERM, _exit_save)
+        signal.signal(signal.SIGHUP, _exit_save)   # fires when terminal window closes
 
     # NOTE: v1.7.11 reverted the async query worker — it raced with
     # interactive RUN/CREATE/EDIT confirmation prompts for stdin, causing
     # user input to be misrouted. handle() now runs inline in main loop.
 
     while True:
-        draw_status_bar()
-        # Auto-suggest a label after 3+ user messages (background, non-blocking)
-        maybe_auto_label(history)
-        # Top rule with ✏ pencil + label right-aligned
-        print_thread_box_top()
-        # Plain legend — TYPE these at the prompt
-        print_legend()
-        # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
-        start_idle_tips()
-        try:
-            cmd = sanitize(input(f"🥷  "))
-        except KeyboardInterrupt:
-            stop_idle_tips()
-            save_session(history, silent=True)
-            break
-        finally:
-            stop_idle_tips()
+        # If a RUN: confirm was redirected to the AI (option 5 or smart-edit
+        # catching natural language), replay that as the next user message.
+        if PENDING_USER_NOTE:
+            cmd = PENDING_USER_NOTE
+            globals()['PENDING_USER_NOTE'] = ""
+            print(f"{C}  ▶ Redirecting to AI:{X} {cmd}")
+        else:
+            draw_status_bar()
+            maybe_auto_label(history)
+            if _SENSEI_APP is None:
+                print_thread_box_top()
+                print_legend()
+                start_idle_tips()
+            else:
+                _SENSEI_APP.set_label(load_thread_label())
+            try:
+                _lbl = load_thread_label()
+                if _SENSEI_APP is None:
+                    _tag = f"{BC}{_lbl}{X} " if _lbl else ""
+                    cmd = sanitize(input(f"│ {_tag}🥷  "))
+                else:
+                    cmd = sanitize(input(""))
+            except KeyboardInterrupt:
+                if _SENSEI_APP is None:
+                    stop_idle_tips()
+                    print_thread_box_bottom()
+                save_session(history, silent=True)
+                break
+            except EOFError:
+                if _SENSEI_APP is None:
+                    stop_idle_tips()
+                    print_thread_box_bottom()
+                save_session(history, silent=True)
+                break
+            finally:
+                if _SENSEI_APP is None:
+                    stop_idle_tips()
+            if _SENSEI_APP is None:
+                print_thread_box_bottom()
 
         if not cmd:
             continue
@@ -2997,7 +3117,9 @@ def main():
             play_anim(_A_VANISH, delay=0.12, color=BC)
             print(f"{G}  Goodbye.\n{X}")
             log("=== MASTER AI STOPPED ===")
-            break
+            # Exit 99 tells the supervisor this was a deliberate quit.
+            # Any other exit code triggers auto-restart.
+            sys.exit(99)
 
         # ── Auto-advancing tips carousel ──────────────────────
         if lo in ("autotips", "auto tips", "slideshow", "carousel", "tour"):
@@ -3116,9 +3238,15 @@ def main():
                     "Describe your task — I'll show a plan.\n"
                     "Type 'go' to execute it, or 'cancel' to clear.")
             elif lo == "mode auto":
-                show_hint("Auto Mode — commands run without asking",
-                    "All RUN: directives execute immediately.\n"
-                    "Type 'mode safe' to go back to confirmed execution.")
+                show_hint("⚠  Auto Mode Active — you are allowing:",
+                    "1. Execute immediately — RUN: / EDIT: / CREATE: fire with no confirmation.\n"
+                    "2. Minimize interruptions — I won't pause to ask routine questions.\n"
+                    "3. Prefer action over planning — I skip plan review and start working.\n"
+                    "4. Expect course corrections — type 'mode safe' any time to take the wheel back.\n"
+                    "5. No destructive blast-radius actions — rm -rf, drop tables, force-push,\n"
+                    "   package uninstall still pause for your OK.\n"
+                    "6. No data exfiltration — I won't send secrets/keys to external services.\n\n"
+                    "Type 'mode safe' to disable.")
             continue
         if lo == "mode":
             show_mode_status()
@@ -3219,11 +3347,13 @@ def main():
                 print(f"  {R}❌ {e}{X}")
             continue
 
-        # ── Scroll commands (word-based, mobile-friendly) ─────────────
+        # ── Scroll commands (word-based — the ONE way to scroll in TUI mode) ─
         if lo == "up" or lo.startswith("up "):
-            if os.environ.get("TMUX"):
-                parts = lo.split()
-                n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            parts = lo.split()
+            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            if _SENSEI_APP is not None:
+                _SENSEI_APP.scroll("up", n=10 * n)
+            elif os.environ.get("TMUX"):
                 subprocess.run(["tmux", "copy-mode"], check=False)
                 for _ in range(n):
                     subprocess.run(["tmux", "send-keys", "-X", "halfpage-up"], check=False)
@@ -3231,21 +3361,27 @@ def main():
                 print(f"  {Y}Not in tmux — scroll commands need the tmux session.{X}")
             continue
         if lo == "down" or lo.startswith("down "):
-            if os.environ.get("TMUX"):
-                parts = lo.split()
-                n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            parts = lo.split()
+            n = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+            if _SENSEI_APP is not None:
+                _SENSEI_APP.scroll("down", n=10 * n)
+            elif os.environ.get("TMUX"):
                 for _ in range(n):
                     subprocess.run(["tmux", "send-keys", "-X", "halfpage-down"], check=False)
             else:
                 print(f"  {Y}Not in tmux.{X}")
             continue
         if lo == "top":
-            if os.environ.get("TMUX"):
+            if _SENSEI_APP is not None:
+                _SENSEI_APP.scroll("top")
+            elif os.environ.get("TMUX"):
                 subprocess.run(["tmux", "copy-mode"], check=False)
                 subprocess.run(["tmux", "send-keys", "-X", "history-top"], check=False)
             continue
         if lo == "bottom":
-            if os.environ.get("TMUX"):
+            if _SENSEI_APP is not None:
+                _SENSEI_APP.scroll("bottom")
+            elif os.environ.get("TMUX"):
                 subprocess.run(["tmux", "send-keys", "-X", "cancel"], check=False)
             continue
         if lo == "last":
@@ -3690,5 +3826,70 @@ def main():
             log(f"HANDLE_ERROR: {e}")
             print(f"  {R}error: {e}{X}")
 
+def _run_with_tui():
+    """Wrap main() in the full-screen SenseiApp.
+    - Stdout/stderr routed to the app's scrollable output buffer.
+    - builtins.input() pulls from a submit queue filled by the TUI's Enter key.
+    - main() runs in a daemon worker thread; the app owns the main thread.
+    """
+    import builtins, queue
+    from sensei_tui import TUIStdout
+
+    _iq: queue.Queue[str] = queue.Queue()
+    _orig_input = builtins.input
+    _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+
+    def _tui_input(prompt=""):
+        # Print the prompt into the scrollback so user sees what's being asked.
+        if prompt:
+            try: sys.stdout.write(prompt); sys.stdout.flush()
+            except Exception: pass
+        return _iq.get()
+
+    builtins.input = _tui_input
+    sys.stdout = TUIStdout(_SENSEI_APP, _orig_stdout)
+    sys.stderr = TUIStdout(_SENSEI_APP, _orig_stderr)
+
+    def _on_submit(text: str):
+        _iq.put(text)
+
+    worker_err = []
+
+    def _worker():
+        try:
+            main()
+        except SystemExit as e:
+            worker_err.append(e)
+        except BaseException as e:
+            worker_err.append(e)
+            # Log the traceback to the crash log so we can diagnose silent exits.
+            try:
+                import traceback
+                with open(Path.home() / "scripts" / "master.crash.log", "a") as _cl:
+                    _cl.write(f"\n[{datetime.now().isoformat()}] TUI worker crashed:\n")
+                    traceback.print_exc(file=_cl)
+            except Exception:
+                pass
+        finally:
+            try: _SENSEI_APP.exit()
+            except Exception: pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    try:
+        _SENSEI_APP.run(on_submit=_on_submit)
+    finally:
+        sys.stdout = _orig_stdout
+        sys.stderr = _orig_stderr
+        builtins.input = _orig_input
+
+    if worker_err and isinstance(worker_err[0], SystemExit):
+        sys.exit(worker_err[0].code)
+
+
 if __name__ == "__main__":
-    main()
+    if _SENSEI_ENABLED and _SENSEI_APP is not None:
+        _run_with_tui()
+    else:
+        main()
