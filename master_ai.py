@@ -2963,8 +2963,9 @@ def main():
     signal.signal(signal.SIGTERM, _exit_save)
     signal.signal(signal.SIGHUP, _exit_save)   # fires when terminal window closes
 
-    # ── Start the serial query worker (pops _QUERY_QUEUE, runs handle()) ──
-    threading.Thread(target=_query_worker, args=(history,), daemon=True).start()
+    # NOTE: v1.7.11 reverted the async query worker — it raced with
+    # interactive RUN/CREATE/EDIT confirmation prompts for stdin, causing
+    # user input to be misrouted. handle() now runs inline in main loop.
 
     while True:
         draw_status_bar()
@@ -2976,11 +2977,8 @@ def main():
         print_legend()
         # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
         start_idle_tips()
-        # Prompt shows queue depth when non-zero so user can see what's pending
-        _qdepth = _QUERY_QUEUE.qsize()
-        _prompt = f"🥷 [{_qdepth} queued]  " if _qdepth > 0 else "🥷  "
         try:
-            cmd = sanitize(input(_prompt))
+            cmd = sanitize(input(f"🥷  "))
         except KeyboardInterrupt:
             stop_idle_tips()
             save_session(history, silent=True)
@@ -3675,15 +3673,22 @@ def main():
             threading.Thread(target=speak, args=(cached,), daemon=True).start()
             continue
 
-        # ── Enqueue the query — serial worker thread handles it ──
-        # Queue holds up to 3; you can type Q2/Q3 while Q1 is still replying.
+        # ── Run the query synchronously in the main thread ──
+        # (Queue-in-worker-thread approach was reverted in v1.7.11 — it raced
+        # with interactive RUN/CREATE/EDIT confirmation prompts for stdin.
+        # Type-ahead is worth less than reliable directive confirmations.)
         try:
-            _QUERY_QUEUE.put_nowait((user_text, image_path))
-            depth = _QUERY_QUEUE.qsize()
-            if depth > 1:
-                print(f"  {C}✓ queued ({depth} waiting in line){X}")
-        except queue.Full:
-            print(f"  {R}queue full (3 max) — wait for a reply before adding more{X}")
+            reply = handle(user_text, history, image_path=image_path)
+            reply = sanitize(reply) if reply else reply
+            cache_store(user_text, reply)
+            if TTS_ENABLED:
+                threading.Thread(target=speak, args=(reply,), daemon=True).start()
+            globals()['CHARS_SINCE_SAVE'] = CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
+            if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
+                threading.Thread(target=_auto_save_background, args=(list(history),), daemon=True).start()
+        except Exception as e:
+            log(f"HANDLE_ERROR: {e}")
+            print(f"  {R}error: {e}{X}")
 
 if __name__ == "__main__":
     main()
