@@ -126,28 +126,58 @@ def save_thread_label(name):
         pass
 
 def print_thread_box_top():
-    """Plain full-width top rule — no label in the blue section."""
+    """Top rule with ✏ pencil + label right-aligned in the blue rule itself.
+    No label set → still shows a pencil hint so user knows it's editable.
+    Adapts to current terminal width every call."""
     try:
         cols = shutil.get_terminal_size((80, 24)).columns
     except Exception:
         cols = 80
-    line = "─" * max(2, cols - 1)
+    label = load_thread_label()
+    if label:
+        tag = f" ✏ {label} "
+    else:
+        tag = f" ✏ "
+    left = max(2, cols - len(tag) - 3)
+    line = "─" * left + "──" + tag + "──"
     print(f"{BC}{line[:cols]}{X}")
 
-def print_legend_with_label():
-    """Legend on the left, small ✏ <label> on the right. Click-like affordance."""
+def print_legend():
+    """Plain legend line — TYPE these commands at the prompt."""
+    print(f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}e{X}=edit label · {BC}x{X}=exit")
+
+# ── Auto-label: after N exchanges, suggest a label if none is set ──
+_AUTO_LABEL_LOCK = threading.Lock()
+_AUTO_LABEL_TRIED = False  # per-session flag so we only auto-fire once
+
+def _auto_label_bg(history_snapshot):
+    """Background: generate a kebab-case label from recent exchanges, save it."""
+    global _AUTO_LABEL_TRIED
     try:
-        cols = shutil.get_terminal_size((80, 24)).columns
-    except Exception:
-        cols = 80
-    left = f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}x{X}=exit"
-    label = load_thread_label()
-    right_plain = f"✏ {label}" if label else f"✏ (type 'e' to name this chat)"
-    right_colored = f"{D}✏ {X}{BC}{label}{X}" if label else f"{D}✏ (type 'e' to name this chat){X}"
-    # Plain-text length of left side for alignment (ANSI codes don't count)
-    left_plain = re.sub(r'\x1b\[[0-9;]*m', '', left)
-    gap = max(2, cols - len(left_plain) - len(right_plain))
-    print(left + (" " * gap) + right_colored)
+        msgs = [m for m in history_snapshot if m.get("role") in ("user", "assistant")][-8:]
+        transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
+        prompt = (f"Give a 2-4 word kebab-case label for this conversation "
+                  f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
+        suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+        suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested.strip().split("\n")[0].strip().lower()).strip('-')[:40]
+        if suggested and not load_thread_label():
+            save_thread_label(suggested)
+    except Exception as e:
+        log(f"AUTO_LABEL_ERROR: {e}")
+
+def maybe_auto_label(history):
+    """Fire auto-label suggestion once per session after 3+ user messages.
+    Only runs if no label is already set and we haven't tried yet."""
+    global _AUTO_LABEL_TRIED
+    with _AUTO_LABEL_LOCK:
+        if _AUTO_LABEL_TRIED or load_thread_label():
+            return
+        user_msgs = [m for m in history if m.get("role") == "user"]
+        if len(user_msgs) < 3:
+            return
+        _AUTO_LABEL_TRIED = True
+    # run in background so we don't block the prompt
+    threading.Thread(target=_auto_label_bg, args=(list(history),), daemon=True).start()
 
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
@@ -2938,10 +2968,12 @@ def main():
 
     while True:
         draw_status_bar()
-        # Top rule line (plain blue, no label)
+        # Auto-suggest a label after 3+ user messages (background, non-blocking)
+        maybe_auto_label(history)
+        # Top rule with ✏ pencil + label right-aligned
         print_thread_box_top()
-        # Legend on the left, ✏ label on the right — type 'e' to edit label inline
-        print_legend_with_label()
+        # Plain legend — TYPE these at the prompt
+        print_legend()
         # Idle thought-cloud — polls readline buffer; wipes tip as soon as user types.
         start_idle_tips()
         # Prompt shows queue depth when non-zero so user can see what's pending
