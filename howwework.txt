@@ -83,7 +83,23 @@ PgUp/PgDn   — scroll the output region above the input box
 up / down   — scroll output by a page (typed word, works on mobile)
 top / bottom— jump to top / back to latest output
 last        — re-print the last AI reply inline
+mouse wheel — scroll output (mouse_support=True by default in TUI)
 Ctrl+C      — interrupt + save session
+
+### COPY / PASTE IN SENSEI
+Because the TUI captures mouse events for scrolling, plain click-drag does
+NOT select text — the terminal passes the click to the app. Two ways to copy:
+
+  1. SHIFT + click-drag over the text you want → terminal selects it
+     (Shift overrides the app's mouse capture — this is a gnome-terminal /
+     xterm convention). Then Ctrl+Shift+C to copy to clipboard.
+
+  2. Type `copy` (or `clip`) at the Sensei prompt — pushes the LAST AI reply
+     straight into the X11 clipboard via xclip. Fast path for "I want that
+     whole answer."
+
+To temporarily disable mouse capture (and get back classic click-drag),
+launch with SENSEI_MOUSE=0: `SENSEI_MOUSE=0 bash ~/scripts/launch_master_ai.sh`
 
 ### MODES
 mode safe   — ask before every command (default)

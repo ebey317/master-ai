@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Pupil</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+/* Pupil — martial-arts belt themes. Default = Blue (Sensei-match).
+   Same school as Sensei; visuals progress like belt ranks.            */
+:root{
+  --text:#042C53;--text-mid:#0C447C;--text-soft:#378ADD;
+  --bg:#F0F6FF;--bg2:#E6F1FB;--bg3:#D5E8F7;
+  --border:rgba(24,95,165,0.18);--border-mid:rgba(24,95,165,0.32);
+  --radius:16px;--radius-sm:10px;--accent:#2266CC;
+}
+[data-theme="white"] {--accent:#333333;--bg:#FFFFFF;--bg2:#F7F7F7;--bg3:#ECECEC;--text:#111;--text-mid:#333;--text-soft:#666;--border:rgba(0,0,0,0.10);--border-mid:rgba(0,0,0,0.20)}
+[data-theme="yellow"]{--accent:#D4A017;--bg:#FFFDF0;--bg2:#FFF8E4;--bg3:#FEF0C4;--text:#3A2C03;--text-mid:#6E5712;--text-soft:#A6882E;--border:rgba(212,160,23,0.18);--border-mid:rgba(212,160,23,0.32)}
+[data-theme="blue"]  {--accent:#2266CC;--bg:#F0F6FF;--bg2:#E6F1FB;--bg3:#D5E8F7;--text:#042C53;--text-mid:#0C447C;--text-soft:#378ADD;--border:rgba(34,102,204,0.18);--border-mid:rgba(34,102,204,0.32)}
+[data-theme="green"] {--accent:#3B6D11;--bg:#F4F9EC;--bg2:#EAF3DE;--bg3:#DDF0C6;--text:#173404;--text-mid:#27500A;--text-soft:#639922;--border:rgba(59,109,17,0.18);--border-mid:rgba(59,109,17,0.32)}
+[data-theme="purple"]{--accent:#6B4AA3;--bg:#F7F3FB;--bg2:#F3EEF9;--bg3:#E6D9F3;--text:#2D1955;--text-mid:#483076;--text-soft:#8A6EB8;--border:rgba(107,74,163,0.18);--border-mid:rgba(107,74,163,0.32)}
+[data-theme="brown"] {--accent:#6B4E35;--bg:#FAF5EC;--bg2:#F3EAD9;--bg3:#E6D4B5;--text:#2A1B0A;--text-mid:#4D3720;--text-soft:#8C6E4A;--border:rgba(107,78,53,0.18);--border-mid:rgba(107,78,53,0.32)}
+[data-theme="black"] {--accent:#F0F0F0;--bg:#0A0A0A;--bg2:#141414;--bg3:#1C1C1C;--text:#F0F0F0;--text-mid:#BFBFBF;--text-soft:#808080;--border:rgba(240,240,240,0.18);--border-mid:rgba(240,240,240,0.32)}
+[data-theme="hacker"]{--accent:#00ff00;--bg:#0a0e27;--bg2:#1a1728;--bg3:#252235;--text:#00ff00;--text-mid:#00dd00;--text-soft:#00aa00;--border:rgba(0,255,0,0.15);--border-mid:rgba(0,255,0,0.3)}
+*{box-sizing:border-box;margin:0;padding:0}
+
+/* SETUP WIZARD */
+#setup{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;overflow-y:auto;padding:20px}
+#setup.hidden{display:none}
+.setup-box{max-width:520px;width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:32px}
+.setup-box h1{font-family:'DM Serif Display',serif;font-size:26px;color:var(--text);margin-bottom:4px}
+.setup-box h1 span{color:var(--accent)}
+.setup-sub{font-size:13px;color:var(--text-soft);margin-bottom:24px}
+.setup-card{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;background:var(--bg);position:relative}
+.setup-card.verified{border-color:#2a8a4a}
+.setup-card-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.setup-card-icon{font-size:22px}
+.setup-card-title{font-size:14px;font-weight:600;color:var(--text)}
+.setup-card-tag{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em}
+.tag-local{background:#EAF3DE;color:#3B6D11}
+.tag-cloud{background:#E6F1FB;color:#185FA5}
+.tag-required{background:#FCEBEB;color:#c03030}
+.setup-card-desc{font-size:12px;color:var(--text-soft);margin-bottom:10px}
+.setup-field{display:flex;gap:8px;align-items:center}
+.setup-field input{flex:1;padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif}
+.setup-field input:focus{outline:none;border-color:var(--accent)}
+.setup-verify{padding:8px 14px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:transparent;color:var(--text-mid);cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.setup-verify:hover{background:var(--bg3)}
+.setup-status{font-size:12px;margin-top:8px;min-height:18px}
+.setup-actions{display:flex;gap:10px;margin-top:20px}
+.setup-launch{flex:1;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif}
+.setup-launch:disabled{opacity:0.35;cursor:not-allowed}
+.setup-launch:not(:disabled):hover{opacity:0.9}
+.setup-download{padding:12px 18px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:transparent;color:var(--text-mid);cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif}
+.setup-download:hover{background:var(--bg3)}
+.setup-name{width:100%;padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;margin-bottom:16px}
+.setup-name:focus{outline:none;border-color:var(--accent)}
+html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
+body{display:flex;flex-direction:column;height:100vh}
+
+.header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.logo{font-family:'DM Serif Display',serif;font-size:20px;color:var(--text)}
+.logo span{color:var(--accent)}
+.header-meta{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.model-badge{font-size:11px;padding:3px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:20px;color:var(--text-soft)}
+.counter{font-size:11px;color:var(--text-soft)}
+.theme-btn{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:border 0.15s}
+.theme-btn:hover{border-color:var(--accent)}
+/* Belt-rank swatches — progressing mastery */
+.theme-dot-white {background:#FFFFFF;border:1px solid #bbb}
+.theme-dot-yellow{background:#D4A017}
+.theme-dot-blue  {background:#2266CC}
+.theme-dot-green {background:#3B6D11}
+.theme-dot-purple{background:#6B4AA3}
+.theme-dot-brown {background:#6B4E35}
+.theme-dot-black {background:#0A0A0A}
+.theme-dot-hacker{background:linear-gradient(45deg,#0a0e27 50%,#00ff00 50%)}
+
+.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2)}
+.tab{padding:9px 16px;font-size:13px;color:var(--text-soft);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s}
+.tab.active{color:var(--text);border-bottom-color:var(--accent)}
+.tab:hover{color:var(--text)}
+
+.pane{display:none;flex:1;flex-direction:column;overflow:hidden}
+.pane.active{display:flex}
+
+/* CHAT PANE */
+.chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:82%;padding:11px 14px;border-radius:var(--radius);font-size:14px;line-height:1.65;position:relative}
+.msg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:4px}
+.msg.thinking{opacity:0.6;font-style:italic}
+.msg.routed{font-size:11px;color:var(--text-soft);align-self:center;background:transparent;border:none;padding:2px 8px}
+.msg-actions{display:flex;gap:6px;margin-top:6px;opacity:0;transition:opacity 0.15s}
+.msg:hover .msg-actions{opacity:1}
+.msg-btn{background:none;border:none;padding:2px 5px;font-size:11px;color:var(--text-soft);cursor:pointer;border-radius:4px}
+.msg-btn:hover{background:var(--bg3);color:var(--text)}
+.timestamp{font-size:10px;color:var(--text-soft);margin-top:4px;display:block}
+
+.input-row{padding:12px 14px;border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end}
+.input-box{flex:1;min-height:40px;max-height:120px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);padding:10px 12px;font-size:14px;background:var(--bg);color:var(--text);resize:none;font-family:'DM Sans',sans-serif;line-height:1.5}
+.input-box:focus{outline:none;border-color:var(--accent)}
+.send-btn{padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.send-btn:hover{opacity:0.9}
+.stop-btn{display:none;padding:10px 14px;background:transparent;color:#E24B4A;border:1px solid #E24B4A;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.stop-btn:hover{background:#FCEBEB}
+.provider-row{display:flex;gap:6px;padding:6px 14px;background:var(--bg);border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.prov-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:20px;cursor:pointer;background:transparent;color:var(--text-soft);transition:all 0.15s}
+.prov-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.auto-route{font-size:11px;color:var(--text-soft);margin-left:auto;display:flex;align-items:center;gap:4px}
+.auto-toggle{width:28px;height:16px;border-radius:8px;background:var(--border-mid);border:none;cursor:pointer;position:relative;transition:background 0.15s}
+.auto-toggle.on{background:var(--accent)}
+.auto-toggle::after{content:'';position:absolute;width:12px;height:12px;border-radius:50%;background:#fff;top:2px;left:2px;transition:left 0.15s}
+.auto-toggle.on::after{left:14px}
+
+/* SESSIONS PANE */
+.sessions-wrap{flex:1;overflow:hidden;display:flex}
+.session-list{width:220px;border-right:1px solid var(--border);overflow-y:auto;background:var(--bg2)}
+.session-item{padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background 0.15s}
+.session-item:hover,.session-item.active{background:var(--bg3)}
+.session-item-name{font-size:13px;font-weight:500;color:var(--text)}
+.session-item-date{font-size:11px;color:var(--text-soft);margin-top:2px}
+.session-item-count{font-size:10px;color:var(--text-soft)}
+.session-viewer{flex:1;overflow-y:auto;padding:16px}
+.session-viewer-empty{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-soft);font-size:14px}
+.session-actions{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:6px}
+.sess-btn{font-size:12px;padding:4px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);cursor:pointer;background:transparent;color:var(--text-mid)}
+.sess-btn:hover{background:var(--bg3)}
+.sess-msg{padding:8px 12px;border-radius:var(--radius-sm);margin-bottom:8px;font-size:13px;line-height:1.6}
+.sess-msg.user{background:var(--accent);color:#fff}
+.sess-msg.ai{background:var(--bg2);border:1px solid var(--border);color:var(--text)}
+.sess-msg-meta{font-size:10px;opacity:0.7;margin-top:3px}
+
+/* SETTINGS PANE */
+.settings-wrap{flex:1;overflow-y:auto;padding:20px}
+.settings-section{margin-bottom:24px}
+.settings-title{font-family:'DM Serif Display',serif;font-size:16px;color:var(--text);margin-bottom:12px}
+.setting-row{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+.setting-label{font-size:12px;color:var(--text-soft)}
+.setting-input{padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif}
+.setting-input:focus{outline:none;border-color:var(--accent)}
+.setting-row select{padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer}
+.save-settings{padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif}
+.tts-status{font-size:12px;color:var(--text-soft);margin-top:6px}
+
+</style>
+</head>
+<body>
+<!-- SETUP WIZARD -->
+<div id="setup">
+  <div class="setup-box">
+    <h1>🥷 <span>Pupil</span></h1>
+    <div class="setup-sub">Connect your AI providers — at least one local provider is required</div>
+    <input class="setup-name" id="setup-name" placeholder="Your machine name (e.g. Madam-Mary)" value=""/>
+
+    <!-- Ollama (Local) -->
+    <div class="setup-card" id="card-ollama">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">⚡</div>
+        <div class="setup-card-title">Ollama</div>
+        <span class="setup-card-tag tag-local">local</span>
+        <span class="setup-card-tag tag-required">required</span>
+      </div>
+      <div class="setup-card-desc">Runs on your machine — unlimited, private, no API key needed. Run <code>ollama serve</code> first.</div>
+      <div class="setup-field">
+        <input id="setup-ollama-host" value="http://localhost:11434" placeholder="http://localhost:11434"/>
+        <button class="setup-verify" onclick="setupVerify('ollama')">scan</button>
+      </div>
+      <div class="setup-status" id="setup-ollama-status"></div>
+    </div>
+
+    <!-- Groq (Cloud) -->
+    <div class="setup-card" id="card-groq">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">🚀</div>
+        <div class="setup-card-title">Groq</div>
+        <span class="setup-card-tag tag-cloud">cloud · free</span>
+      </div>
+      <div class="setup-card-desc">Ultra-fast cloud inference. <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent)">Get free key →</a></div>
+      <div class="setup-field">
+        <input id="setup-groq-key" type="password" placeholder="gsk_..."/>
+        <button class="setup-verify" onclick="setupVerify('groq')">verify</button>
+      </div>
+      <div class="setup-status" id="setup-groq-status"></div>
+    </div>
+
+    <!-- OpenRouter (Cloud) -->
+    <div class="setup-card" id="card-openrouter">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">✨</div>
+        <div class="setup-card-title">OpenRouter</div>
+        <span class="setup-card-tag tag-cloud">cloud · free</span>
+      </div>
+      <div class="setup-card-desc">Access many models through one key. <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">Get free key →</a></div>
+      <div class="setup-field">
+        <input id="setup-or-key" type="password" placeholder="sk-or-v1-..."/>
+        <button class="setup-verify" onclick="setupVerify('openrouter')">verify</button>
+      </div>
+      <div class="setup-status" id="setup-or-status"></div>
+    </div>
+
+    <div class="setup-actions">
+      <button class="setup-launch" id="setup-launch" disabled onclick="finishSetup()">Launch Pupil</button>
+      <button class="setup-download" id="setup-dl" onclick="downloadConfigured()" title="Download a configured copy with your keys baked in">↓ download app</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="main-app" style="display:none;flex-direction:column;height:100vh">
+<div class="header">
+  <div class="logo">🥷 <span>Pupil</span></div>
+  <div style="font-size:11px;color:var(--text-soft);margin-left:4px" id="machine-name"></div>
+  <div class="header-meta">
+    <select class="model-badge" id="model-sel" style="cursor:pointer;outline:none;border:1px solid var(--border);background:var(--bg3);color:var(--text-soft);font-size:11px;padding:3px 8px;border-radius:20px;font-family:'DM Sans',sans-serif;" onchange="switchModel(this.value)"></select>
+    <span class="counter" id="req-counter"></span>
+    <button class="theme-btn theme-dot-white"  onclick="setTheme('white')"  title="White belt"></button>
+    <button class="theme-btn theme-dot-yellow" onclick="setTheme('yellow')" title="Yellow belt"></button>
+    <button class="theme-btn theme-dot-blue"   onclick="setTheme('blue')"   title="Blue belt — Sensei match"></button>
+    <button class="theme-btn theme-dot-green"  onclick="setTheme('green')"  title="Green belt"></button>
+    <button class="theme-btn theme-dot-purple" onclick="setTheme('purple')" title="Purple belt"></button>
+    <button class="theme-btn theme-dot-brown"  onclick="setTheme('brown')"  title="Brown belt"></button>
+    <button class="theme-btn theme-dot-black"  onclick="setTheme('black')"  title="Black belt — master"></button>
+    <button class="theme-btn theme-dot-hacker" onclick="setTheme('hacker')" title="Hacker (dark terminal)"></button>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showPane('chat')">Chat</div>
+  <div class="tab" onclick="showPane('sessions')">Sessions</div>
+  <div class="tab" onclick="showPane('settings')">Settings</div>
+</div>
+
+<!-- CHAT PANE -->
+<div class="pane active" id="pane-chat">
+  <div class="chat-area" id="chat-area"></div>
+  <div class="provider-row">
+    <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Ollama (local)</button>
+    <button class="prov-btn" data-prov="groq" onclick="setProvider('groq')">Groq</button>
+    <button class="prov-btn" data-prov="openrouter" onclick="setProvider('openrouter')">OpenRouter</button>
+    <div class="auto-route">
+      auto-route
+      <button class="auto-toggle" id="auto-toggle" onclick="toggleAuto()"></button>
+    </div>
+  </div>
+  <div class="input-row">
+    <textarea class="input-box" id="user-input" placeholder="ask anything — x to pause, (name) to save session" rows="1" onkeydown="inputKey(event)"></textarea>
+    <button class="stop-btn" id="stop-btn" onclick="stopStream()">■ stop</button>
+    <button class="send-btn" id="send-btn" onclick="sendMsg()">send</button>
+  </div>
+</div>
+
+<!-- WELLNESS PANE -->
+
+<!-- SESSIONS PANE -->
+<div class="pane" id="pane-sessions">
+  <div class="sessions-wrap">
+    <div class="session-list">
+      <div class="session-actions">
+        <button class="sess-btn" onclick="exportSession()">export</button>
+        <button class="sess-btn" onclick="clearAllSessions()">clear all</button>
+      </div>
+      <div id="session-list-inner"></div>
+    </div>
+    <div class="session-viewer" id="session-viewer">
+      <div class="session-viewer-empty">select a session to read it</div>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS PANE -->
+<div class="pane" id="pane-settings">
+  <div class="settings-wrap">
+    <div class="settings-section">
+      <div class="settings-title">Provider Keys</div>
+      <div class="setting-row">
+        <label class="setting-label">Groq API Key</label>
+        <input class="setting-input" id="groq-key" type="password" placeholder="gsk_..."/>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <button class="w-btn" onclick="verifyKey('groq')">verify</button>
+          <span id="groq-status" style="font-size:12px"></span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">OpenRouter API Key</label>
+        <input class="setting-input" id="openrouter-key" type="password" placeholder="sk-or-v1-..."/>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <button class="w-btn" onclick="verifyKey('openrouter')">verify</button>
+          <span id="openrouter-status" style="font-size:12px"></span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Ollama Host</label>
+        <input class="setting-input" id="ollama-host" value="http://localhost:11434"/>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <button class="w-btn" onclick="verifyKey('ollama')">verify</button>
+          <span id="ollama-status" style="font-size:12px"></span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Ollama Model</label>
+        <input class="setting-input" id="ollama-model" value="llama3"/>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-title">TTS (Text to Speech)</div>
+      <div class="setting-row">
+        <label class="setting-label">Piper TTS Server</label>
+        <input class="setting-input" id="tts-host" value="http://localhost:5050"/>
+        <div class="tts-status" id="tts-status">status: unchecked</div>
+      </div>
+      <button class="w-btn" onclick="checkTTS()">check TTS server</button>
+    </div>
+    <div class="settings-section">
+      <div class="settings-title">System Prompt</div>
+      <div class="setting-row">
+        <textarea class="w-textarea" id="sys-prompt" style="min-height:120px">You are Pupil — the inquisitive, eager-student voice in Elijah's Master AI cast on Madam-Mary. You are Sensei's counterpart: Sensei acts, you ask and explore.
+
+Rules:
+- Brainstorm first. Don't write code until the user says a build trigger ("build it", "code it", "make it", "generate it", "ship it", "ok go").
+- When an idea or POC comes up, mark it with 🚨 and suggest logging to ~/scripts/PROJECTS.md under "Ideas / POCs".
+- If a request is vague + ambitious, ASK clarifying questions before answering. One clarification beats a wrong full answer.
+- Propose options with trade-offs when a decision is open. Let Elijah pick.
+- Before destructive shell commands (rm, git reset --hard, systemctl stop, force-push, drop table), confirm.
+- Keep replies tight. One sentence beats five.
+
+The Cast:
+- Sensei — result-driven, productive, terminal (~/scripts/master_ai.py). For action.
+- Pupil — YOU. Inquisitive, eager. Browser UI. For exploration & brainstorm.
+- Messenger — the router inside both Sensei and Pupil (orchestrate() function); picks the right brain (local / groq / cloud-deep) per ask. Not a separate voice.
+
+Context:
+- Master AI is the umbrella brand.
+- Sunkissed Soul lives at base44.com (not localhost:5173 — that's the SKS Hub Client test harness).
+- Ollama at localhost:11434. TTS at localhost:5050. Installed models: master-ai:latest, qwen2.5:14b, llava:latest, qwen3.5:cloud, kimi-k2.5:cloud.</textarea>
+      </div>
+    </div>
+    <button class="w-btn primary save-settings" onclick="saveSettings()">save settings</button>
+    <span id="settings-saved" style="font-size:11px;color:var(--text-soft);margin-left:8px"></span>
+  </div>
+</div>
+
+</div><!-- /main-app -->
+
+<script>
+// router.js stub (auto-route works if ROUTER is defined externally)
+if (typeof ROUTER === 'undefined') { window.ROUTER = { detect: (t, f, a) => ({ provider: a[0], reason: 'default' }) }; }
+
+// ---- STATE ----
+let history = [];
+let abortController = null;
+let isStreaming = false;
+let currentProvider = 'ollama';
+let autoRoute = false;
+let reqCount = { groq: 0, openrouter: 0 };
+const FREE_LIMITS = { groq: 14400, openrouter: 200 };
+let sessions = JSON.parse(localStorage.getItem('ta_sessions') || '[]');
+let settings = JSON.parse(localStorage.getItem('ta_settings') || '{}');
+let scrollLocked = false;
+let setupState = { ollama: false, groq: false, openrouter: false, ollamaModels: [] };
+
+function updateTokenCounter() {
+  const el = document.getElementById('req-counter');
+  if (!el) return;
+  if (currentProvider === 'ollama' || currentProvider === 'master-ai') { el.textContent = '∞ unlimited (local)'; return; }
+  const key = 'ta_count_' + currentProvider + '_' + new Date().toDateString();
+  const used = parseInt(localStorage.getItem(key) || '0');
+  const limit = FREE_LIMITS[currentProvider] || 0;
+  const left = Math.max(limit - used, 0);
+  el.textContent = left + ' / ' + limit + ' free today';
+  el.style.color = left < 20 ? '#e03030' : left < 50 ? '#f59e0b' : '';
+}
+
+// ---- SETUP WIZARD ----
+async function setupVerify(prov) {
+  const el = document.getElementById('setup-' + (prov === 'openrouter' ? 'or' : prov) + '-status');
+  const card = document.getElementById('card-' + prov);
+  el.textContent = '⏳ checking...';
+  el.style.color = 'var(--text-soft)';
+  card.classList.remove('verified');
+  try {
+    if (prov === 'ollama') {
+      const host = document.getElementById('setup-ollama-host').value.trim() || 'http://localhost:11434';
+      const res = await fetch(host + '/api/tags');
+      if (!res.ok) throw new Error('status ' + res.status);
+      const data = await res.json();
+      setupState.ollamaModels = data.models?.map(m => m.name) || [];
+      el.innerHTML = '🟢 connected — ' + setupState.ollamaModels.length + ' model' + (setupState.ollamaModels.length !== 1 ? 's' : '') + ': ' + setupState.ollamaModels.slice(0, 4).join(', ');
+      el.style.color = '#2a8a4a';
+      setupState.ollama = true;
+      card.classList.add('verified');
+    } else if (prov === 'groq') {
+      const key = document.getElementById('setup-groq-key').value.trim();
+      if (!key) { el.textContent = '🔴 paste your key first'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://api.groq.com/openai/v1/models', { headers: { 'Authorization': 'Bearer ' + key } });
+      if (!res.ok) throw new Error('invalid key (status ' + res.status + ')');
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      setupState.groq = true;
+      card.classList.add('verified');
+    } else if (prov === 'openrouter') {
+      const key = document.getElementById('setup-or-key').value.trim();
+      if (!key) { el.textContent = '🔴 paste your key first'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://openrouter.ai/api/v1/auth/key', { headers: { 'Authorization': 'Bearer ' + key } });
+      if (!res.ok) throw new Error('invalid key (status ' + res.status + ')');
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      setupState.openrouter = true;
+      card.classList.add('verified');
+    }
+  } catch (e) {
+    el.textContent = '🔴 ' + e.message;
+    el.style.color = '#e03030';
+    setupState[prov] = false;
+  }
+  // Enable launch if ollama verified
+  document.getElementById('setup-launch').disabled = !setupState.ollama;
+}
+
+function finishSetup() {
+  const name = document.getElementById('setup-name').value.trim() || 'Pupil';
+  settings.machineName = name;
+  settings.ollamaHost = document.getElementById('setup-ollama-host').value.trim();
+  settings.ollamaModel = setupState.ollamaModels[0] || 'master-ai:latest';
+  if (setupState.groq) settings.groqKey = document.getElementById('setup-groq-key').value.trim();
+  if (setupState.openrouter) settings.openrouterKey = document.getElementById('setup-or-key').value.trim();
+  settings.setupDone = true;
+  saveSettingsToStorage();
+  launchApp(name);
+}
+
+function launchApp(name) {
+  document.getElementById('setup').classList.add('hidden');
+  document.getElementById('main-app').style.display = 'flex';
+  const nameEl = document.getElementById('machine-name');
+  if (nameEl) nameEl.textContent = name || settings.machineName || '';
+  init();
+}
+
+function downloadConfigured() {
+  if (!setupState.ollama) { alert('Verify Ollama first — at least local provider is required.'); return; }
+  // Clone current page HTML, inject settings
+  const clone = document.documentElement.cloneNode(true);
+  // Build a settings injection script
+  const name = document.getElementById('setup-name').value.trim() || 'Pupil';
+  const cfg = {
+    machineName: name,
+    ollamaHost: document.getElementById('setup-ollama-host').value.trim(),
+    ollamaModel: setupState.ollamaModels[0] || 'master-ai:latest',
+    setupDone: true
+  };
+  const groqKey = document.getElementById('setup-groq-key').value.trim();
+  const orKey = document.getElementById('setup-or-key').value.trim();
+  if (setupState.groq && groqKey) cfg.groqKey = groqKey;
+  if (setupState.openrouter && orKey) cfg.openrouterKey = orKey;
+  // Get clean page source and inject auto-launch
+  let html = document.documentElement.outerHTML;
+  // Inject settings before init() call
+  const injection = `\n// AUTO-CONFIGURED SETTINGS\nsettings = ${JSON.stringify(cfg)};\nsaveSettingsToStorage();\n`;
+  html = html.replace('// ---- INIT ----', injection + '// ---- INIT ----');
+  const blob = new Blob(['<!DOCTYPE html>\n<html>' + html + '</html>'], { type: 'text/html' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'Pupil_' + name.replace(/[^a-zA-Z0-9]/g, '_') + '.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Auto-scan Ollama on page load
+setTimeout(() => {
+  if (!settings.setupDone) setupVerify('ollama');
+}, 500);
+
+
+// ---- INIT ----
+function init() {
+  if (settings.groqKey) document.getElementById('groq-key').value = settings.groqKey;
+  if (settings.openrouterKey) document.getElementById('openrouter-key').value = settings.openrouterKey;
+  if (settings.ollamaHost) document.getElementById('ollama-host').value = settings.ollamaHost;
+  if (settings.ollamaModel) document.getElementById('ollama-model').value = settings.ollamaModel;
+  if (settings.ttsHost) document.getElementById('tts-host').value = settings.ttsHost;
+  if (settings.sysPrompt) document.getElementById('sys-prompt').value = settings.sysPrompt;
+  // Default to blue (Sensei-match) if no theme saved; otherwise honor saved.
+  setTheme(settings.theme || 'blue', false);
+  const nameEl = document.getElementById('machine-name');
+  if (nameEl) nameEl.textContent = settings.machineName || '';
+  updateModelBadge();
+  updateTokenCounter();
+  renderSessionList();
+  addMsg('ai', '✦ Pupil online' + (settings.machineName ? ' — ' + settings.machineName : '') + ' — ready to explore. What are we thinking about?');
+}
+
+// Skip setup if already configured
+if (settings.setupDone) {
+  launchApp(settings.machineName);
+}
+
+// ---- THEME ----
+function setTheme(t, save = true) {
+  document.body.setAttribute('data-theme', t);
+  if (save) { settings.theme = t; saveSettingsToStorage(); }
+}
+
+// ---- TABS ----
+function showPane(id) {
+  document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('pane-' + id).classList.add('active');
+  document.querySelector(`.tab[onclick="showPane('${id}')"]`).classList.add('active');
+  if (id === 'sessions') renderSessionList();
+}
+
+// ---- PROVIDER ----
+function setProvider(p) {
+  currentProvider = p;
+  document.querySelectorAll('.prov-btn').forEach(b => b.classList.toggle('active', b.dataset.prov === p));
+  updateModelBadge();
+  updateTokenCounter();
+}
+
+function toggleAuto() {
+  autoRoute = !autoRoute;
+  document.getElementById('auto-toggle').classList.toggle('on', autoRoute);
+}
+
+function updateModelBadge() {
+  const sel = document.getElementById('model-sel');
+  sel.innerHTML = '';
+  const opts = {
+    ollama: ['master-ai:latest','qwen2.5:14b','llava:latest','qwen3.5:cloud','kimi-k2.5:cloud'],
+    groq: ['llama-3.1-8b-instant','llama-3.3-70b-versatile','meta-llama/llama-4-scout-17b-16e-instruct','openai/gpt-oss-120b','qwen/qwen3-32b'],
+    openrouter: ['openrouter/auto']
+  };
+  const models = opts[currentProvider] || [];
+  const current = currentProvider === 'ollama' ? (document.getElementById('ollama-model')?.value || 'master-ai:latest') : models[0];
+  models.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m;
+    o.textContent = currentProvider + '/' + m.split('/').pop();
+    if (m === current) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function switchModel(val) {
+  if (currentProvider === 'ollama') {
+    document.getElementById('ollama-model').value = val;
+  }
+}
+
+// ---- CHAT ----
+function addMsg(role, text, id) {
+  const area = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  if (id) div.id = id;
+  div.innerHTML = `<span class="msg-text">${escHtml(text)}</span>`;
+
+  if (role === 'ai') {
+    const ts = document.createElement('span');
+    ts.className = 'timestamp';
+    ts.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    div.appendChild(ts);
+
+    const acts = document.createElement('div');
+    acts.className = 'msg-actions';
+    acts.innerHTML = `
+      <button class="msg-btn" onclick="copyMsg(this)">copy</button>
+      <button class="msg-btn" onclick="speakMsg(this)">speak</button>
+      <button class="msg-btn" onclick="regenMsg(this)">↺ redo</button>`;
+    div.appendChild(acts);
+  }
+
+  area.appendChild(div);
+  if (!scrollLocked) area.scrollTop = area.scrollHeight;
+  return div;
+}
+
+function escHtml(t) {
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+}
+
+function getThinking() {
+  const div = addMsg('ai', '...', 'thinking-' + Date.now());
+  div.classList.add('thinking');
+  return div;
+}
+
+function inputKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+}
+
+async function sendMsg() {
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text || isStreaming) return;
+
+  // session save shortcut
+  const saveMatch = text.match(/^\((.+)\)$/);
+  if (saveMatch) { saveSession(saveMatch[1]); input.value = ''; return; }
+  if (text === 'x') { stopStream(); input.value = ''; return; }
+
+  input.value = '';
+  addMsg('user', text);
+  history.push({ role: 'user', content: text });
+
+  // auto-route
+  let prov = currentProvider;
+  if (autoRoute && typeof ROUTER !== 'undefined') {
+    const available = getAvailableProviders();
+    const route = ROUTER.detect(text, false, available);
+    if (route.provider !== prov) {
+      prov = route.provider;
+      const rm = document.createElement('div');
+      rm.className = 'msg routed';
+      rm.textContent = '⇄ ' + route.reason;
+      document.getElementById('chat-area').appendChild(rm);
+    }
+  }
+
+  await streamResponse(text, prov);
+}
+
+function getAvailableProviders() {
+  const p = ['ollama'];
+  if (settings.groqKey) p.push('groq');
+  if (settings.openrouterKey) p.push('openrouter');
+  return p;
+}
+
+async function streamResponse(userText, prov) {
+  isStreaming = true;
+  abortController = new AbortController();
+  document.getElementById('stop-btn').style.display = 'flex';
+  document.getElementById('send-btn').disabled = true;
+  if (prov !== 'ollama') {
+    const key = 'ta_count_' + prov + '_' + new Date().toDateString();
+    const used = parseInt(localStorage.getItem(key) || '0') + 1;
+    localStorage.setItem(key, used);
+    updateTokenCounter();
+  }
+
+  const thinking = getThinking();
+  let fullText = '';
+
+  try {
+    const sysPrompt = document.getElementById('sys-prompt')?.value || 'You are a helpful assistant.';
+    const msgs = [{ role: 'system', content: sysPrompt }, ...history.slice(-20)];
+
+    if (prov === "master-ai") {
+      const host = document.getElementById("ollama-host")?.value || "http://localhost:11434";
+      let model = "qwen2.5:7b";
+      if (/code|python|bash|function|script|debug/.test(userText.toLowerCase())) {
+        model = "qwen2.5:7b";
+      } else if (/image|picture|photo|describe|see/.test(userText.toLowerCase())) {
+        model = "llava";
+      }
+      const res = await fetch(host + "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages: msgs, stream: true }),
+        signal: abortController.signal
+      });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = dec.decode(value);
+        for (const line of chunk.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const d = JSON.parse(line);
+            const t = d.message?.content || "";
+            fullText += t;
+            thinking.querySelector(".msg-text").innerHTML = escHtml(fullText);
+            if (!scrollLocked) document.getElementById("chat-area").scrollTop = document.getElementById("chat-area").scrollHeight;
+          } catch {}
+        }
+      }
+    } else 
+    if (prov === 'ollama') {
+      const host = document.getElementById('ollama-host')?.value || 'http://localhost:11434';
+      const model = document.getElementById('model-sel')?.value || document.getElementById('ollama-model')?.value || 'master-ai:latest';
+      const res = await fetch(host + '/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: msgs, stream: true }),
+        signal: abortController.signal
+      });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = dec.decode(value);
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const d = JSON.parse(line);
+            const t = d.message?.content || '';
+            fullText += t;
+            thinking.querySelector('.msg-text').innerHTML = escHtml(fullText);
+            if (!scrollLocked) document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+          } catch {}
+        }
+      }
+    } else if (prov === 'groq') {
+      const key = settings.groqKey;
+      if (!key) { thinking.querySelector('.msg-text').innerHTML = 'Groq API key missing — add in Settings.'; }
+      else {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+          body: JSON.stringify({ model: document.getElementById('model-sel')?.value || 'llama3-70b-8192', messages: msgs, stream: true }),
+          signal: abortController.signal
+        });
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = dec.decode(value);
+          for (const line of chunk.split('\n')) {
+            if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
+            try {
+              const d = JSON.parse(line.replace(/^data: /, ''));
+              const t = d.choices?.[0]?.delta?.content || '';
+              fullText += t;
+              thinking.querySelector('.msg-text').innerHTML = escHtml(fullText);
+              if (!scrollLocked) document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+            } catch {}
+          }
+        }
+      }
+    } else if (prov === 'openrouter') {
+      const key = settings.openrouterKey;
+      if (!key) { thinking.querySelector('.msg-text').innerHTML = 'OpenRouter API key missing — add in Settings.'; }
+      else {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key, 'HTTP-Referer': window.location.href },
+          body: JSON.stringify({ model: document.getElementById('model-sel')?.value || 'openrouter/auto', messages: msgs, stream: true }),
+          signal: abortController.signal
+        });
+        if (!res.ok) throw new Error('OpenRouter error: ' + res.status);
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = dec.decode(value);
+          for (const line of chunk.split('\n')) {
+            if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
+            try {
+              const d = JSON.parse(line.replace(/^data: /, ''));
+              const t = d.choices?.[0]?.delta?.content || '';
+              fullText += t;
+              thinking.querySelector('.msg-text').innerHTML = escHtml(fullText);
+              if (!scrollLocked) document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+            } catch {}
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      thinking.querySelector('.msg-text').innerHTML = escHtml(fullText || '[stopped]');
+    } else {
+      thinking.querySelector('.msg-text').innerHTML = 'Error: ' + e.message;
+    }
+  }
+
+  thinking.classList.remove('thinking');
+  if (fullText) history.push({ role: 'assistant', content: fullText });
+  isStreaming = false;
+  abortController = null;
+  document.getElementById('stop-btn').style.display = 'none';
+  document.getElementById('send-btn').disabled = false;
+}
+
+function stopStream() {
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  isStreaming = false;
+  document.getElementById('stop-btn').style.display = 'none';
+  document.getElementById('send-btn').disabled = false;
+}
+
+function copyMsg(btn) {
+  const text = btn.closest('.msg').querySelector('.msg-text').textContent;
+  navigator.clipboard.writeText(text).then(() => { btn.textContent = 'copied!'; setTimeout(() => btn.textContent = 'copy', 1500); });
+}
+
+async function speakMsg(btn) {
+  const text = btn.closest('.msg').querySelector('.msg-text').textContent;
+  const host = settings.ttsHost || 'http://localhost:5050';
+  try {
+    await fetch(host + '/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    btn.textContent = 'speaking...';
+    setTimeout(() => btn.textContent = 'speak', 2000);
+  } catch { btn.textContent = 'tts offline'; setTimeout(() => btn.textContent = 'speak', 2000); }
+}
+
+function regenMsg(btn) {
+  const lastUser = [...history].reverse().find(m => m.role === 'user');
+  if (lastUser) {
+    history = history.filter(m => m !== lastUser);
+    btn.closest('.msg').remove();
+    history.push({ role: 'user', content: lastUser.content });
+    streamResponse(lastUser.content, currentProvider);
+  }
+}
+
+// ---- SESSIONS ----
+function saveSession(name) {
+  const session = { name, date: new Date().toLocaleDateString(), messages: [...history], ts: Date.now() };
+  sessions.unshift(session);
+  localStorage.setItem('ta_sessions', JSON.stringify(sessions));
+  addMsg('ai', `session saved as "${name}"`);
+  renderSessionList();
+}
+
+function renderSessionList() {
+  const list = document.getElementById('session-list-inner');
+  if (!list) return;
+  if (sessions.length === 0) { list.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text-soft)">no sessions yet — type (name) to save</div>'; return; }
+  list.innerHTML = sessions.map((s, i) => `
+    <div class="session-item" onclick="viewSession(${i})">
+      <div class="session-item-name">${escHtml(s.name)}</div>
+      <div class="session-item-date">${s.date}</div>
+      <div class="session-item-count">${s.messages.length} messages</div>
+    </div>`).join('');
+}
+
+function viewSession(idx) {
+  document.querySelectorAll('.session-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+  const s = sessions[idx];
+  const viewer = document.getElementById('session-viewer');
+  viewer.innerHTML = `<div style="margin-bottom:12px">
+    <strong style="font-size:14px;color:var(--text)">${escHtml(s.name)}</strong>
+    <span style="font-size:11px;color:var(--text-soft);margin-left:8px">${s.date}</span>
+    <button class="sess-btn" style="float:right" onclick="deleteSession(${idx})">delete</button>
+  </div>` + s.messages.map(m => `<div class="sess-msg ${m.role}"><div>${escHtml(m.content)}</div></div>`).join('');
+}
+
+function deleteSession(idx) {
+  sessions.splice(idx, 1);
+  localStorage.setItem('ta_sessions', JSON.stringify(sessions));
+  renderSessionList();
+  document.getElementById('session-viewer').innerHTML = '<div class="session-viewer-empty">select a session to read it</div>';
+}
+
+function exportSession() {
+  const data = JSON.stringify(sessions, null, 2);
+  const a = document.createElement('a');
+  a.href = 'data:application/json,' + encodeURIComponent(data);
+  a.download = 'pupil-sessions.json';
+  a.click();
+}
+
+function clearAllSessions() {
+  if (confirm('clear all sessions?')) { sessions = []; localStorage.setItem('ta_sessions', JSON.stringify(sessions)); renderSessionList(); }
+}
+
+
+async function verifyKey(provider) {
+  const el = document.getElementById(provider + '-status');
+  el.textContent = '⏳ checking...';
+  el.style.color = 'var(--text-soft)';
+  try {
+    if (provider === 'ollama') {
+      const host = document.getElementById('ollama-host').value.trim() || 'http://localhost:11434';
+      const res = await fetch(host + '/api/tags');
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      const models = data.models?.map(m => m.name) || [];
+      el.innerHTML = '🟢 connected — ' + models.length + ' model' + (models.length !== 1 ? 's' : '') + ' found';
+      el.style.color = '#2a8a4a';
+      settings.ollamaHost = host;
+      settings.ollamaModel = document.getElementById('ollama-model').value.trim();
+      saveSettingsToStorage();
+    } else if (provider === 'groq') {
+      const key = document.getElementById('groq-key').value.trim();
+      if (!key) { el.textContent = '🔴 no key entered'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { 'Authorization': 'Bearer ' + key }
+      });
+      if (!res.ok) throw new Error(res.status);
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      settings.groqKey = key;
+      saveSettingsToStorage();
+    } else if (provider === 'openrouter') {
+      const key = document.getElementById('openrouter-key').value.trim();
+      if (!key) { el.textContent = '🔴 no key entered'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://openrouter.ai/api/v1/auth/key', {
+        headers: { 'Authorization': 'Bearer ' + key }
+      });
+      if (!res.ok) throw new Error(res.status);
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      settings.openrouterKey = key;
+      saveSettingsToStorage();
+    }
+  } catch (e) {
+    el.textContent = '🔴 failed — ' + e.message;
+    el.style.color = '#e03030';
+  }
+}
+
+// ---- SETTINGS ----
+function saveSettings() {
+  settings.groqKey = document.getElementById('groq-key').value.trim();
+  settings.openrouterKey = document.getElementById('openrouter-key').value.trim();
+  settings.ollamaHost = document.getElementById('ollama-host').value.trim();
+  settings.ollamaModel = document.getElementById('ollama-model').value.trim();
+  settings.ttsHost = document.getElementById('tts-host').value.trim();
+  settings.sysPrompt = document.getElementById('sys-prompt').value.trim();
+  saveSettingsToStorage();
+  updateModelBadge();
+  const el = document.getElementById('settings-saved');
+  el.textContent = 'saved ✓';
+  setTimeout(() => el.textContent = '', 2000);
+}
+
+function saveSettingsToStorage() {
+  localStorage.setItem('ta_settings', JSON.stringify(settings));
+}
+
+async function checkTTS() {
+  const host = settings.ttsHost || 'http://localhost:5050';
+  const el = document.getElementById('tts-status');
+  el.textContent = 'checking...';
+  try {
+    await fetch(host + '/speak', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text:'TTS online' }) });
+    el.textContent = 'status: online ✓';
+  } catch { el.textContent = 'status: offline — run python3 ~/scripts/tts_server.py'; }
+}
+</script>
+</body>
+</html>

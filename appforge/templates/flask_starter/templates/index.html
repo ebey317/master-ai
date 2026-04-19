@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{NAME}}</title>
+<style>
+  :root { --brand: {{COLOR}}; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #fafafa; color: #222; }
+  header { background: var(--brand); color: white; padding: 2rem; text-align: center; }
+  header h1 { margin: 0 0 .5rem; font-size: 2rem; }
+  header p  { margin: 0; opacity: .9; }
+  main { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+  .card { background: white; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .card h3 { margin-top: 0; color: var(--brand); }
+  footer { text-align: center; color: #888; padding: 2rem; font-size: .9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{NAME}}</h1>
+  <p>{{TAGLINE}}</p>
+</header>
+<main>
+  <div class="grid" id="features">{{FEATURES_HTML}}</div>
+</main>
+<footer>Built with AppForge · by {{CREATOR}}</footer>
+<script src="/static/main.js"></script>
+</body>
+</html>

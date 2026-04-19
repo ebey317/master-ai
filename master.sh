@@ -160,13 +160,17 @@ startup() {
         echo -e "${G}  ✅ TTS server already running.${X}"
     fi
 
-    echo -e "${C}  2/3 Starting Master AI UI...${X}"
-    bash "$HOME/scripts/serve_ui.sh"
+    echo -e "${C}  2/2 Starting SKS Hub (Vite dev server on :5173)...${X}"
+    if ! pgrep -f "npm run dev" > /dev/null; then
+        (cd "$HOME/Downloads/sunkissed-soul" && nohup npm run dev > /tmp/sks_hub.log 2>&1 &)
+        sleep 2
+        echo -e "${G}  ✅ SKS Hub started.${X}"
+    else
+        echo -e "${G}  ✅ SKS Hub already running.${X}"
+    fi
 
-    echo -e "${C}  3/3 Opening Firefox...${X}"
-    sleep 2
-    open_once "http://localhost:8080/master_ai.html" "Master AI"
     echo -e "${G}  ✅ All services launched!${X}"
+    echo -e "${D}  (Skipping :8080 stt_server — Pupil replaces it. Run serve_ui.sh manually if you want Web Chat.)${X}"
     log "=== FULL STARTUP COMPLETE ==="
 }
 
@@ -191,18 +195,45 @@ launch_master_ai() {
     log "=== MASTER AI LAUNCH COMPLETE ==="
 }
 
+launch_pupil() {
+    log "=== PUPIL LAUNCH ==="
+    local html="$HOME/scripts/pupil.html"
+    if [ ! -f "$html" ]; then
+        echo -e "${R}  ❌ pupil.html not found at $html${X}"
+        return 1
+    fi
+    # Pupil needs Ollama (required provider), TTS (optional, for voice)
+    if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        echo -e "${Y}  ⚠  Ollama not responding — attempting start...${X}"
+        systemctl start ollama 2>/dev/null || true
+        sleep 2
+    fi
+    if ! pgrep -f "tts_server.py" > /dev/null; then
+        echo -e "${C}  Starting TTS server (for Pupil voice)...${X}"
+        python3 "$HOME/scripts/tts_server.py" > /tmp/tts_server.log 2>&1 &
+        sleep 1
+    fi
+    echo -e "${G}  ✅ Opening Pupil in Firefox...${X}"
+    open_once "file://$html" "Pupil"
+}
+
 launch_sunkissed() {
-    log "=== SUNKISSED SOUL LAUNCH ==="
+    # SKS Assistant — the REMOTE-role chat UI (peer-node bridge vision).
+    # Same provider list as Pupil (Ollama / Groq / OpenRouter / OpenAI / etc.)
+    # but Ollama host is configurable inside the UI → can point at another
+    # Master AI node's IP for true remote chat.
+    log "=== SKS ASSISTANT LAUNCH ==="
     if ! pgrep -f "npm run dev" > /dev/null; then
         cd "$HOME/Downloads/sunkissed-soul"
         npm run dev > "$LOG_FILE.sunkissed" 2>&1 &
         sleep 5
-        echo "✅ Sunkissed Soul started on localhost:5173"
+        echo -e "${G}  ✅ SKS Hub dev server started on :5173${X}"
     else
-        echo "✅ Sunkissed Soul already running."
+        echo -e "${G}  ✅ SKS Hub already running.${X}"
     fi
     sleep 2
-    open_once "http://localhost:5173" "Sunkissed"
+    # Open directly on the /Assistant route — skip the root landing page.
+    open_once "http://localhost:5173/Assistant" "SKS Assistant"
 }
 
 view_sessions() {
@@ -272,7 +303,7 @@ main_menu() {
 
     section "LAUNCH  (local apps shown by port)"
     row  "1" "Full startup (all services)"    "4" "Sensei (tmux AI)"
-    row  "5" ":8080 — Master AI Web Chat"     "6" ":5173 — SKS Hub Client"
+    row  "5" "Pupil (local — tied to Master AI)"      "6" "SKS Assistant (remote node bridge)"
 
     section "CHECKS"
     row  "2" "Check Ollama"                   "3" "Check RustDesk"
@@ -306,7 +337,7 @@ main_menu() {
         2)  check_ollama; pause_read ;;
         3)  check_rustdesk; pause_read ;;
         4)  launch_master_ai_terminal ;;
-        5)  launch_master_ai ;;
+        5)  launch_pupil ;;
         6)  launch_sunkissed ;;
         7)  echo -e "  ${Y}🔄 Force-rebuilding Sensei (kills tmux session, fresh start)...${X}"
             bash ~/scripts/master_ai_kick.sh

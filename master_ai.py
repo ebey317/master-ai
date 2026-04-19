@@ -355,6 +355,105 @@ def _memory_recall_payload(user_text):
     # Return the last 800 chars of memory — most recent session summaries live at the end
     return mem[-800:]
 
+_BUILD_VERBS = {
+    "make", "build", "create", "develop", "design", "write", "code", "program",
+    "lets", "let's", "let", "generate", "start",
+}
+# Explicit triggers that flip Sensei FROM brainstorm INTO build mode.
+# If any of these phrases appear, _scope_check_question returns empty so
+# the request proceeds to the real model for code generation.
+_BUILD_TRIGGERS = (
+    "build it", "code it", "make it", "generate it", "write the code",
+    "write code", "let's ship", "lets ship", "ship it", "ok go",
+    "go ahead and build", "go ahead and code", "actually build",
+    "actually code", "now build", "now code",
+)
+_GENERIC_NOUNS = {
+    "app", "apps", "application", "applications", "tool", "tools", "thing",
+    "project", "system", "software", "program", "website", "site", "platform",
+    "bot", "service", "product", "prototype",
+}
+# Presence of ANY of these means the request already has specifics → skip scope check.
+_SPECIFICITY_MARKERS = {
+    "python", "javascript", "typescript", "js", "ts", "rust", "go", "ruby",
+    "react", "vue", "svelte", "flask", "django", "fastapi", "node", "nextjs",
+    "html", "css", "sql", "postgres", "sqlite", "redis", "mongo",
+    "cli", "api", "rest", "graphql", "mobile", "ios", "android", "desktop",
+    "web", "browser", "terminal", "bash", "shell",
+    "chrome", "firefox", "extension",
+}
+
+
+def _append_poc_stub(user_text: str) -> None:
+    """Append a brief Ideas / POCs entry so brainstorms are captured even
+    when the user doesn't explicitly run master.sh option 9."""
+    try:
+        p = Path.home() / "scripts" / "PROJECTS.md"
+        if not p.exists():
+            return
+        content = p.read_text()
+        marker = "## Ideas / POCs"
+        if marker not in content:
+            return
+        stub = (
+            f"\n### POC (auto-logged {datetime.now():%Y-%m-%d %H:%M})\n"
+            f"- **Ask:** {user_text.strip()[:300]}\n"
+            f"- **Status:** brainstorming — scope-check fired\n"
+        )
+        p.write_text(content.rstrip() + "\n" + stub)
+    except Exception as e:
+        log(f"POC_LOG_ERROR: {e}")
+
+
+def _scope_check_question(stripped: str, words, word_set, history) -> str:
+    """Return a clarifying question if this request is vague+ambitious,
+    otherwise empty string (let later routes handle it).
+
+    Triggers when ALL are true:
+      - short (< 15 words)
+      - contains a build-intent verb
+      - contains a generic noun (app / tool / thing / project / ...)
+      - lacks any specificity marker (no language, framework, or target)
+      - this is a FIRST ask on the topic (no prior AI scope reply in history)
+    """
+    if len(words) == 0 or len(words) > 15:
+        return ""
+    low = stripped.lower()
+
+    # Build trigger present? User has explicitly greenlit code generation —
+    # skip the scope gate and let the model work.
+    if any(t in low for t in _BUILD_TRIGGERS):
+        return ""
+
+    # Already in a back-and-forth about scope? Don't ask again.
+    recent = [m.get("content", "") for m in history[-6:]
+              if m.get("role") == "assistant"]
+    for r in recent:
+        if "clarify the scope" in r.lower() or "who is the end user" in r.lower():
+            return ""
+
+    has_build_verb = any(v in low for v in _BUILD_VERBS) or any(
+        w in _BUILD_VERBS for w in word_set
+    )
+    has_generic_noun = bool(word_set & _GENERIC_NOUNS)
+    if not (has_build_verb and has_generic_noun):
+        return ""
+
+    if word_set & _SPECIFICITY_MARKERS:
+        return ""  # already has language / target info
+
+    # Sensei is an administrator — not a chat bot. Vague build asks get a
+    # short redirect to Team Assist (where brainstorming belongs), plus a
+    # one-line offer to act immediately if Elijah adds specifics.
+    return (
+        "That's a brainstorm-shaped ask — Sensei is built for execution, "
+        "not scoping.\n\n"
+        "  • For open-ended idea chat: run `master.sh` → option 5 (Team Assist)\n"
+        "  • To act here: add specifics (language / platform / "
+        "first concrete feature) and I'll build it"
+    )
+
+
 def orchestrate(history, user_text, image_path=None):
     """Pick a route. Returns decision dict with 'route' and optional 'reason'/'question'/'payload'/'model'.
 
@@ -403,6 +502,15 @@ def orchestrate(history, user_text, image_path=None):
     if payload:
         return {"route": "recall_memory", "payload": payload,
                 "reason": "explicit recall trigger"}
+
+    # 5b. SCOPE CHECK — catch vague+ambitious build requests BEFORE any model
+    # charges in with a code block. The local 14B will often ignore behavior
+    # hints and just spit out a generic Python script for "make an app"; this
+    # gate forces the clarify-first behavior deterministically.
+    scope_q = _scope_check_question(stripped, words, word_set, history)
+    if scope_q:
+        return {"route": "scope_check", "question": scope_q,
+                "reason": "vague+ambitious build request → clarify scope first"}
 
     # 6. Code keywords → local coder model (fast, specialized, free)
     if word_set & CODE_WORDS:
@@ -1914,10 +2022,41 @@ def show_projects():
         return ans  # user typed a question → caller sends it as a message
 
 # ── HELP CARD (slide show — one section per slide, mobile-friendly) ──
+_HELP_HIDDEN_FILE = Path.home() / ".master_ai_help_hidden"
+
+
+def _load_hidden_help_sections() -> set:
+    try:
+        return set(
+            line.strip().upper()
+            for line in _HELP_HIDDEN_FILE.read_text().splitlines()
+            if line.strip()
+        )
+    except Exception:
+        return set()
+
+
+def _save_hidden_help_sections(hidden: set) -> None:
+    try:
+        _HELP_HIDDEN_FILE.write_text("\n".join(sorted(hidden)))
+    except Exception as e:
+        log(f"HIDE_HELP_SAVE_ERROR: {e}")
+
+
 def show_help():
     """Paginated help. Returns None if user quit, or a string if user
     typed a question mid-help (caller should treat it as a new message)."""
-    sections = [
+    hidden = _load_hidden_help_sections()
+    all_sections = [
+        ("THE CAST", [
+            ("Sensei",               "result-driven. Productive. Sets things in stone."),
+            ("",                     "Terminal (tmux). Call Sensei when you need action."),
+            ("Pupil",                "inquisitive, eager student. Browser UI (option 5)."),
+            ("",                     "Call Pupil when you want to explore before you act."),
+            ("Messenger",            "the router. Picks which brain answers the ask."),
+            ("",                     "Not a separate UI — lives inside Sensei & Pupil."),
+            ("",                     "Future: Scribe · Watcher · Healer"),
+        ]),
         ("INPUT", [
             ("v",                    "record voice (5 sec)"),
             ("r <secs>",             "record for N seconds"),
@@ -1967,6 +2106,13 @@ def show_help():
             ("approved",             "show auto-approved command list"),
             ("clear approved",       "wipe auto-approved list"),
         ]),
+        ("HOW TO SCROLL", [
+            ("up",                   "scroll up one page"),
+            ("down",                 "scroll down one page"),
+            ("top",                  "jump to the beginning"),
+            ("bottom",               "jump to latest"),
+            ("copy",                 "copy last AI reply to clipboard"),
+        ]),
         ("RECOVERY", [
             ("refresh",              "restart engine in-place (screen glitch)"),
             ("kick",                 "force-restart via supervisor (engine stuck)"),
@@ -1980,9 +2126,19 @@ def show_help():
             ("hints on / off",       "toggle contextual tips"),
             ("tutorial",             "replay the feature walkthrough"),
             ("help",                 "show this card"),
+            ("help hide <name>",     "hide a slide (e.g. 'help hide SCROLL')"),
+            ("help show <name>",     "re-enable a hidden slide"),
+            ("help reset",           "show every slide again"),
             ("x",                    "exit Master AI"),
         ]),
     ]
+
+    # Filter out sections the user has hidden via `help hide <name>`
+    sections = [s for s in all_sections
+                if s[0].upper() not in hidden]
+    if not sections:
+        print(f"  {Y}(all help sections are hidden — type `help reset` to restore){X}")
+        return None
 
     w = 62
     idx = 0
@@ -2637,6 +2793,16 @@ def handle(user_text, history, image_path=None):
         history.append({"role": "assistant", "content": q})
         return q
 
+    if decision["route"] == "scope_check":
+        q = decision["question"]
+        print(f"\n  {BC}[thinking: clarify the scope before writing code]{X}")
+        print(f"  {M}Sensei:{X} {q}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": q})
+        # Auto-log the POC to PROJECTS.md so brainstorms aren't lost.
+        _append_poc_stub(user_text)
+        return q
+
     if decision["route"] == "recall_memory":
         print(f"  {BC}[thinking: checking memory]{X}")
         user_text = f"[RECALLED MEMORY]\n{decision['payload']}\n\n[USER ASK]\n{user_text}"
@@ -3170,6 +3336,28 @@ def main():
                 # fall through to normal dispatch + AI routing
             else:
                 continue
+
+        # ── Help slide toggles — hide/show specific sections ────────
+        if lo.startswith("help hide ") or lo.startswith("help show "):
+            action, _, name = lo[5:].partition(" ")  # strip leading "help "
+            name = name.strip().upper()
+            if not name:
+                print(f"  {Y}Usage: help hide <SECTION> | help show <SECTION>{X}")
+                continue
+            hidden = _load_hidden_help_sections()
+            if action == "hide":
+                hidden.add(name)
+                _save_hidden_help_sections(hidden)
+                print(f"  {G}✓ hidden '{name}' — type `help reset` to restore all{X}")
+            elif action == "show":
+                hidden.discard(name)
+                _save_hidden_help_sections(hidden)
+                print(f"  {G}✓ '{name}' will show again on next `help`{X}")
+            continue
+        if lo == "help reset":
+            _save_hidden_help_sections(set())
+            print(f"  {G}✓ all help slides restored{X}")
+            continue
 
         # ── Help (slide show — may return a typed message) ────
         if lo == "help":

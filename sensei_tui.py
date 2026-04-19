@@ -240,10 +240,10 @@ class SenseiApp:
             layout=Layout(root, focused_element=self._input),
             key_bindings=self._build_keys(),
             full_screen=True,
-            # Scroll modes for testing:
-            #   SENSEI_MOUSE=1  → mouse wheel + scrollbar click can scroll output
-            #   default         → typed words only ('up'/'down'/'top'/'bottom')
-            mouse_support=os.environ.get("SENSEI_MOUSE") == "1",
+            # Mouse OFF by default — keeps the input box truly locked at
+            # bottom and lets gnome-terminal handle native click-drag copy.
+            # Opt-in with SENSEI_MOUSE=1 if you want wheel scroll inside the app.
+            mouse_support=os.environ.get("SENSEI_MOUSE", "0") == "1",
             refresh_interval=1.0,
             style=Style.from_dict({
                 "status":      "#2266cc bold",
