@@ -37,6 +37,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
@@ -140,7 +141,19 @@ class SenseiApp:
         self._tip_cycle = itertools.cycle(IDLE_TIPS)
         self._tip = next(self._tip_cycle)
         self._tip_last = time.time()
-        self._tip_interval = 5.0
+        self._tip_interval = 30.0  # rotate every 30s (was 5s)
+
+        # Thinking-mode state: when the AI is generating, we rotate a different
+        # set of narrative lines in the tip slot every 1.8s.
+        self._thinking = False
+        self._thinking_cycle = itertools.cycle([
+            "Grinding...", "Pushing through...", "In deep meditation...",
+            "Leveling up...", "Getting to the goal...", "Ninja-ing...",
+            "Doing what ninjas do...",
+        ])
+        self._thinking_line = "Grinding..."
+        self._thinking_last = 0.0
+        self._thinking_interval = 1.8
         self._scroll_offset = 0  # lines scrolled up from bottom
 
         self._input = TextArea(
@@ -164,6 +177,7 @@ class SenseiApp:
             text=self._render_output,
             focusable=False,
             show_cursor=False,
+            get_cursor_position=self._get_output_cursor,
         )
         self._output_window = Window(
             content=self._output_control,
@@ -190,16 +204,31 @@ class SenseiApp:
             content=self._tip_control, height=1, style="class:tip",
         )
 
+        # Tip sits ABOVE the ninja inside the frame — same "text area",
+        # always visible next to the input like original classic mode.
         input_stack = HSplit([
+            self._tip_window,
             self._input,
             self._legend_window,
-            self._tip_window,
         ])
 
         self._frame = Frame(input_stack, title=self._render_label,
                             style="class:frame")
 
+        # Persistent "MASTER AI" header — single blue line pinned at the top
+        # so the brand is always visible even when chat output scrolls.
+        self._header_control = FormattedTextControl(
+            text=lambda: FormattedText([
+                ("class:header", " 🥷  MASTER  AI  —  SENSEI "),
+            ])
+        )
+        self._header_window = Window(
+            content=self._header_control, height=1,
+            align=WindowAlign.CENTER, style="class:header",
+        )
+
         root = HSplit([
+            self._header_window,
             self._status_window,
             self._output_window,
             self._frame,
@@ -223,27 +252,31 @@ class SenseiApp:
                 "legend":      "#2266cc",
                 "sep":         "#999999",
                 "tip":         "#1a7a3a italic bold",   # warmer: forest green on light bg
-                "textinput":   "",                       # default terminal color for typed text
+                "thinking":    "#c7761a bold",           # amber — clearly distinct from idle tip
+                "textinput":   "#ffffff noinherit",      # white typed text, no cascade from frame
+                "header":      "bg:#2266cc #ffffff bold", # brand header: blue bg, white text
             }),
         )
 
     # ── rendering callbacks ────────────────────────────────────
 
     def _render_output(self):
+        """Return the FULL output as ANSI — scroll is handled by positioning
+        an invisible cursor that Window tracks (see _get_output_cursor)."""
         with self._output_lock:
             text = "".join(self._output_chunks)
-        lines = text.split("\n")
-        # Approx viewport height = terminal lines minus status(1) + frame
-        # borders/title(2) + input(1..6) + legend(1) + tip(1). Use 7 as a
-        # safe reserve; viewport shows the remaining lines.
-        try:
-            vh = shutil.get_terminal_size().lines - 7
-        except Exception:
-            vh = 20
-        vh = max(5, vh)
-        end = max(1, len(lines) - self._scroll_offset)
-        start = max(0, end - vh)
-        return ANSI("\n".join(lines[start:end]))
+        return ANSI(text)
+
+    def _get_output_cursor(self):
+        """Invisible cursor that Window auto-scrolls to keep visible.
+        - scroll_offset == 0 → cursor at bottom of buffer → Window shows latest
+        - scroll_offset  > 0 → cursor N lines above bottom → Window shows N back
+        """
+        with self._output_lock:
+            text = "".join(self._output_chunks)
+        total = text.count("\n")
+        y = max(0, total - self._scroll_offset)
+        return Point(x=0, y=y)
 
     def _render_status(self):
         return FormattedText([("class:status", f" {self._status} ")])
@@ -251,6 +284,22 @@ class SenseiApp:
     def _render_label(self):
         lbl = f" ✏ {self._label} " if self._label else " ✏ "
         return FormattedText([("class:frame.label", lbl)])
+
+    def _render_label_with_tip(self):
+        """Frame title: label + rotating tip, inline with the ninja's frame.
+        One line, always visible, doesn't scroll away."""
+        lbl = f" ✏ {self._label} " if self._label else " ✏ "
+        # Freeze rotation while user is typing
+        typing = bool(self._input.text)
+        if not typing:
+            now = time.time()
+            if now - self._tip_last >= self._tip_interval:
+                self._tip = next(self._tip_cycle)
+                self._tip_last = now
+        return FormattedText([
+            ("class:frame.label", lbl),
+            ("class:tip", f"  💭 {self._tip} "),
+        ])
 
     def _render_legend(self):
         parts = []
@@ -261,17 +310,26 @@ class SenseiApp:
         return FormattedText(parts)
 
     def _render_tip(self):
-        # Freeze tip while user is typing
+        """Tip line has three states:
+          - typing    → empty (disappears completely)
+          - thinking  → '🥷 [thinking] <rotating>' every 1.8s
+          - idle      → '💭 <rotating hint>' every 30s
+        """
         typing = bool(self._input.text)
-        if not typing:
-            now = time.time()
-            if now - self._tip_last >= self._tip_interval:
-                self._tip = next(self._tip_cycle)
-                self._tip_last = now
-        # Rotating emoji so the tip line feels alive even when text is the
-        # same. Phase ticks once per second via refresh_interval.
-        emoji = ("💡", "✨", "💭", "🌱", "🔎", "⚡")[int(time.time()) % 6]
-        return FormattedText([("class:tip", f"{emoji} {self._tip}")])
+        if typing:
+            return FormattedText([])
+        now = time.time()
+        if self._thinking:
+            if now - self._thinking_last >= self._thinking_interval:
+                self._thinking_line = next(self._thinking_cycle)
+                self._thinking_last = now
+            return FormattedText([
+                ("class:thinking", f"🥷 [thinking] {self._thinking_line}"),
+            ])
+        if now - self._tip_last >= self._tip_interval:
+            self._tip = next(self._tip_cycle)
+            self._tip_last = now
+        return FormattedText([("class:tip", f"💭 {self._tip}")])
 
     # ── key bindings ───────────────────────────────────────────
 
@@ -283,6 +341,10 @@ class SenseiApp:
             text = self._input.text.rstrip("\n")
             self._input.text = ""
             self._scroll_offset = 0
+            # Echo the user's message into the chat scrollback so they can
+            # scroll up later and reference what they asked.
+            if text:
+                self.write(f"\n\033[1m> {text}\033[0m\n")
             if self._on_submit:
                 # run handler in worker so the app keeps repainting
                 t = threading.Thread(
@@ -338,6 +400,20 @@ class SenseiApp:
             self.write(f"\n[tui handler error: {e}]\n")
 
     # ── public API ─────────────────────────────────────────────
+
+    def start_thinking(self) -> None:
+        """Switch the tip line into rotating [thinking] mode."""
+        self._thinking = True
+        self._thinking_last = 0.0  # force immediate refresh
+        try: self._app.invalidate()
+        except Exception: pass
+
+    def stop_thinking(self) -> None:
+        """Return the tip line to idle mode."""
+        self._thinking = False
+        self._tip_last = 0.0  # force idle tip to refresh
+        try: self._app.invalidate()
+        except Exception: pass
 
     def set_label(self, label: str) -> None:
         self._label = (label or "").strip()

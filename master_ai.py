@@ -551,7 +551,13 @@ _LOCAL_THINKING_LINES = [
 ]
 
 def local_thinking_start():
-    """Rotating narrative while Ollama loads/generates. Returns (stop_event, thread) or None."""
+    """Rotating narrative while Ollama loads/generates. Returns (stop_event, thread) or None.
+    In TUI mode the rotation lives in the tip slot (not the scrollback) — the
+    TUI refresh loop cycles the line every 1.8s until stop_thinking() fires."""
+    if _SENSEI_APP is not None:
+        try: _SENSEI_APP.start_thinking()
+        except Exception: pass
+        return ("tui", None)
     try:
         stop = threading.Event()
         def _run():
@@ -572,6 +578,12 @@ def local_thinking_start():
 
 def local_thinking_stop(handle):
     if not handle:
+        return
+    # TUI-mode handle: tell the app to return the tip slot to idle mode.
+    if isinstance(handle, tuple) and len(handle) == 2 and handle[0] == "tui":
+        if _SENSEI_APP is not None:
+            try: _SENSEI_APP.stop_thinking()
+            except Exception: pass
         return
     try:
         stop, t = handle
@@ -1411,6 +1423,8 @@ def run_tutorial():
          "Type 'v' and press Enter to record your voice.\nI'll transcribe and send it.\nType 'r 10' to record for 10 seconds."),
         ("Projects",
          "project ~/myapp\n  → sets the active project; I'll scan the file structure\n  → all my commands will run relative to that directory"),
+        ("Scrolling the chat",
+         "up          → scroll chat output up one page (typed word)\ndown        → scroll down one page\nup 3        → scroll up 3 pages\ntop         → jump to the oldest message\nbottom      → jump back to the latest (auto-follow)\nlast        → re-print the last AI reply inline\n\nThe input box stays pinned at the bottom — scrolling never moves your cursor.\nOn a phone where mouse wheel is unreliable, typed words work every time."),
         ("Hints and Help",
          "help        → quick reference card\nhints off   → disable these tips\nhints on    → re-enable tips\ntutorial    → replay this walkthrough"),
     ]
@@ -3403,6 +3417,31 @@ def main():
                 print(f"\n{G}  ── last reply ──{X}\n{msgs[-1]['content']}\n")
             else:
                 print(f"  {Y}No prior reply to show.{X}")
+            continue
+
+        # ── Copy last AI reply to X11 clipboard ──────────────────────
+        if lo in ("copy", "copy last", "clip"):
+            msgs = [h for h in history if h.get("role") == "assistant"]
+            if not msgs:
+                print(f"  {Y}No reply to copy yet.{X}")
+                continue
+            content = msgs[-1]["content"]
+            for tool in (["xclip", "-selection", "clipboard"],
+                         ["wl-copy"],
+                         ["xsel", "-b", "-i"]):
+                try:
+                    p = subprocess.run(tool, input=content, text=True,
+                                       capture_output=True, timeout=3)
+                    if p.returncode == 0:
+                        print(f"  {G}✅ Copied last reply ({len(content)} chars) via {tool[0]}.{X}")
+                        break
+                except FileNotFoundError:
+                    continue
+                except Exception as _e:
+                    continue
+            else:
+                print(f"  {Y}No clipboard tool found (tried xclip, wl-copy, xsel).{X}")
+                print(f"  {D}Install with: sudo apt install xclip{X}")
             continue
 
         # ── Kick: force crash so supervisor loop restarts us ─────────
