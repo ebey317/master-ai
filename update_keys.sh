@@ -250,25 +250,36 @@ def test_deepseek(k):
         return json.loads(r.read())['choices'][0]['message']['content'].strip()
 
 tests = {'groq':test_groq,'gemini':test_gemini,'anthropic':test_anthropic,'openai':test_openai,'openrouter':test_openrouter,'deepseek':test_deepseek}
-fn = tests.get(field)
+# Alternate-slot support: 'groq_routing' / 'openrouter_backup' / etc. →
+# strip the suffix and test against the parent service.
+base_field = field
+if field not in tests:
+    for svc in tests:
+        if field.startswith(svc + '_'):
+            base_field = svc
+            break
+fn = tests.get(base_field)
 if not fn:
     print(f'  {Y}⚠  No test available for {field} — key saved but not verified.{X}')
     sys.exit(0)
+if base_field != field:
+    print(f'  {D}   Testing {field} as a {base_field} key...{X}')
 
 try:
     reply = fn(key)
-    print(f'  {G}✅ Verified — Master AI connected to {field.upper()}{X}')
+    print(f'  {G}✅ Verified — key works against {base_field.upper()}{X}')
+    print(f'  {D}   Saved as: {field}{X}')
     print(f'  {D}   Response: \"{reply}\"{X}')
 except Exception as e:
     err = str(e)
     if '401' in err or '403' in err:
-        print(f'  {R}❌ Key rejected by {field.upper()} — invalid or expired.{X}')
+        print(f'  {R}❌ Key rejected by {base_field.upper()} — invalid or expired.{X}')
     elif '429' in err:
         print(f'  {Y}⚠  Rate limited — key is valid but usage limit hit. Try again later.{X}')
     elif '400' in err:
-        print(f'  {R}❌ Bad request — key format may be wrong for {field.upper()}.{X}')
+        print(f'  {R}❌ Bad request — key format may be wrong for {base_field.upper()}.{X}')
     else:
-        print(f'  {R}❌ Could not connect to {field.upper()}: {err[:80]}{X}')
+        print(f'  {R}❌ Could not connect to {base_field.upper()}: {err[:80]}{X}')
     sys.exit(1)
 " "$field" "$key" 2>/dev/null
 }
@@ -356,13 +367,38 @@ main() {
                     existing=$(load_key "$FIELD")
                     if [ -n "$existing" ]; then
                         local masked="${existing:0:6}...${existing: -4}"
-                        echo -e "  ${Y}  Existing key: ${W}${masked}${X}"
-                        echo -e "  ${D}  This will replace it.${X}"
+                        echo -e "  ${Y}  ${LABEL} already has a key saved: ${W}${masked}${X}"
                         echo ""
+                        echo -e "  ${W}How do you want to save this new one?${X}"
+                        echo -e "    ${Y}r)${W} Replace ${X}${D}— overwrite the existing ${LABEL} key${X}"
+                        echo -e "    ${Y}a)${W} Add as alternate slot ${X}${D}— keep both, save under a named suffix${X}"
+                        echo -e "    ${Y}n)${W} Cancel${X}"
+                        echo ""
+                        echo -ne "  ${C}Choose (r/a/n): ${X}"
+                        read -r MULTI_CHOICE
+                        case "$MULTI_CHOICE" in
+                            r|R) ;; # fall through, keep FIELD as-is
+                            a|A)
+                                echo ""
+                                echo -e "  ${D}Name the alternate slot — e.g. 'remote', 'backup', '2'.${X}"
+                                echo -e "  ${D}Will be saved as: ${LABEL,,}_<slot>${X}"
+                                echo -ne "  ${C}Slot name: ${X}"
+                                read -r SLOT
+                                [ -z "$SLOT" ] && echo -e "${Y}  Cancelled.${X}" && continue
+                                # sanitize: lowercase, letters/digits/underscore only
+                                SLOT=$(echo "$SLOT" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | sed 's/__*/_/g; s/^_//; s/_$//')
+                                [ -z "$SLOT" ] && echo -e "${Y}  Invalid slot name.${X}" && continue
+                                FIELD="${FIELD}_${SLOT}"
+                                LABEL="${LABEL} (${SLOT})"
+                                echo -e "  ${G}  → Saving as alternate: ${FIELD}${X}"
+                                ;;
+                            *) echo -e "${Y}  Cancelled.${X}"; continue ;;
+                        esac
+                    else
+                        echo -ne "  \e[5m${C}Save as ${LABEL} key? (y/n): ${X}\e[0m"
+                        read -r CONFIRM
+                        [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]] && echo -e "${Y}  Skipped.${X}" && continue
                     fi
-                    echo -ne "  \e[5m${C}Save as ${LABEL} key? (y/n): ${X}\e[0m"
-                    read -r CONFIRM
-                    [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]] && echo -e "${Y}  Skipped.${X}" && continue
                 fi
 
                 save_key "$FIELD" "$RAW_KEY"

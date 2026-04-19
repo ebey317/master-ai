@@ -14,7 +14,8 @@ class TTSHandler(BaseHTTPRequestHandler):
                 if text:
                     tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
                     tmp.close()
-                    subprocess.run(['piper','--model',PIPER_MODEL,'--output_file',tmp.name],input=text.encode(),capture_output=True)
+                    # Piper CLI flag is `-f` (was `--output_file` in older builds)
+                    subprocess.run(['piper','-m',PIPER_MODEL,'-f',tmp.name],input=text.encode(),capture_output=True)
                     subprocess.Popen(['aplay', tmp.name])
                     print(f"[TTS] {text[:60]}...")
                 self.send_response(200)

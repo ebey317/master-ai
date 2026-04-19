@@ -102,6 +102,10 @@ body{display:flex;flex-direction:column;height:100vh}
 .input-box:focus{outline:none;border-color:var(--accent)}
 .send-btn{padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .send-btn:hover{opacity:0.9}
+.mic-btn{padding:10px 12px;background:transparent;color:var(--accent);border:1px solid var(--border-mid);border-radius:var(--radius-sm);font-size:16px;cursor:pointer;white-space:nowrap}
+.mic-btn:hover{background:var(--bg3)}
+.mic-btn.listening{background:#E24B4A;color:#fff;border-color:#E24B4A;animation:pulse 1.2s infinite}
+@keyframes pulse{0%{opacity:1}50%{opacity:0.55}100%{opacity:1}}
 .stop-btn{display:none;padding:10px 14px;background:transparent;color:#E24B4A;border:1px solid #E24B4A;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .stop-btn:hover{background:#FCEBEB}
 .provider-row{display:flex;gap:6px;padding:6px 14px;background:var(--bg);border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
@@ -235,7 +239,7 @@ body{display:flex;flex-direction:column;height:100vh}
 <div class="pane active" id="pane-chat">
   <div class="chat-area" id="chat-area"></div>
   <div class="provider-row">
-    <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Ollama (local)</button>
+    <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Master AI (local)</button>
     <button class="prov-btn" data-prov="groq" onclick="setProvider('groq')">Groq</button>
     <button class="prov-btn" data-prov="openrouter" onclick="setProvider('openrouter')">OpenRouter</button>
     <div class="auto-route">
@@ -245,6 +249,7 @@ body{display:flex;flex-direction:column;height:100vh}
   </div>
   <div class="input-row">
     <textarea class="input-box" id="user-input" placeholder="ask anything — x to pause, (name) to save session" rows="1" onkeydown="inputKey(event)"></textarea>
+    <button class="mic-btn" id="mic-btn" title="Speak to type (Web Speech API)" onclick="toggleMic()">🎙</button>
     <button class="stop-btn" id="stop-btn" onclick="stopStream()">■ stop</button>
     <button class="send-btn" id="send-btn" onclick="sendMsg()">send</button>
   </div>
@@ -303,7 +308,15 @@ body{display:flex;flex-direction:column;height:100vh}
       </div>
     </div>
     <div class="settings-section">
-      <div class="settings-title">TTS (Text to Speech)</div>
+      <div class="settings-title">Voice (TTS + STT)</div>
+      <label class="setting-row" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <input type="checkbox" id="auto-speak-toggle" onchange="settings.autoSpeak=this.checked;saveSettingsToStorage()"/>
+        <span class="setting-label">Auto-speak AI replies (sends finished response to Piper TTS)</span>
+      </label>
+      <label class="setting-row" style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+        <input type="checkbox" id="stt-enabled-toggle" onchange="settings.sttEnabled=this.checked;saveSettingsToStorage()"/>
+        <span class="setting-label">Show 🎙 microphone button (Web Speech API — browser dictates into input)</span>
+      </label>
       <div class="setting-row">
         <label class="setting-label">Piper TTS Server</label>
         <input class="setting-input" id="tts-host" value="http://localhost:5050"/>
@@ -479,6 +492,13 @@ function init() {
   if (settings.ollamaHost) document.getElementById('ollama-host').value = settings.ollamaHost;
   if (settings.ollamaModel) document.getElementById('ollama-model').value = settings.ollamaModel;
   if (settings.ttsHost) document.getElementById('tts-host').value = settings.ttsHost;
+  // Voice toggles
+  const autoSpeakEl = document.getElementById('auto-speak-toggle');
+  if (autoSpeakEl) autoSpeakEl.checked = !!settings.autoSpeak;
+  const sttEnabledEl = document.getElementById('stt-enabled-toggle');
+  if (sttEnabledEl) sttEnabledEl.checked = settings.sttEnabled !== false; // default on
+  const micBtn = document.getElementById('mic-btn');
+  if (micBtn) micBtn.style.display = (settings.sttEnabled !== false) ? '' : 'none';
   if (settings.sysPrompt) document.getElementById('sys-prompt').value = settings.sysPrompt;
   // Default to blue (Sensei-match) if no theme saved; otherwise honor saved.
   setTheme(settings.theme || 'blue', false);
@@ -580,9 +600,30 @@ function escHtml(t) {
   return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
 }
 
+// Rotating ninja phrases while the AI is generating — matches Sensei's set.
+const THINKING_PHRASES = [
+  "Grinding...", "Pushing through...", "In deep meditation...",
+  "Leveling up...", "Getting to the goal...", "Ninja-ing...",
+  "Doing what ninjas do...",
+];
+
 function getThinking() {
-  const div = addMsg('ai', '...', 'thinking-' + Date.now());
+  const div = addMsg('ai', '🥷 [thinking] ' + THINKING_PHRASES[0], 'thinking-' + Date.now());
   div.classList.add('thinking');
+  let i = 0;
+  const interval = setInterval(() => {
+    // stop rotating once real content has streamed in
+    if (!div.classList.contains('thinking')) {
+      clearInterval(interval);
+      return;
+    }
+    i = (i + 1) % THINKING_PHRASES.length;
+    const txt = div.querySelector('.msg-text');
+    if (txt && txt.innerHTML.startsWith('🥷 [thinking]')) {
+      txt.innerHTML = '🥷 [thinking] ' + THINKING_PHRASES[i];
+    }
+  }, 1800);
+  div._thinkingInterval = interval;
   return div;
 }
 
@@ -772,11 +813,82 @@ async function streamResponse(userText, prov) {
   }
 
   thinking.classList.remove('thinking');
-  if (fullText) history.push({ role: 'assistant', content: fullText });
+  if (thinking._thinkingInterval) { clearInterval(thinking._thinkingInterval); thinking._thinkingInterval = null; }
+  if (fullText) {
+    history.push({ role: 'assistant', content: fullText });
+    // Auto-speak the finished reply if the user has it on.
+    if (settings.autoSpeak && fullText.trim()) {
+      speakText(fullText);
+    }
+  }
   isStreaming = false;
   abortController = null;
   document.getElementById('stop-btn').style.display = 'none';
   document.getElementById('send-btn').disabled = false;
+}
+
+// ── Piper TTS — shared by speak button and auto-speak ──────────
+async function speakText(text) {
+  const host = settings.ttsHost || 'http://localhost:5050';
+  try {
+    await fetch(host + '/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+  } catch (e) { console.warn('TTS error', e); }
+}
+
+// ── STT — Web Speech API (browser-native, no server) ───────────
+let _stt = null;
+function toggleMic() {
+  const btn = document.getElementById('mic-btn');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    btn.textContent = '⚠';
+    btn.title = 'SpeechRecognition not available in this browser (use Chromium / Edge)';
+    return;
+  }
+  if (_stt) {
+    _stt.stop();
+    _stt = null;
+    btn.classList.remove('listening');
+    btn.textContent = '🎙';
+    return;
+  }
+  const rec = new SR();
+  rec.lang = 'en-US';
+  rec.continuous = true;
+  rec.interimResults = true;
+  const input = document.getElementById('user-input');
+  const baseText = input.value ? input.value.trim() + ' ' : '';
+  let finalText = '';
+  rec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t + ' ';
+      else interim += t;
+    }
+    input.value = baseText + finalText + interim;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+  };
+  rec.onerror = (e) => {
+    console.warn('STT error', e);
+    btn.classList.remove('listening');
+    btn.textContent = '🎙';
+    _stt = null;
+  };
+  rec.onend = () => {
+    btn.classList.remove('listening');
+    btn.textContent = '🎙';
+    _stt = null;
+  };
+  rec.start();
+  _stt = rec;
+  btn.classList.add('listening');
+  btn.textContent = '🔴';
 }
 
 function stopStream() {
