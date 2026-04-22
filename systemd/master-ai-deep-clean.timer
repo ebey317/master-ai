@@ -1,0 +1,18 @@
+[Unit]
+Description=Biweekly deep clean — Thursday 04:30 Indianapolis
+Documentation=file:///home/elijah/scripts/deep_clean.sh
+
+[Timer]
+# Fire every Thursday at 04:30 local. deep_clean.sh has its own
+# biweekly gate (>=13 days since last run) — so this runs weekly
+# but the script skips half of those itself. Simpler than a complex
+# OnCalendar spec, and the stamp file makes the biweekly logic
+# self-healing if a run is missed.
+OnCalendar=Thu *-*-* 04:30:00
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=master-ai-deep-clean.service
+
+[Install]
+WantedBy=timers.target

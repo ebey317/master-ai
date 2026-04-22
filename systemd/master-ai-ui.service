@@ -1,0 +1,14 @@
+[Unit]
+Description=Master AI Web UI (stt_server.py on port 8080)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/scripts/stt_server.py 8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/scripts/stt_server.log
+StandardError=append:%h/scripts/stt_server.log
+
+[Install]
+WantedBy=default.target

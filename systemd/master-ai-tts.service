@@ -1,0 +1,14 @@
+[Unit]
+Description=Master AI TTS Server (tts_server.py on port 5050 — Piper)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/scripts/tts_server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/scripts/tts_server.log
+StandardError=append:%h/scripts/tts_server.log
+
+[Install]
+WantedBy=default.target
