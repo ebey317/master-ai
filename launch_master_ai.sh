@@ -14,7 +14,7 @@ SESSION="master-ai"
 # break the loop, but any bug that happened to exit 0 would leave the user
 # stranded at the shell with no obvious way back in. Now only a deliberate
 # 'x' (exit 99) ends the session.
-SUPERVISOR='cd ~ && while true; do python3 ~/scripts/master_ai.py; EXIT=$?; if [ $EXIT -eq 99 ]; then echo "Master AI exited cleanly."; break; fi; if [ $EXIT -eq 42 ]; then echo "kick requested — restarting..."; sleep 1; continue; fi; echo "[$(date)] Master AI exited (code=$EXIT) — auto-restarting in 3s..." | tee -a ~/scripts/master.crash.log; sleep 3; done'
+SUPERVISOR='cd ~ && while true; do python3 ~/scripts/master_ai.py; EXIT=$?; if [ $EXIT -eq 99 ]; then break; fi; if [ $EXIT -eq 42 ]; then sleep 1; continue; fi; echo "[$(date)] Master AI exited (code=$EXIT) — auto-restarting in 3s..." >> ~/scripts/master.crash.log 2>&1; sleep 3; done; clear'
 
 engine_alive() { pgrep -f "python3.*master_ai.py" >/dev/null 2>&1; }
 

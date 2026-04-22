@@ -50,19 +50,25 @@ check_rustdesk() {
 }
 
 launch_master_ai_terminal() {
-    log "--- Launching Master AI ---"
+    log "--- Launching Master AI (via dojo gate) ---"
     if ! pgrep -f "stt_server.py" > /dev/null; then
         bash "$HOME/scripts/serve_ui.sh" > /tmp/ui_server.log 2>&1 &
         sleep 1
     fi
-    open_once "http://localhost:8080/master_ai.html" "Master AI"
+    # Menu 4 is Sensei-only by design. Pupil has its own menu entry (5)
+    # and menu 1 (Full startup) opens both doors. Don't bundle Pupil
+    # here — respects the menu contract and doesn't steal focus from
+    # users who deliberately pick one door.
     cd "$HOME/scripts"
-    bash "$HOME/scripts/launch_master_ai.sh"
+    # Route through dojo_gate.sh — it handles project/task selection
+    # then exec's launch_master_ai.sh. In testing mode the gate is soft;
+    # once sealed (~/.dojo_gate_sealed exists) it hard-blocks entry.
+    bash "$HOME/scripts/dojo_gate.sh"
 }
 
 open_firefox_tabs() {
     log "--- Opening Firefox tabs ---"
-    open_once "http://localhost:8080/master_ai.html" "Master AI"
+    open_once "http://localhost:8080/pupil.html" "Pupil"
     open_once "http://localhost:4040" "ngrok"
     echo "✅ Firefox tabs ready."
 }
@@ -160,13 +166,13 @@ startup() {
         echo -e "${G}  ✅ TTS server already running.${X}"
     fi
 
-    echo -e "${C}  2/2 Starting SKS Hub (Vite dev server on :5173)...${X}"
+    echo -e "${C}  2/2 Starting Remote UI (Vite dev server on :5173)...${X}"
     if ! pgrep -f "npm run dev" > /dev/null; then
-        (cd "$HOME/Downloads/sunkissed-soul" && nohup npm run dev > /tmp/sks_hub.log 2>&1 &)
+        (cd "$HOME/Downloads/sunkissed-soul" && nohup npm run dev > /tmp/remote_ui.log 2>&1 &)
         sleep 2
-        echo -e "${G}  ✅ SKS Hub started.${X}"
+        echo -e "${G}  ✅ Remote UI started.${X}"
     else
-        echo -e "${G}  ✅ SKS Hub already running.${X}"
+        echo -e "${G}  ✅ Remote UI already running.${X}"
     fi
 
     echo -e "${G}  ✅ All services launched!${X}"
@@ -191,8 +197,263 @@ launch_master_ai() {
     echo -e "${C}  2/2 Starting UI server...${X}"
     bash "$HOME/scripts/serve_ui.sh"
     sleep 1
-    open_once "http://localhost:8080/master_ai.html" "Master AI"
+    open_once "http://localhost:8080/pupil.html" "Pupil"
     log "=== MASTER AI LAUNCH COMPLETE ==="
+}
+
+view_projects() {
+    # Option 16 — browse the project boards from the terminal.
+    # Read-only by default: see goals, tasks, model, last pickup point.
+    # From here the user can:
+    #   - open the detail view of one project
+    #   - launch it into Sensei via the dojo gate (which pins project + task)
+    local pfile="$HOME/scripts/PROJECTS.md"
+    [ ! -f "$pfile" ] && { echo -e "${R}  ❌ PROJECTS.md not found at $pfile${X}"; return 1; }
+
+    while true; do
+        clear
+        banner_master_ai
+        echo ""
+        echo -e "  ${BC}╔════════════════════════════════════════════╗${X}"
+        echo -e "  ${BC}║${X}  ${BW}📁  PROJECTS${X}                               ${BC}║${X}"
+        echo -e "  ${BC}║${X}  ${D}terminal view — pick one to see details${X}     ${BC}║${X}"
+        echo -e "  ${BC}╚════════════════════════════════════════════╝${X}"
+        echo ""
+        echo -e "  ${BY}⏳ Heads up:${X} ${D}when you open a project, the AI reads your past chats, memory,${X}"
+        echo -e "     ${D}and project notes before it answers. First time feels slow — like${X}"
+        echo -e "     ${D}a cold car engine. Once it's warmed up, it's quick.${X}"
+        echo ""
+
+        local -a names
+        mapfile -t names < <(awk '
+            /^## Project Boards/ { in_b = 1; next }
+            /^## / && in_b  { in_b = 0 }
+            /^### / && in_b { sub(/^### /, ""); print }
+        ' "$pfile")
+
+        if [ ${#names[@]} -eq 0 ]; then
+            echo -e "  ${Y}no project boards found in PROJECTS.md${X}"
+            echo ""
+            read -rp "  press Enter to return... " _
+            return 0
+        fi
+
+        echo -e "  ${BW}Pick a project to view:${X}"
+        local i=1
+        for name in "${names[@]}"; do
+            local ptype open total model last
+            ptype=$(awk -v p="$name" 'BEGIN{found=0} $0=="### " p{in_p=1;next} /^### /{in_p=0} in_p && /^- \*\*Type:\*\*/{sub(/^- \*\*Type:\*\* */, "");sub(/[[:space:]]+←.*$/,"");sub(/[[:space:]]+$/,"");print;found=1;exit} END{if(!found)print ""}' "$pfile")
+            model=$(awk -v p="$name" 'BEGIN{found=0} $0=="### " p{in_p=1;next} /^### /{in_p=0} in_p && /^- \*\*Model:\*\*/{sub(/^- \*\*Model:\*\* */, "");sub(/[[:space:]]+←.*$/,"");sub(/[[:space:]]+$/,"");print;found=1;exit} END{if(!found)print ""}' "$pfile")
+            open=$(awk -v p="$name" '$0=="### " p{in_p=1;next} /^### /{in_p=0} in_p && /^[[:space:]]*- \[ \]/{n++} END{print n+0}' "$pfile")
+            total=$(awk -v p="$name" '$0=="### " p{in_p=1;next} /^### /{in_p=0} in_p && /^[[:space:]]*- \[[x ]\]/{n++} END{print n+0}' "$pfile")
+
+            local type_tag=""
+            [ "$ptype" = "training" ] && type_tag="  ${BY}[training]${X}"
+            local model_tag=""
+            [ -n "$model" ] && [ "$model" != "auto" ] && model_tag="  ${D}model:${model}${X}"
+
+            printf "  ${BC}%2d)${X} ${BW}%-34s${X}  ${G}%d${X}/${D}%d${X} open%s%s\n" \
+                "$i" "$name" "$open" "$total" "$type_tag" "$model_tag"
+            i=$((i + 1))
+        done
+        echo ""
+        echo -e "  ${BC}g)${X} launch dojo gate (same as menu 4)"
+        echo -e "  ${BC}x)${X} back to menu"
+        echo ""
+        read -rp "  pick: " choice
+
+        case "$choice" in
+            x|X|'') return 0 ;;
+            g|G) bash "$HOME/scripts/dojo_gate.sh"; return 0 ;;
+            ''|*[!0-9]*) echo -e "  ${R}enter a number, g, or x${X}"; sleep 1 ;;
+            *)
+                if [ "$choice" -ge 1 ] && [ "$choice" -le "${#names[@]}" ]; then
+                    _view_project_detail "${names[$((choice - 1))]}"
+                else
+                    echo -e "  ${R}out of range${X}"; sleep 1
+                fi
+                ;;
+        esac
+    done
+}
+
+_view_project_detail() {
+    local name="$1"
+    local pfile="$HOME/scripts/PROJECTS.md"
+    while true; do
+        clear
+        banner_master_ai
+        echo ""
+        echo -e "  ${BC}╔════════════════════════════════════════════╗${X}"
+        echo -e "  ${BC}║${X}  ${BW}📁  $name${X}"
+        echo -e "  ${BC}╚════════════════════════════════════════════╝${X}"
+        echo ""
+
+        # Dump the project block to screen (H3 through next H3/H2 boundary)
+        awk -v p="$name" '
+            $0 == "### " p { in_p = 1; next }
+            in_p && (/^### / || /^## /) { exit }
+            in_p { print "  " $0 }
+        ' "$pfile"
+
+        echo ""
+        echo -e "  ${BC}s)${X} send to Sensei (launch dojo gate — pins this project)"
+        echo -e "  ${BC}e)${X} edit PROJECTS.md in \$EDITOR"
+        echo -e "  ${BC}x)${X} back to project list"
+        echo ""
+        read -rp "  pick: " c
+        case "$c" in
+            x|X|'') return ;;
+            s|S)
+                # Pre-select this project so the dojo gate skips the picker
+                echo "$name" > "$HOME/.master_ai_active_project"
+                : > "$HOME/.master_ai_active_task"
+                echo -e "  ${G}✅ $name pre-selected — launching dojo gate${X}"
+                sleep 1
+                bash "$HOME/scripts/dojo_gate.sh"
+                return
+                ;;
+            e|E)
+                ${EDITOR:-nano} "$pfile"
+                ;;
+        esac
+    done
+}
+
+add_user() {
+    # Option 15 — Add a Master AI user profile.
+    # TESTING SCAFFOLD: creates a profile directory under ~/.master_ai_profiles/<name>/
+    # with per-user memory / sessions / chats slots. Does NOT add a Linux user.
+    # Future work (pinned to Master AI tasks): wire master_ai.py + pupil.html to
+    # actually read from the active profile instead of the global dotfiles.
+    log "=== ADD USER ==="
+    local profiles_dir="$HOME/.master_ai_profiles"
+    mkdir -p "$profiles_dir"
+
+    echo ""
+    echo -e "${BC}  ── ADD USER (TESTING — not wired to multi-tenant yet) ──${X}"
+    echo ""
+    echo -e "${D}  A profile gets its own memory / sessions / chat history.${X}"
+    echo -e "${D}  Max 4 per node (per the Multi-User Node plan). All share Ollama.${X}"
+    echo ""
+
+    # List existing profiles
+    local existing
+    existing=$(ls -1 "$profiles_dir" 2>/dev/null | sort)
+    if [ -n "$existing" ]; then
+        echo -e "${W}  Existing profiles:${X}"
+        echo "$existing" | sed "s|^|    ${C}·${X} |"
+        echo ""
+    fi
+
+    local count
+    count=$(ls -1 "$profiles_dir" 2>/dev/null | wc -l)
+    if [ "$count" -ge 4 ]; then
+        echo -e "${R}  ❌ Already 4 profiles — node limit reached.${X}"
+        return 1
+    fi
+
+    echo -ne "  ${C}New profile name (letters/digits/_ only, or 'x' to cancel): ${X}"
+    read -r pname
+    [[ -z "$pname" || "$pname" =~ ^[xX]$ ]] && { echo "  cancelled."; return 0; }
+
+    if [[ ! "$pname" =~ ^[A-Za-z0-9_]+$ ]]; then
+        echo -e "  ${R}❌ invalid name — use only letters, digits, or underscore${X}"
+        return 1
+    fi
+
+    local p_root="$profiles_dir/$pname"
+    if [ -d "$p_root" ]; then
+        echo -e "  ${Y}⚠ profile '$pname' already exists at $p_root${X}"
+    else
+        mkdir -p "$p_root/sessions" "$p_root/chats"
+        : > "$p_root/memory"
+        : > "$p_root/tasks"
+        cat > "$p_root/profile.json" <<EOF
+{
+  "name": "$pname",
+  "created": "$(date -Iseconds)",
+  "shared": {
+    "ollama": true,
+    "tts": true,
+    "keys": true
+  }
+}
+EOF
+        chmod 700 "$p_root"
+        echo -e "  ${G}✅ profile created:${X} ${W}$p_root${X}"
+    fi
+
+    echo ""
+    echo -e "  ${BW}Set this as the active profile now? [y/N]${X}"
+    read -r act
+    if [[ "$act" =~ ^[yY] ]]; then
+        echo "$pname" > "$HOME/.master_ai_active_profile"
+        echo -e "  ${G}✅ active profile:${X} ${W}$pname${X}"
+        echo -e "  ${D}   (Sensei + Pupil will read this on next launch — wiring still in testing)${X}"
+    else
+        echo -e "  ${D}   (not activated — you stay on the default profile)${X}"
+    fi
+}
+
+switch_user() {
+    # Option 17 — Switch active Master AI profile.
+    # Writes ~/.master_ai_active_profile; master_ai.py + stt_server.py + pupil.html
+    # all read it and rebase their state accordingly. No Linux user switch.
+    log "=== SWITCH USER ==="
+    local profiles_dir="$HOME/.master_ai_profiles"
+    local active_file="$HOME/.master_ai_active_profile"
+
+    echo ""
+    echo -e "${BC}  ── SWITCH USER ──${X}"
+    echo ""
+
+    local current=""
+    [ -f "$active_file" ] && current=$(cat "$active_file" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$current" ]; then
+        echo -e "  ${D}current:${X} ${BW}$current${X}"
+    else
+        echo -e "  ${D}current:${X} ${BW}(default)${X}"
+    fi
+    echo ""
+
+    if [ ! -d "$profiles_dir" ] || [ -z "$(ls -1 "$profiles_dir" 2>/dev/null)" ]; then
+        echo -e "  ${Y}⚠ no extra profiles yet — use menu 15 to add one.${X}"
+        return 0
+    fi
+
+    local -a profs
+    mapfile -t profs < <(ls -1 "$profiles_dir" 2>/dev/null | sort)
+
+    echo -e "  ${W}Pick a profile:${X}"
+    echo -e "  ${BC}  0)${X} ${BW}(default)${X}  ${D}— legacy dotfiles in \$HOME${X}"
+    local i=1
+    for p in "${profs[@]}"; do
+        local marker=""
+        [ "$p" = "$current" ] && marker="  ${G}← active${X}"
+        printf "  ${BC}%3d)${X} ${BW}%s${X}%s\n" "$i" "$p" "$marker"
+        i=$((i + 1))
+    done
+    echo -e "  ${BC}  x)${X} cancel"
+    echo ""
+    read -rp "  pick: " choice
+
+    case "$choice" in
+        x|X|'') echo "  cancelled."; return 0 ;;
+        0) rm -f "$active_file"; echo -e "  ${G}✅ switched to default profile${X}" ;;
+        *[!0-9]*) echo -e "  ${R}enter a number${X}"; return 1 ;;
+        *)
+            if [ "$choice" -ge 1 ] && [ "$choice" -le "${#profs[@]}" ]; then
+                local pick="${profs[$((choice - 1))]}"
+                echo "$pick" > "$active_file"
+                echo -e "  ${G}✅ active profile:${X} ${BW}$pick${X}"
+                echo -e "  ${D}   Sensei + Pupil + stt_server will rebase on next launch.${X}"
+                echo -e "  ${D}   Running processes keep their old profile until restart.${X}"
+            else
+                echo -e "  ${R}out of range${X}"
+            fi
+            ;;
+    esac
 }
 
 launch_pupil() {
@@ -213,28 +474,78 @@ launch_pupil() {
         python3 "$HOME/scripts/tts_server.py" > /tmp/tts_server.log 2>&1 &
         sleep 1
     fi
-    echo -e "${G}  ✅ Opening Pupil in Firefox...${X}"
-    open_once "file://$html" "Pupil"
+    # Serve via stt_server on :8080 so /keys auto-syncs with menu 11's
+    # ~/.master_ai_keys. Falls back to file:// if the server isn't up.
+    local url="file://$html"
+    if systemctl --user is-active --quiet master-ai-ui.service 2>/dev/null \
+         || pgrep -f "stt_server.py" >/dev/null 2>&1; then
+        # Confirm pupil.html is reachable through the server before switching
+        if curl -sf -o /dev/null -m 2 "http://localhost:8080/pupil.html"; then
+            url="http://localhost:8080/pupil.html"
+            echo -e "${G}  ✅ Opening Pupil — keys auto-synced from menu 11 (${url})${X}"
+        else
+            echo -e "${Y}  ⚠  server on :8080 up but /pupil.html not reachable — falling back to file://${X}"
+        fi
+    else
+        echo -e "${Y}  ⚠  stt_server not running — keys won't auto-sync; opening via file://${X}"
+    fi
+    [ "$url" = "file://$html" ] && echo -e "${G}  ✅ Opening Pupil in Firefox...${X}"
+    open_once "$url" "Pupil"
 }
 
-launch_sunkissed() {
-    # SKS Assistant — the REMOTE-role chat UI (peer-node bridge vision).
-    # Same provider list as Pupil (Ollama / Groq / OpenRouter / OpenAI / etc.)
-    # but Ollama host is configurable inside the UI → can point at another
-    # Master AI node's IP for true remote chat.
-    log "=== SKS ASSISTANT LAUNCH ==="
+launch_remote() {
+    # Option 6 — "Remote": the peer-node bridge UI.
+    # Same provider list as Pupil, but Ollama host is configurable so it
+    # can point at another Master AI node's IP for true remote chat.
+    # Shown to buyers as "Remote," not as the internal "SKS" codename.
+    log "=== REMOTE LAUNCH ==="
+
     if ! pgrep -f "npm run dev" > /dev/null; then
         cd "$HOME/Downloads/sunkissed-soul"
-        npm run dev > "$LOG_FILE.sunkissed" 2>&1 &
+        npm run dev > "$LOG_FILE.remote" 2>&1 &
         sleep 5
-        echo -e "${G}  ✅ SKS Hub dev server started on :5173${X}"
+        echo -e "${G}  ✅ Remote UI started on :5173${X}"
     else
-        echo -e "${G}  ✅ SKS Hub already running.${X}"
+        echo -e "${G}  ✅ Remote UI already running.${X}"
     fi
     sleep 2
+
+    # ── Hookup info the buyer needs ────────────────────────────
+    # Everything required to point a different device at THIS node.
+    local host_ip tailscale_ip hostname_val
+    hostname_val=$(hostname 2>/dev/null)
+    host_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    tailscale_ip=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1)
+
+    echo ""
+    echo -e "${BC}  ── REMOTE HOOKUP INFO ─────────────────────────────${X}"
+    echo -e "  ${BW}Host machine:${X}      ${hostname_val:-unknown}"
+    echo -e "  ${BW}Local IP (LAN):${X}    ${host_ip:-unknown}"
+    [ -n "$tailscale_ip" ] && echo -e "  ${BW}Tailscale IP:${X}      $tailscale_ip" \
+                         || echo -e "  ${BW}Tailscale:${X}         ${D}not installed (install for secure remote access beyond LAN)${X}"
+    echo ""
+    echo -e "  ${BW}Ports served by this node:${X}"
+    echo -e "    ${C}:8080${X}   Pupil + /keys + /sessions          ${D}(HTTP)${X}"
+    echo -e "    ${C}:5173${X}   Remote UI (this screen)            ${D}(HTTP)${X}"
+    echo -e "    ${C}:11434${X}  Ollama (model runtime)             ${D}(HTTP)${X}"
+    echo -e "    ${C}:5050${X}   TTS (voice synth)                  ${D}(HTTP)${X}"
+    echo ""
+    echo -e "  ${BW}From another device, open:${X}"
+    [ -n "$host_ip" ] && echo -e "    ${G}http://${host_ip}:8080/pupil.html${X}      ${D}(LAN)${X}"
+    [ -n "$tailscale_ip" ] && echo -e "    ${G}http://${tailscale_ip}:8080/pupil.html${X}  ${D}(Tailscale — any network)${X}"
+    echo ""
+    echo -e "  ${D}Tip: for phone access, Tailscale is the easiest path.${X}"
+    echo -e "  ${D}  1) install Tailscale on both this machine and your phone${X}"
+    echo -e "  ${D}  2) both devices log into the same Tailscale account${X}"
+    echo -e "  ${D}  3) open the Tailscale IP above from your phone browser${X}"
+    echo ""
+
     # Open directly on the /Assistant route — skip the root landing page.
-    open_once "http://localhost:5173/Assistant" "SKS Assistant"
+    open_once "http://localhost:5173/Assistant" "Remote"
 }
+
+# Backward-compat alias so old scripts / muscle memory keep working.
+launch_sunkissed() { launch_remote "$@"; }
 
 view_sessions() {
     local CHATS="$HOME/.master_ai_chats"
@@ -291,6 +602,14 @@ main_menu() {
     banner_master_ai
     echo ""
 
+    # Active profile indicator — blank when default, named when switched
+    local active_profile=""
+    [ -f "$HOME/.master_ai_active_profile" ] && active_profile=$(cat "$HOME/.master_ai_active_profile" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$active_profile" ] && [ -d "$HOME/.master_ai_profiles/$active_profile" ]; then
+        echo -e "  ${BC}👤 active profile:${X} ${BW}$active_profile${X}  ${D}(memory / chats / tasks are per-profile)${X}"
+        echo ""
+    fi
+
     # 2-column row helper — if right col empty, print left col full-width
     row() {
         if [ -z "$3" ]; then
@@ -302,8 +621,8 @@ main_menu() {
     section() { echo -e "\n  ${BC}── $1 ──${X}"; }
 
     section "LAUNCH  (local apps shown by port)"
-    row  "1" "Full startup (all services)"    "4" "Sensei (tmux AI)"
-    row  "5" "Pupil (local — tied to Master AI)"      "6" "SKS Assistant (remote node bridge)"
+    row  "1" "Full startup (all services)"    "4" "Sensei (local)"
+    row  "5" "Pupil (local)"                  "6" "Remote (connect to another node)"
 
     section "CHECKS"
     row  "2" "Check Ollama"                   "3" "Check RustDesk"
@@ -317,7 +636,10 @@ main_menu() {
     section "SYSTEM"
     row "10" "How we work"                   "11" "Update API keys"
     row "12" "PC Clean + tune-up"            "13" "Learn Python + Build AI"
-    row "14" "Uninstall"                     ""   ""
+    row "14" "Uninstall"                     "15" "Add User (multi-user profile)"
+    row "16" "Projects (view · pick one for Sensei)"  "17" "Switch User (multi-user profile)"
+    row "18" "Mesh (peer nodes + federated routing)"  "19" "Self-scan (what your box can run)"
+    row "20" "Download links (Ollama, models, keys, remote)"  "21" "Benchmark Sensei (local vs cloud, hours)"
 
     echo ""
     echo -e "  ${Y}x)${W} Exit${X}"
@@ -338,7 +660,7 @@ main_menu() {
         3)  check_rustdesk; pause_read ;;
         4)  launch_master_ai_terminal ;;
         5)  launch_pupil ;;
-        6)  launch_sunkissed ;;
+        6)  launch_remote; pause_read ;;
         7)  echo -e "  ${Y}🔄 Force-rebuilding Sensei (kills tmux session, fresh start)...${X}"
             bash ~/scripts/master_ai_kick.sh
             pause_read ;;
@@ -349,6 +671,13 @@ main_menu() {
         12) sudo bash ~/scripts/system_tune.sh ;;
         13) bash ~/scripts/learn.sh ;;
         14) bash ~/scripts/uninstall.sh ;;
+        15) add_user; pause_read ;;
+        16) view_projects ;;
+        17) switch_user; pause_read ;;
+        18) bash ~/scripts/mesh.sh menu ;;
+        19) bash ~/scripts/selfscan.sh; pause_read ;;
+        20) less ~/scripts/LINKS.md ;;
+        21) bash ~/scripts/benchmark_sensei.sh; pause_read ;;
         x|X) log "--- Script Exited ---"; echo -e "${G}Goodbye.${X}"; exit 0 ;;
         *) echo "Invalid option." ;;
     esac

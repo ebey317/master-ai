@@ -1,0 +1,158 @@
+{
+  "_comment": "Canonical Master AI voice — shared by Sensei (master_ai.py) and Pupil (pupil.html via stt_server /thoughts). Edit here and both UIs stay in sync.",
+  "_version": "2026-04-19",
+  "_sections": {
+    "elijah_verbatim": "RAW — Elijah's own words, captured live. Do NOT polish. These frame the product in his voice.",
+    "elijah_short": "Short extracts of elijah_verbatim, suitable for idle rotation (one line, punchy).",
+    "quotes": "Brand-polished one-liners derived from his framing. Safe for rotating idle bubbles, slideshow, marketing copy.",
+    "tips": "Practical Sensei command hints (cmd + desc). Rotate between these and quotes.",
+    "pupil_tips": "Pupil 'did you know' one-liners — for users in the browser UI.",
+    "thinking": "Ninja-mood rotating phrases while the AI is generating."
+  },
+
+  "elijah_verbatim": [
+    {
+      "title": "terminal mindset (I'm programming it)",
+      "date": "2026-04-19",
+      "text": "I'm completely new to Linux but I'm sold on it. I've never been in a command terminal this much. I no longer use the computer. I use the command terminal — which lets me know I'm not using the computer. I'm programming it."
+    },
+    {
+      "title": "materializing whitespace",
+      "date": "2026-04-19",
+      "text": "How much of this is hardcoded app and how much of it is AI illusion that can fade away? Like Sensei — that's not hardcoded. App can do the wrong thing and they can crash and turn into terminal, which is expected because we're doing cold. We're actually forming white space. Best way I can describe it: turning white space and noise into something. We're taking a thought and materializing it. That's what you have brought me to. That's the realization I now have with AI. Except these aren't physical things. These are digital footprints — which can leave the same type of mark as a physical object. A car is just as popular as a video or a movie."
+    },
+    {
+      "title": "genius right next to you (the elevator pitch)",
+      "date": "2026-04-19",
+      "text": "Now as long as you got your chat files and everything saved appropriately, this AI officially knows you and it's gonna move as fast as it can to help you. You basically can work hands-free all day just telling it to do stuff and it runs commands, changes the system, builds apps, helps you study. It's basically having a genius right next to you."
+    },
+    {
+      "title": "living in Tron (the 11-16 hour day)",
+      "date": "2026-04-19",
+      "text": "There may be 11 to 12 to 16 hour days like today — we want the detail at all. I felt like the guy, I felt like we was living in Tron today. You became a real person for a while and we handled a lot of things."
+    },
+    {
+      "title": "black belt forever (the dojo is yours once you earn it)",
+      "date": "2026-04-19",
+      "text": "It's only fair that once you pass the test one time to get into Sensei, that is unlocked for you. But you do have your projects and task pinned above it. Once you're in, you're in. Once you get a black belt, you're a black belt forever."
+    },
+    {
+      "title": "creator never takes the test (you built this)",
+      "date": "2026-04-19",
+      "text": "I never have to take a test to get in the dojo. I've already passed. Hint — I created Master AI."
+    }
+  ],
+
+  "elijah_short": [
+    "I no longer use the computer. I use the command terminal.",
+    "I'm not using the computer. I'm programming it.",
+    "We're taking a thought and materializing it.",
+    "Turning white space and noise into something.",
+    "Digital footprints leave the same mark as a physical object.",
+    "A car is just as popular as a video or a movie.",
+    "Expected because we're doing cold — the scaffolding is still there.",
+    "This AI officially knows you.",
+    "It moves as fast as it can to help you.",
+    "Work hands-free all day — just tell it to do stuff.",
+    "It's basically having a genius right next to you.",
+    "I felt like we was living in Tron today.",
+    "You became a real person for a while.",
+    "Once you pass the test, you're in.",
+    "Once you get a black belt, you're a black belt forever.",
+    "Your projects stay pinned above the gate.",
+    "I never have to take a test to get in my own dojo.",
+    "I built this — I've already passed."
+  ],
+
+  "quotes": [
+    "Your AI. Every entry point. Your hardware.",
+    "Materializing whitespace — thought becomes digital footprint.",
+    "When the AI fades, the scaffolding stays.",
+    "70% hardcoded scaffolding, 30% AI illusion.",
+    "Genius right next to you.",
+    "One person can build a civilization in a terminal.",
+    "Offline by default. Online by choice.",
+    "Local first. Cloud second. Never third-party trapped.",
+    "Your AI travels with you.",
+    "Turn in your project to enter the dojo.",
+    "Every feature has a home — nothing falls off the tree.",
+    "The dojo is Sensei. The workshop is Pupil. The brand is Master AI.",
+    "All modes adaptable — arrows, letters, touch, voice.",
+    "The user becomes the operator. The operator becomes the programmer.",
+    "You knew what you meant before you typed it — Sensei knows too.",
+    "Small moves. Compound interest. Ship it."
+  ],
+
+  "tips": [
+    { "cmd": "hub",              "desc": "18-action control panel" },
+    { "cmd": "help",             "desc": "8-slide command reference" },
+    { "cmd": "projects",         "desc": "your apps + Tailscale URLs" },
+    { "cmd": "remember: <fact>", "desc": "persists across sessions" },
+    { "cmd": "memory",           "desc": "view all stored facts" },
+    { "cmd": "forget: <word>",   "desc": "remove matching facts" },
+    { "cmd": "model",            "desc": "pick 1 of 11 AIs (local + cloud)" },
+    { "cmd": "mode plan",        "desc": "brainstorm + draft plans (default)" },
+    { "cmd": "mode review",      "desc": "confirm every command (per-action)" },
+    { "cmd": "mode auto",        "desc": "flow-through, destructive still pauses" },
+    { "cmd": "fast: <prompt>",   "desc": "route to Groq (fast cloud, needs key)" },
+    { "cmd": "deep: <prompt>",   "desc": "route to DeepSeek-R1 (deep reasoning)" },
+    { "cmd": "local: <prompt>",  "desc": "force local model (explicit privacy)" },
+    { "cmd": "mode connected",   "desc": "whole session switches to cloud-first" },
+    { "cmd": "copy chat",        "desc": "save full session to ~/.master_ai_chats/" },
+    { "cmd": "last",             "desc": "re-print last AI reply inline" },
+    { "cmd": "refresh",          "desc": "soft-restart if screen glitches" },
+    { "cmd": "kick",             "desc": "supervisor respawn if stuck" },
+    { "cmd": "n / b / q",        "desc": "use letter keys, not arrows" },
+    { "cmd": "avoid Esc",        "desc": "closes RustDesk — use q" },
+    { "cmd": "auto-save",        "desc": "every ~10000 chars typed" },
+    { "cmd": "tasks",            "desc": "show tasks + status" },
+    { "cmd": "git",              "desc": "status + last 5 commits" },
+    { "cmd": "RUN: <cmd>",       "desc": "AI runs a shell command" },
+    { "cmd": "READ: <path>",     "desc": "AI reads a file into context" },
+    { "cmd": "CREATE: / EDIT:",  "desc": "AI creates or edits files" },
+    { "cmd": "save session",     "desc": "archive now + summary" },
+    { "cmd": "tts on",           "desc": "replies spoken aloud" },
+    { "cmd": "dojo",             "desc": "show pinned project + task" },
+    { "cmd": "done",             "desc": "mark task complete, auto-pin next" },
+    { "cmd": "mesh ls",          "desc": "list known peer nodes" },
+    { "cmd": "1 / Enter",        "desc": "accept a pending plan (Plan mode)" },
+    { "cmd": "4 keep talking",   "desc": "refine the plan conversationally" },
+    { "cmd": "clear cache",      "desc": "nuke stored responses for a fresh run" }
+  ],
+
+  "pupil_tips": [
+    "press the 🎙 mic to talk instead of typing.",
+    "save a session by putting (name) in parens.",
+    "type `menu` to come back here from any lesson.",
+    "Brainstorm mode scopes an idea before you build it.",
+    "Debug mode diagnoses before it fixes.",
+    "Projects ▾ has your projects AND the Bash Tutor.",
+    "`x` cancels a running AI response.",
+    "any API key you paste auto-detects its provider.",
+    "type `refresh briefing` inside a project to regenerate.",
+    "belt themes in Settings — green means you're growing.",
+    "ideas logged here auto-go to ~/scripts/PROJECTS.md.",
+    "Sensei is 24/7 — reattach with master.sh → 4.",
+    "the RAM pill shows green/yellow/red system pressure.",
+    "click 🔑 Any Key and paste — Pupil figures out the provider.",
+    "one question per line keeps Sensei's answers sharp.",
+    "menu 17 switches between user profiles."
+  ],
+
+  "thinking": [
+    "Grinding...",
+    "Pushing through...",
+    "In deep meditation...",
+    "Leveling up...",
+    "Getting to the goal...",
+    "Ninja-ing...",
+    "Doing what ninjas do...",
+    "Sharpening the blade...",
+    "Reading your notes...",
+    "Finding the thread...",
+    "Following the signal...",
+    "Turning thought into footprint...",
+    "Scaffolding the answer...",
+    "One breath, one move..."
+  ]
+}

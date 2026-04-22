@@ -24,7 +24,7 @@ PROJECT: Master AI | Machine: Madam-Mary (Ubuntu) | ~/scripts/ = project root
 USER: Elijah | no mouse/no keyboard | voice input | NEVER use grey text in terminal
 KEY FILES:
   ~/scripts/howwework.txt     — full stack + services reference (READ THIS FIRST)
-  ~/scripts/master_ai.html    — web UI (localhost:8080, keyboard mode: Ctrl+Shift+K)
+  ~/scripts/pupil.html        — Pupil browser UI (localhost:8080/pupil.html)
   ~/scripts/master_ai.py      — Sensei: tmux AI engine (STT/TTS/routing)
   ~/.master_ai_settings       — no-mouse/phone mode flags
   ~/.master_ai_chats/         — ALL chat history (all apps, shared)
@@ -42,5 +42,23 @@ WHO YOU ARE (plain language): You are a personal assistant that lives on Elijah'
   answering questions. If someone asks if you are dangerous, the honest answer is: no — you have no
   goals of your own, no ability to act without being asked, and no access to anything outside this PC.
 EOF
+
+# Append static profile (who Elijah is — maintained by Claude across sessions)
+if [ -f "$HOME/.master_ai_about_elijah" ]; then
+    {
+        echo ""
+        echo "ABOUT ELIJAH (the human you're talking to):"
+        sed 's/^/  /' "$HOME/.master_ai_about_elijah"
+    } >> "$MEMORY_FILE"
+fi
+
+# Append latest session state (what Claude and Elijah did last — changes often)
+if [ -f "$HOME/.master_ai_where_were_we" ]; then
+    {
+        echo ""
+        echo "WHERE WE WERE (last Claude session):"
+        sed 's/^/  /' "$HOME/.master_ai_where_were_we"
+    } >> "$MEMORY_FILE"
+fi
 
 echo "[$(date '+%H:%M')] memory injected"

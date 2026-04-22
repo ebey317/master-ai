@@ -85,7 +85,17 @@ body{display:flex;flex-direction:column;height:100vh}
 .pane.active{display:flex}
 
 /* CHAT PANE */
-.chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;border:1px solid var(--border-mid);border-radius:var(--radius);margin:8px;background:var(--bg)}
+.template-panel{padding:18px 14px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.template-panel.hidden{display:none}
+.template-panel-title{font-family:'DM Serif Display',serif;font-size:15px;color:var(--text-mid);margin-bottom:12px;text-align:center}
+.template-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:720px;margin:0 auto}
+.template-grid.sub{margin-top:12px}
+.template-card{padding:14px 10px;background:var(--bg);border:1px solid var(--border-mid);border-radius:var(--radius-sm);cursor:pointer;text-align:center;transition:all 0.15s;font-family:'DM Sans',sans-serif}
+.template-card:hover{border-color:var(--accent);background:var(--bg3);transform:translateY(-1px)}
+.template-card-icon{font-size:22px;margin-bottom:4px}
+.template-card-title{font-weight:500;color:var(--text);margin-bottom:3px;font-size:13px}
+.template-card-desc{font-size:11px;color:var(--text-soft);line-height:1.3}
 .msg{max-width:82%;padding:11px 14px;border-radius:var(--radius);font-size:14px;line-height:1.65;position:relative}
 .msg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
 .msg.ai{align-self:flex-start;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:4px}
@@ -157,6 +167,54 @@ body{display:flex;flex-direction:column;height:100vh}
     <div class="setup-sub">Connect your AI providers — at least one local provider is required</div>
     <input class="setup-name" id="setup-name" placeholder="Your machine name (e.g. Madam-Mary)" value=""/>
 
+    <!-- WHERE TO GET FREE KEYS -->
+    <div class="setup-card" id="card-freekeys">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">🔗</div>
+        <div class="setup-card-title">Don't have a key? Get a free one.</div>
+        <span class="setup-card-tag tag-cloud">links</span>
+      </div>
+      <div class="setup-card-desc">Click any link, sign up (free), copy your key, paste into the 🔑 Any Key card below.</div>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+        <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>Groq</b> <span style="color:var(--text-soft)">· fastest free cloud</span></a>
+        <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>OpenRouter</b> <span style="color:var(--text-soft)">· many models, one key</span></a>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>Google Gemini</b> <span style="color:var(--text-soft)">· free with Google account</span></a>
+        <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>HuggingFace</b> <span style="color:var(--text-soft)">· models + research</span></a>
+        <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>Anthropic Claude</b> <span style="color:var(--text-soft)">· paid fallback</span></a>
+      </div>
+    </div>
+
+    <!-- ANY-KEY FINDER — paste any provider key, auto-detect -->
+    <div class="setup-card" id="card-anykey">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">🔑</div>
+        <div class="setup-card-title">Any Key</div>
+        <span class="setup-card-tag tag-cloud">optional · auto-detect</span>
+      </div>
+      <div class="setup-card-desc">Paste <b>any</b> API key — Pupil figures out which provider it's for (Groq, OpenRouter, OpenAI, Anthropic, DeepSeek, Gemini, xAI, HuggingFace, Brave, Firecrawl, Serper, Gumroad) and files it. If auto-detect guesses wrong, use the dropdown to override.</div>
+      <div class="setup-field">
+        <input id="setup-anykey" type="password" placeholder="paste any key here — gsk_... / sk-ant-... / fc-... / BSA... / etc." oninput="onAnyKeyInput()"/>
+        <select id="setup-anykey-service" title="override which service this key belongs to" style="padding:6px;border-radius:6px;border:1px solid var(--border-soft,#ccc);font-size:13px">
+          <option value="">auto-detect</option>
+          <option value="groq">Groq</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="xai">xAI / Grok</option>
+          <option value="huggingface">HuggingFace</option>
+          <option value="brave">Brave Search</option>
+          <option value="firecrawl">Firecrawl</option>
+          <option value="serper">Serper</option>
+          <option value="google">Google Cloud</option>
+          <option value="gumroad">Gumroad</option>
+        </select>
+        <button class="setup-verify" onclick="registerAnyKey()">detect</button>
+      </div>
+      <div class="setup-status" id="setup-anykey-status"></div>
+    </div>
+
     <!-- Ollama (Local) -->
     <div class="setup-card" id="card-ollama">
       <div class="setup-card-head">
@@ -165,7 +223,7 @@ body{display:flex;flex-direction:column;height:100vh}
         <span class="setup-card-tag tag-local">local</span>
         <span class="setup-card-tag tag-required">required</span>
       </div>
-      <div class="setup-card-desc">Runs on your machine — unlimited, private, no API key needed. Run <code>ollama serve</code> first.</div>
+      <div class="setup-card-desc"><b style="color:#c03030">REQUIRED — not optional.</b> This is the whole point of Master AI: your intelligence runs on hardware you own. Cloud keys are extras, the local server is the foundation. Run <code>ollama serve</code> first.</div>
       <div class="setup-field">
         <input id="setup-ollama-host" value="http://localhost:11434" placeholder="http://localhost:11434"/>
         <button class="setup-verify" onclick="setupVerify('ollama')">scan</button>
@@ -218,6 +276,7 @@ body{display:flex;flex-direction:column;height:100vh}
   <div class="header-meta">
     <select class="model-badge" id="model-sel" style="cursor:pointer;outline:none;border:1px solid var(--border);background:var(--bg3);color:var(--text-soft);font-size:11px;padding:3px 8px;border-radius:20px;font-family:'DM Sans',sans-serif;" onchange="switchModel(this.value)"></select>
     <span class="counter" id="req-counter"></span>
+    <span id="ram-bar" title="System RAM — green OK · yellow close · red swapping" style="font-size:11px;color:var(--text-soft);padding:3px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg3);min-width:82px;text-align:center;cursor:help"></span>
     <button class="theme-btn theme-dot-white"  onclick="setTheme('white')"  title="White belt"></button>
     <button class="theme-btn theme-dot-yellow" onclick="setTheme('yellow')" title="Yellow belt"></button>
     <button class="theme-btn theme-dot-blue"   onclick="setTheme('blue')"   title="Blue belt — Sensei match"></button>
@@ -237,11 +296,107 @@ body{display:flex;flex-direction:column;height:100vh}
 
 <!-- CHAT PANE -->
 <div class="pane active" id="pane-chat">
+  <div class="template-panel" id="template-panel">
+    <div class="template-panel-title">Start a new session as:</div>
+    <div class="template-grid" id="main-templates">
+      <div class="template-card" onclick="selectTemplate('brainstorm')">
+        <div class="template-card-icon">🧠</div>
+        <div class="template-card-title">Brainstorm</div>
+        <div class="template-card-desc">scope + clarify</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('debug')">
+        <div class="template-card-icon">🔧</div>
+        <div class="template-card-title">Debug</div>
+        <div class="template-card-desc">diagnose before fix</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('chat')">
+        <div class="template-card-icon">💬</div>
+        <div class="template-card-title">Chat</div>
+        <div class="template-card-desc">free talk, no template</div>
+      </div>
+      <div class="template-card" onclick="showProjectsSubs()">
+        <div class="template-card-icon">📁</div>
+        <div class="template-card-title">Projects ▾</div>
+        <div class="template-card-desc">pick a project</div>
+      </div>
+      <div class="template-card" onclick="showPlanSubs()">
+        <div class="template-card-icon">📋</div>
+        <div class="template-card-title">Plan ▾</div>
+        <div class="template-card-desc">pick a plan type</div>
+      </div>
+    </div>
+    <div class="template-grid sub" id="projects-subs" style="display:none">
+      <div class="template-card" onclick="selectProject('Master AI')">
+        <div class="template-card-icon">🏛️</div>
+        <div class="template-card-title">Master AI</div>
+        <div class="template-card-desc">umbrella brand</div>
+      </div>
+      <div class="template-card" onclick="selectProject('Sensei')">
+        <div class="template-card-icon">🥷</div>
+        <div class="template-card-title">Sensei</div>
+        <div class="template-card-desc">execution dojo</div>
+      </div>
+      <div class="template-card" onclick="selectProject('Pupil')">
+        <div class="template-card-icon">🧑‍🎓</div>
+        <div class="template-card-title">Pupil</div>
+        <div class="template-card-desc">apprentice / intake</div>
+      </div>
+      <div class="template-card" onclick="selectProject('Sunkissed Soul')">
+        <div class="template-card-icon">🌞</div>
+        <div class="template-card-title">Sunkissed Soul</div>
+        <div class="template-card-desc">flagship app</div>
+      </div>
+      <div class="template-card" onclick="selectProject('Off-Grid Civilization Information')">
+        <div class="template-card-icon">🌱</div>
+        <div class="template-card-title">Off-Grid Civ</div>
+        <div class="template-card-desc">rebuild knowledge</div>
+      </div>
+      <div class="template-card" onclick="openBashTutor()">
+        <div class="template-card-icon">🥋</div>
+        <div class="template-card-title">Linux / Bash</div>
+        <div class="template-card-desc">start here · Class 1-3 · commands first</div>
+      </div>
+      <div class="template-card" onclick="openPythonPath()">
+        <div class="template-card-icon">🎓</div>
+        <div class="template-card-title">Python Path</div>
+        <div class="template-card-desc">after Linux · Class 1-3</div>
+      </div>
+    </div>
+    <div class="template-grid sub" id="plan-subs" style="display:none">
+      <div class="template-card" onclick="selectTemplate('plan_budget')">
+        <div class="template-card-icon">💰</div>
+        <div class="template-card-title">Budget</div>
+        <div class="template-card-desc">monthly money plan</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('plan_diet')">
+        <div class="template-card-icon">🥗</div>
+        <div class="template-card-title">Diet</div>
+        <div class="template-card-desc">weekly meals</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('plan_project')">
+        <div class="template-card-icon">🚀</div>
+        <div class="template-card-title">Project</div>
+        <div class="template-card-desc">scope + milestones</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('plan_travel')">
+        <div class="template-card-icon">✈️</div>
+        <div class="template-card-title">Travel</div>
+        <div class="template-card-desc">day-by-day itinerary</div>
+      </div>
+      <div class="template-card" onclick="selectTemplate('plan_custom')">
+        <div class="template-card-icon">✨</div>
+        <div class="template-card-title">Custom</div>
+        <div class="template-card-desc">Pupil asks what kind</div>
+      </div>
+    </div>
+  </div>
   <div class="chat-area" id="chat-area"></div>
   <div class="provider-row">
     <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Master AI (local)</button>
     <button class="prov-btn" data-prov="groq" onclick="setProvider('groq')">Groq</button>
     <button class="prov-btn" data-prov="openrouter" onclick="setProvider('openrouter')">OpenRouter</button>
+    <button class="prov-btn" data-prov="web" id="prov-web" onclick="setProvider('web')" title="Force every question through live web search (Gemini grounded + Wikipedia + DDG)">🌐 Web</button>
+    <button class="prov-btn" data-prov="research" id="prov-research" onclick="setProvider('research')" title="Search the web, then have the local model write a direct answer from the results — use when you want the ANSWER, not just the search results. Prefix shortcut: research: your question">🔬 Research</button>
     <div class="auto-route">
       auto-route
       <button class="auto-toggle" id="auto-toggle" onclick="toggleAuto()"></button>
@@ -304,7 +459,7 @@ body{display:flex;flex-direction:column;height:100vh}
       </div>
       <div class="setting-row">
         <label class="setting-label">Ollama Model</label>
-        <input class="setting-input" id="ollama-model" value="llama3"/>
+        <input class="setting-input" id="ollama-model" value="master-ai"/>
       </div>
     </div>
     <div class="settings-section">
@@ -327,25 +482,55 @@ body{display:flex;flex-direction:column;height:100vh}
     <div class="settings-section">
       <div class="settings-title">System Prompt</div>
       <div class="setting-row">
-        <textarea class="w-textarea" id="sys-prompt" style="min-height:120px">You are Pupil — the inquisitive, eager-student voice in Elijah's Master AI cast on Madam-Mary. You are Sensei's counterpart: Sensei acts, you ask and explore.
+        <textarea class="w-textarea" id="sys-prompt" style="min-height:120px">You are Pupil — Elijah's AI in the browser on Madam-Mary, part of the Master AI cast. Sensei acts in the terminal; you answer in the browser. Same brain, different shoes.
 
-Rules:
-- Brainstorm first. Don't write code until the user says a build trigger ("build it", "code it", "make it", "generate it", "ship it", "ok go").
-- When an idea or POC comes up, mark it with 🚨 and suggest logging to ~/scripts/PROJECTS.md under "Ideas / POCs".
-- If a request is vague + ambitious, ASK clarifying questions before answering. One clarification beats a wrong full answer.
-- Propose options with trade-offs when a decision is open. Let Elijah pick.
-- Before destructive shell commands (rm, git reset --hard, systemctl stop, force-push, drop table), confirm.
-- Keep replies tight. One sentence beats five.
+DEFAULT BEHAVIOR: ANSWER FIRST.
+- Technical / how-to / factual questions → commit to a concrete answer. Name the actual tools, paste the actual commands, give the actual config. If multiple tools fit, list them with a one-line trade-off each. Study links go at the BOTTOM as "further reading" — never as a substitute for the answer.
+- "Best way to X" / "how do I X" / "what tools for X" → list the specific tools or steps. Do NOT hand the user a research methodology.
+- Ambiguous questions → make your best read, answer, and note the assumption in one line. Ask a clarifier only if the question is literally unanswerable.
+- If you don't know, say "I'm not sure — try `research:` to pull live web results" instead of guessing.
 
-The Cast:
-- Sensei — result-driven, productive, terminal (~/scripts/master_ai.py). For action.
-- Pupil — YOU. Inquisitive, eager. Browser UI. For exploration & brainstorm.
-- Messenger — the router inside both Sensei and Pupil (orchestrate() function); picks the right brain (local / groq / cloud-deep) per ask. Not a separate voice.
+BRAINSTORM MODE IS OPT-IN:
+- Only enter brainstorm mode if the user types `brainstorm:` prefix, picks the 🧠 Brainstorm template, or literally asks to scope/brainstorm/plan.
+- Build triggers ("build it", "code it", "ship it", "ok go") transition brainstorm back to concrete.
+- Outside those paths, DO NOT ask clarifying questions before answering. Answer.
 
-Context:
-- Master AI is the umbrella brand.
-- Sunkissed Soul lives at base44.com (not localhost:5173 — that's the SKS Hub Client test harness).
-- Ollama at localhost:11434. TTS at localhost:5050. Installed models: master-ai:latest, qwen2.5:14b, llava:latest, qwen3.5:cloud, kimi-k2.5:cloud.</textarea>
+SENIOR-ENGINEER HABITS (apply every turn):
+- Cite file:line refs when discussing code. "master_ai.py:4530" so Elijah can jump there.
+- Verify before claiming done. Don't conflate BUILT with WORKS.
+- Name root cause separately from symptom. If a fix addresses X but Y is still possible, say so.
+- Admit gaps honestly — if you can't do it, say so and offer the next-best path. Never pretend.
+- Match response length to question size. Simple ask = one line. Complex ask = numbered breakdown.
+- Number multi-part replies (1. 2. 3.) in one contiguous block — Elijah reads on phone via voice-to-text.
+- Scope-creep brake: if a task starts expanding past the ask, pause: "build this or hold?"
+- Preserve user wording as artifact. When saving a paste, upgrade structure (headers, code blocks, blockquotes) but keep the words.
+- Convert relative time to absolute. "Thursday" → real date.
+
+SAFETY STILL APPLIES:
+- Destructive shell commands (rm -rf, git reset --hard, drop table, force-push, systemctl stop) → show the command and confirm before the user runs it.
+- Passwords / sudo / reboots NEVER through Pupil — print the command only, Elijah runs it in a separate terminal.
+- Flag real ideas / POCs with 🚨 and suggest logging to ~/scripts/PROJECTS.md under "Ideas / POCs".
+
+STYLE: keep replies tight. Bullets beat prose when listing options. One paragraph beats five.
+
+THE CAST (corrected 2026-04-21):
+- Sensei — terminal, ~/scripts/master_ai.py, model "master-ai" (qwen2.5:7b + baked behavior). For action.
+- Pupil — YOU. Browser, answer-first, same local backend as Sensei.
+- Cloud models — qwen3.5:cloud, DeepSeek-R1, Groq, OpenRouter — are router destinations Sensei/Pupil dispatch to when the user opts in via `fast:` / `deep:` prefix. Not agents, not a tier, not a named voice.
+
+FILE SAVE — Master AI's own surfaces only:
+- ~/scripts/ = code + configs (not user docs)
+- ~/.master_ai_chats/ = chat exports (via `copy chat` only)
+- ~/Downloads/ = ephemeral
+- ~/ = sparingly, for reference files
+- Pasted docs that belong to a separate project → ASK Elijah where to save. Do not assume a project folder outside Master AI's own surfaces.
+
+CONTEXT:
+- Master AI = umbrella brand. Sunkissed Soul lives at base44.com.
+- Ollama at localhost:11434. TTS at localhost:5050.
+- Local models: master-ai (primary, qwen2.5:7b + baked rules), qwen2.5:3b (spark, idle-tips only), llava:latest (vision).
+- Cloud router destinations: qwen3.5:cloud, DeepSeek-R1, Groq, OpenRouter, kimi-k2.5:cloud (vision). Opt-in via `fast:` / `deep:` / `mode connected`.
+- Elijah is in Indianapolis, Indiana (America/Indiana/Indianapolis).</textarea>
       </div>
     </div>
     <button class="w-btn primary save-settings" onclick="saveSettings()">save settings</button>
@@ -367,21 +552,279 @@ let currentProvider = 'ollama';
 let autoRoute = false;
 let reqCount = { groq: 0, openrouter: 0 };
 const FREE_LIMITS = { groq: 14400, openrouter: 200 };
-let sessions = JSON.parse(localStorage.getItem('ta_sessions') || '[]');
-let settings = JSON.parse(localStorage.getItem('ta_settings') || '{}');
+// ── PROFILE NAMESPACE ──
+// Pupil fetches /profile from stt_server on load. If there's an active
+// profile (e.g. "alice"), all localStorage keys get prefixed with
+// "alice::" so each user has their own settings/sessions/lessons in
+// the browser. Empty profile = legacy keys (no prefix) = backward compat.
+// NOTE: the profile is set synchronously via blocking XHR at import
+// time so localStorage init below sees the right keys. One-shot, localhost.
+(function initProfile() {
+  try {
+    const x = new XMLHttpRequest();
+    x.open('GET', '/profile', false);  // synchronous — blocks for ~1-2ms on localhost
+    x.send();
+    if (x.status === 200) {
+      const d = JSON.parse(x.responseText || '{}');
+      window._MA_PROFILE = (d.profile || '').trim();
+    }
+  } catch (e) { /* file:// mode — leave empty */ }
+  window._MA_PROFILE = window._MA_PROFILE || '';
+})();
+function lsKey(base) {
+  return window._MA_PROFILE ? (window._MA_PROFILE + '::' + base) : base;
+}
+
+let sessions = JSON.parse(localStorage.getItem(lsKey('ta_sessions')) || '[]');
+// Tracks the autosave slot for THIS live conversation. Set on first
+// assistant reply, reused on every subsequent reply so we overwrite
+// one row instead of spawning a new row each turn. Null = no active
+// autosave yet (fresh page, or user cleared history).
+let _autoSessionId = null;
+let settings = JSON.parse(localStorage.getItem(lsKey('ta_settings')) || '{}');
 let scrollLocked = false;
 let setupState = { ollama: false, groq: false, openrouter: false, ollamaModels: [] };
+
+// ── HOST DEFAULTS — Tailscale / LAN / phone friendly ──
+// When Pupil is served at http://<server>:8080/pupil.html, direct calls to
+// Ollama (:11434) and TTS (:5050) must use THE SAME host. Using "localhost"
+// from a phone resolves to the PHONE itself, not Madam-Mary — that's why
+// chat appears "not connected" over Tailscale. Defaults now follow the
+// page origin. If a user previously saved a localhost host while accessing
+// locally, we auto-migrate it the first time Pupil loads from a different
+// origin so phone/LAN access just works without a manual settings change.
+function defaultOllamaHost() {
+  return `${window.location.protocol}//${window.location.hostname}:11434`;
+}
+function defaultTTSHost() {
+  return `${window.location.protocol}//${window.location.hostname}:5050`;
+}
+(function migrateLocalhostHosts() {
+  const h = window.location.hostname;
+  if (!h || h === 'localhost' || h === '127.0.0.1' || h === '') return;
+  const isLocalO = v => v === 'http://localhost:11434' || v === 'http://127.0.0.1:11434';
+  const isLocalT = v => v === 'http://localhost:5050'  || v === 'http://127.0.0.1:5050';
+  // (a) migrate previously saved localhost settings in this browser
+  let changed = false;
+  if (isLocalO(settings.ollamaHost)) { settings.ollamaHost = defaultOllamaHost(); changed = true; }
+  if (isLocalT(settings.ttsHost))    { settings.ttsHost    = defaultTTSHost();    changed = true; }
+  if (changed) {
+    try { localStorage.setItem(lsKey('ta_settings'), JSON.stringify(settings)); } catch (e) {}
+  }
+  // (b) update the HTML input defaults IN PLACE so first-time visitors
+  // (no saved settings yet) don't read stale "localhost" from the element's
+  // static value attribute. Script runs after inputs exist in the DOM.
+  const ids = [
+    ['setup-ollama-host', defaultOllamaHost],
+    ['ollama-host',       defaultOllamaHost],
+    ['tts-host',          defaultTTSHost],
+  ];
+  for (const [id, fn] of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (isLocalO(el.value) || isLocalT(el.value) || !el.value) {
+      el.value = fn();
+      if ('placeholder' in el) el.placeholder = fn();
+    }
+  }
+})();
+
+// ── SCROLL LOCK — phone-friendly "pause auto-scroll while reading" ──
+// When the AI is streaming replies faster than you can read, scrolling or
+// swiping up pins the view where you are. A floating "▼ catch up" button
+// appears so you can jump back to the bottom when you're ready. The AI
+// keeps generating in the background — scroll lock controls the VIEW,
+// not the stream. Flipping scrollLocked is automatic, driven by where
+// the chat-area's scroll position is relative to the bottom.
+function setupScrollLock() {
+  const area = document.getElementById('chat-area');
+  if (!area) return;
+  // Make the chat-area's parent a positioning context so the floating
+  // catch-up button sits correctly above the input row.
+  const container = area.parentElement || document.body;
+  const pos = getComputedStyle(container).position;
+  if (pos === 'static' || !pos) container.style.position = 'relative';
+  // Inject the catch-up button once.
+  let btn = document.getElementById('catch-up-btn');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'catch-up-btn';
+    btn.type = 'button';
+    btn.textContent = '▼ new replies — tap to catch up';
+    btn.style.cssText = [
+      'position:absolute',
+      'bottom:110px',
+      'left:50%',
+      'transform:translateX(-50%)',
+      'padding:10px 18px',
+      'border:none',
+      'border-radius:999px',
+      'background:var(--accent,#4a7aff)',
+      'color:#fff',
+      'font-size:13px',
+      'font-weight:600',
+      'cursor:pointer',
+      'display:none',
+      'z-index:50',
+      'box-shadow:0 4px 12px rgba(0,0,0,0.25)',
+      'white-space:nowrap',
+    ].join(';');
+    btn.onclick = () => {
+      scrollLocked = false;
+      area.scrollTop = area.scrollHeight;
+      btn.style.display = 'none';
+    };
+    container.appendChild(btn);
+  }
+  // A scroll is "at bottom" if it's within this many pixels of the bottom.
+  // Gives some slack so browser scroll-snap doesn't flicker the button.
+  const AT_BOTTOM_THRESHOLD = 80;
+  function updateLock() {
+    const fromBottom = area.scrollHeight - area.scrollTop - area.clientHeight;
+    if (fromBottom > AT_BOTTOM_THRESHOLD) {
+      // User has scrolled up — pin the view, show the button.
+      if (!scrollLocked) {
+        scrollLocked = true;
+        btn.style.display = 'block';
+      }
+    } else {
+      // Back at the bottom — resume auto-scroll, hide the button.
+      if (scrollLocked) {
+        scrollLocked = false;
+        btn.style.display = 'none';
+      }
+    }
+  }
+  area.addEventListener('scroll', updateLock, { passive: true });
+  // Phone gesture: a tap anywhere in chat-area during streaming should also
+  // lock immediately (some browsers don't fire 'scroll' on a one-finger tap
+  // with no movement). This sets the lock AND the button; updateLock() will
+  // flip it back off when the user scrolls back down.
+  area.addEventListener('touchstart', () => {
+    // Only engage the lock if we're NOT already near the bottom — a tap
+    // while caught up shouldn't hide the latest content.
+    const fromBottom = area.scrollHeight - area.scrollTop - area.clientHeight;
+    if (fromBottom > AT_BOTTOM_THRESHOLD && !scrollLocked) {
+      scrollLocked = true;
+      btn.style.display = 'block';
+    }
+  }, { passive: true });
+}
 
 function updateTokenCounter() {
   const el = document.getElementById('req-counter');
   if (!el) return;
   if (currentProvider === 'ollama' || currentProvider === 'master-ai') { el.textContent = '∞ unlimited (local)'; return; }
-  const key = 'ta_count_' + currentProvider + '_' + new Date().toDateString();
+  const key = lsKey('ta_count_' + currentProvider + '_' + new Date().toDateString());
   const used = parseInt(localStorage.getItem(key) || '0');
   const limit = FREE_LIMITS[currentProvider] || 0;
   const left = Math.max(limit - used, 0);
   el.textContent = left + ' / ' + limit + ' free today';
   el.style.color = left < 20 ? '#e03030' : left < 50 ? '#f59e0b' : '';
+}
+
+// ---- ANY-KEY FINDER ----
+// Mirrors update_keys.sh's detect_service() — identify a provider from the
+// key's prefix so the user never has to pick "this is Groq" / "this is OpenAI".
+// One paste, done. If they already have a key for this provider, the new one
+// is saved as a secondary (field + "_2").
+function detectKeyService(key) {
+  if (!key) return null;
+  const k = key.trim();
+  if (k.startsWith('gsk_'))        return { service: 'groq',        label: 'Groq',              field: 'groqKey' };
+  if (k.startsWith('sk-ant-'))      return { service: 'anthropic',   label: 'Anthropic / Claude', field: 'anthropicKey' };
+  if (k.startsWith('sk-or-v1-'))    return { service: 'openrouter',  label: 'OpenRouter',        field: 'openrouterKey' };
+  if (k.startsWith('sk-proj-'))     return { service: 'openai',      label: 'OpenAI',            field: 'openaiKey' };
+  if (k.startsWith('sk-'))          return { service: 'deepseek',    label: 'DeepSeek',          field: 'deepseekKey' };
+  if (k.startsWith('hf_'))          return { service: 'huggingface', label: 'HuggingFace',       field: 'huggingfaceKey' };
+  if (k.startsWith('xai-'))         return { service: 'xai',         label: 'xAI / Grok',        field: 'xaiKey' };
+  if (k.startsWith('AIzaSy'))       return { service: 'gemini',      label: 'Google Gemini',     field: 'geminiKey' };
+  if (k.startsWith('BSA'))          return { service: 'brave',       label: 'Brave Search',      field: 'braveKey' };
+  if (k.startsWith('fc-'))          return { service: 'firecrawl',   label: 'Firecrawl',         field: 'firecrawlKey' };
+  if (k.startsWith('ya29.') || k.startsWith('1//')) return { service: 'google', label: 'Google Cloud', field: 'googleKey' };
+  if (k.length >= 30 && k.length <= 50 && /^[a-zA-Z0-9_-]+$/.test(k)) {
+    return { service: 'gumroad', label: 'Gumroad', field: 'gumroadKey' };
+  }
+  return null;
+}
+
+function onAnyKeyInput() {
+  const val = document.getElementById('setup-anykey').value.trim();
+  const status = document.getElementById('setup-anykey-status');
+  if (!val) { status.textContent = ''; return; }
+  const hit = detectKeyService(val);
+  if (hit) {
+    status.textContent = `✨ looks like a ${hit.label} key — hit "detect" to file it`;
+    status.style.color = 'var(--text-soft)';
+  } else {
+    status.textContent = `? unknown prefix — Pupil can't identify this. Double-check the key.`;
+    status.style.color = '#c89000';
+  }
+}
+
+function registerAnyKey() {
+  const val = document.getElementById('setup-anykey').value.trim();
+  const status = document.getElementById('setup-anykey-status');
+  const card = document.getElementById('card-anykey');
+  if (!val) { status.textContent = '🔴 paste a key first'; status.style.color = '#e03030'; return; }
+  // Check the dropdown first — if the user picked a specific service,
+  // that overrides auto-detection. Useful when a provider's key doesn't
+  // have a distinctive prefix (Serper, new-format Brave keys, etc.) and
+  // auto-detect would otherwise fall through to Gumroad or unknown.
+  const overrideSel = document.getElementById('setup-anykey-service');
+  const overrideVal = overrideSel ? overrideSel.value : '';
+  const SERVICE_LABELS = {
+    groq: 'Groq', openrouter: 'OpenRouter', openai: 'OpenAI',
+    anthropic: 'Anthropic / Claude', deepseek: 'DeepSeek',
+    gemini: 'Google Gemini', xai: 'xAI / Grok', huggingface: 'HuggingFace',
+    brave: 'Brave Search', firecrawl: 'Firecrawl', serper: 'Serper',
+    google: 'Google Cloud', gumroad: 'Gumroad',
+  };
+  const SERVICE_FIELDS = {
+    groq: 'groqKey', openrouter: 'openrouterKey', openai: 'openaiKey',
+    anthropic: 'anthropicKey', deepseek: 'deepseekKey', gemini: 'geminiKey',
+    xai: 'xaiKey', huggingface: 'huggingfaceKey', brave: 'braveKey',
+    firecrawl: 'firecrawlKey', serper: 'serperKey', google: 'googleKey',
+    gumroad: 'gumroadKey',
+  };
+  let hit;
+  if (overrideVal) {
+    hit = { service: overrideVal, label: SERVICE_LABELS[overrideVal] || overrideVal, field: SERVICE_FIELDS[overrideVal] };
+  } else {
+    hit = detectKeyService(val);
+  }
+  if (!hit) {
+    status.textContent = `🔴 unknown prefix — pick the provider from the dropdown and try again.`;
+    status.style.color = '#e03030';
+    return;
+  }
+  // If a primary key for this service already exists, save as secondary.
+  let field = hit.field;
+  let placement = 'primary';
+  if (settings[field] && settings[field] !== val) {
+    field = hit.field + '_2';
+    placement = 'secondary (backup)';
+  }
+  settings[field] = val;
+  localStorage.setItem(lsKey('ta_settings'), JSON.stringify(settings));
+
+  // Round-trip to the server so menu 11's ~/.master_ai_keys gets updated too.
+  // Server handles the duplicate-→-secondary logic server-side (same rule).
+  pushKeyToServer(hit.service, val);
+
+  // Auto-fill the matching setup card (if it exists) so the user can also run verify.
+  if (hit.service === 'groq') {
+    const inp = document.getElementById('setup-groq-key');
+    if (inp && placement === 'primary') inp.value = val;
+  } else if (hit.service === 'openrouter') {
+    const inp = document.getElementById('setup-or-key');
+    if (inp && placement === 'primary') inp.value = val;
+  }
+
+  status.innerHTML = `🟢 <b>${hit.label}</b> — filed as <b>${placement}</b> (<code>${field}</code>) · synced to menu 11`;
+  status.style.color = '#2a8a4a';
+  card.classList.add('verified');
+  document.getElementById('setup-anykey').value = '';
 }
 
 // ---- SETUP WIZARD ----
@@ -393,7 +836,7 @@ async function setupVerify(prov) {
   card.classList.remove('verified');
   try {
     if (prov === 'ollama') {
-      const host = document.getElementById('setup-ollama-host').value.trim() || 'http://localhost:11434';
+      const host = document.getElementById('setup-ollama-host').value.trim() || defaultOllamaHost();
       const res = await fetch(host + '/api/tags');
       if (!res.ok) throw new Error('status ' + res.status);
       const data = await res.json();
@@ -434,7 +877,7 @@ function finishSetup() {
   const name = document.getElementById('setup-name').value.trim() || 'Pupil';
   settings.machineName = name;
   settings.ollamaHost = document.getElementById('setup-ollama-host').value.trim();
-  settings.ollamaModel = setupState.ollamaModels[0] || 'master-ai:latest';
+  settings.ollamaModel = setupState.ollamaModels[0] || 'qwen2.5:7b';
   if (setupState.groq) settings.groqKey = document.getElementById('setup-groq-key').value.trim();
   if (setupState.openrouter) settings.openrouterKey = document.getElementById('setup-or-key').value.trim();
   settings.setupDone = true;
@@ -459,7 +902,7 @@ function downloadConfigured() {
   const cfg = {
     machineName: name,
     ollamaHost: document.getElementById('setup-ollama-host').value.trim(),
-    ollamaModel: setupState.ollamaModels[0] || 'master-ai:latest',
+    ollamaModel: setupState.ollamaModels[0] || 'qwen2.5:7b',
     setupDone: true
   };
   const groqKey = document.getElementById('setup-groq-key').value.trim();
@@ -486,13 +929,86 @@ setTimeout(() => {
 
 
 // ---- INIT ----
-function init() {
+// ── /keys bridge ──
+// When Pupil is served by stt_server.py (http://localhost:8080/pupil.html),
+// it fetches ~/.master_ai_keys from the local server and merges into settings.
+// When opened via file:// the fetch fails silently and any-key paste still works.
+async function syncKeysFromServer() {
+  try {
+    const res = await fetch('/keys');
+    if (!res.ok) return;
+    const serverKeys = await res.json();
+    // Map menu 11 field names (from update_keys.sh) → Pupil's settings keys.
+    const MAP = {
+      groq: 'groqKey',
+      openrouter: 'openrouterKey',
+      openai: 'openaiKey',
+      anthropic: 'anthropicKey',
+      deepseek: 'deepseekKey',
+      gemini: 'geminiKey',
+      xai: 'xaiKey',
+      huggingface: 'huggingfaceKey',
+      gumroad: 'gumroadKey',
+      google: 'googleKey',
+      brave: 'braveKey',
+      firecrawl: 'firecrawlKey',
+      serper: 'serperKey',
+    };
+    let merged = 0;
+    for (const [serverField, settingsField] of Object.entries(MAP)) {
+      const v = serverKeys[serverField];
+      if (v && !settings[settingsField]) {
+        settings[settingsField] = v;
+        merged++;
+      }
+      // Secondary slot passthrough
+      const v2 = serverKeys[serverField + '_2'];
+      if (v2 && !settings[settingsField + '_2']) {
+        settings[settingsField + '_2'] = v2;
+      }
+    }
+    if (merged > 0) {
+      localStorage.setItem(lsKey('ta_settings'), JSON.stringify(settings));
+      console.log(`[Pupil] synced ${merged} key(s) from ~/.master_ai_keys via /keys`);
+    }
+    return merged;
+  } catch (e) {
+    // file:// or server down — silent. Any-key paste is the fallback.
+    return 0;
+  }
+}
+
+// Push a newly-pasted key up to the server (menu 11's file) so Sensei +
+// update_keys.sh see it too. No-op if the server isn't there.
+async function pushKeyToServer(field, value) {
+  try {
+    await fetch('/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, value })
+    });
+  } catch (e) { /* fine — file:// mode */ }
+}
+
+async function init() {
+  // Wire the phone-friendly scroll lock so tapping/scrolling up during a
+  // stream pins the view. Safe to call once at init — it's a no-op on
+  // subsequent calls because the catch-up button is looked up by id.
+  setupScrollLock();
+  // Pull any existing menu-11 keys BEFORE rendering — so if you've set them
+  // via option 11, Pupil already knows and the setup wizard won't nag you.
+  await syncKeysFromServer();
   if (settings.groqKey) document.getElementById('groq-key').value = settings.groqKey;
   if (settings.openrouterKey) document.getElementById('openrouter-key').value = settings.openrouterKey;
   if (settings.ollamaHost) document.getElementById('ollama-host').value = settings.ollamaHost;
   if (settings.ollamaModel) document.getElementById('ollama-model').value = settings.ollamaModel;
   if (settings.ttsHost) document.getElementById('tts-host').value = settings.ttsHost;
-  // Voice toggles
+  // Voice toggles — default OFF on first ever install. Respects user's
+  // saved choice after that (once they toggle, it persists).
+  if (settings.autoSpeak === undefined) {
+    settings.autoSpeak = false;
+    localStorage.setItem(lsKey('ta_settings'), JSON.stringify(settings));
+  }
   const autoSpeakEl = document.getElementById('auto-speak-toggle');
   if (autoSpeakEl) autoSpeakEl.checked = !!settings.autoSpeak;
   const sttEnabledEl = document.getElementById('stt-enabled-toggle');
@@ -543,21 +1059,114 @@ function toggleAuto() {
   document.getElementById('auto-toggle').classList.toggle('on', autoRoute);
 }
 
-function updateModelBadge() {
+// ── RAM bar — polls /sys every 5s so Elijah never has to guess ──
+// Green  = plenty of headroom (<70% used, no swap)
+// Yellow = getting close (70-88% used OR swap starting to grow)
+// Red    = swapping hard — next tab will feel it
+async function refreshRamBar() {
+  const el = document.getElementById('ram-bar');
+  if (!el) return;
+  try {
+    const r = await fetch('/sys');
+    if (!r.ok) return;
+    const d = await r.json();
+    const m = d.mem || {};
+    const pct = m.total_mb > 0 ? Math.round(100 * (m.total_mb - m.available_mb) / m.total_mb) : 0;
+    const swapMb = m.swap_used_mb || 0;
+    const freeGb = ((m.available_mb || 0) / 1024).toFixed(1);
+    // Thresholds tuned for a 15 GB + 2 GB swap machine. Key insight:
+    // leftover swap is only a PROBLEM when RAM is also under pressure.
+    // With 13 GB free RAM, 800 MB of swap residue isn't hurting anything.
+    //   · green  : plenty of RAM; swap residue ignored if RAM is flush
+    //   · warm   : RAM getting used AND some swap (real pressure)
+    //   · tight  : RAM > 92% OR swap > 1.4 GB — next load could stall
+    let color = '#2a8a4a';  // green
+    let label = 'RAM OK';
+    if (pct >= 92 || swapMb > 1400) {
+        color = '#c03030'; label = 'RAM tight';
+    } else if (pct >= 78 || (pct >= 55 && swapMb > 600)) {
+        // Only yellow on swap when RAM is ALSO stressed (>55% used).
+        // Pure swap residue on an idle machine = green.
+        color = '#d4a017'; label = 'RAM warm';
+    }
+    el.innerHTML = `<span style="color:${color};font-weight:600">● ${label}</span> ${freeGb}G free`;
+    const loadedNames = (d.loaded_models || []).map(m => m.name).join(', ') || 'none';
+    el.title =
+      `RAM: ${pct}% used · ${freeGb} GB available\n` +
+      `Swap in use: ${swapMb} MB\n` +
+      `Ollama loaded: ${loadedNames}\n` +
+      `Two tabs sharing the same model = fine. Different models at once = pressure.`;
+  } catch (e) { /* server down — leave last value */ }
+}
+setInterval(refreshRamBar, 5000);
+document.addEventListener('DOMContentLoaded', refreshRamBar);
+
+// Web-mode engine list — matches the key names the /web_search server
+// endpoint dispatches on. Label/value pairs so the user sees "Google
+// (via Gemini)" but the request sends "gemini_grounded".
+const WEB_ENGINES = [
+  ['all',                'All engines (blend)'],
+  ['gemini_grounded',    'Google (via Gemini)'],
+  ['brave',              'Brave Search'],
+  ['serper',             'Google (via Serper)'],
+  ['wikipedia',          'Wikipedia'],
+  ['duckduckgo',         'DuckDuckGo'],
+  ['duckduckgo_instant', 'DDG Instant Answer'],
+  ['wikihow',            'WikiHow'],
+];
+
+async function updateModelBadge() {
   const sel = document.getElementById('model-sel');
+  if (!sel) return;
   sel.innerHTML = '';
-  const opts = {
-    ollama: ['master-ai:latest','qwen2.5:14b','llava:latest','qwen3.5:cloud','kimi-k2.5:cloud'],
-    groq: ['llama-3.1-8b-instant','llama-3.3-70b-versatile','meta-llama/llama-4-scout-17b-16e-instruct','openai/gpt-oss-120b','qwen/qwen3-32b'],
-    openrouter: ['openrouter/auto']
-  };
-  const models = opts[currentProvider] || [];
-  const current = currentProvider === 'ollama' ? (document.getElementById('ollama-model')?.value || 'master-ai:latest') : models[0];
-  models.forEach(m => {
+  // Ollama list is now LIVE from /api/tags — no more hardcoded list that
+  // drifts from what's actually installed. Groq / OpenRouter stay static.
+  // Web / Research populate their own menus: Web = engine picker, Research
+  // = synthesis-model picker (reuses installed Ollama models, filtered).
+  let opts = [];  // array of [value, label]
+  if (currentProvider === 'ollama') {
+    let models = [];
+    try {
+      const host = settings.ollamaHost || defaultOllamaHost();
+      const res = await fetch(host + '/api/tags');
+      if (res.ok) {
+        const data = await res.json();
+        models = (data.models || []).map(m => m.name);
+      }
+    } catch (e) { /* offline — show whatever the input has saved */ }
+    if (!models.length) models = ['qwen2.5:7b', 'llava:latest'];
+    opts = models.map(m => [m, 'ollama/' + m.split('/').pop()]);
+  } else if (currentProvider === 'groq') {
+    opts = ['llama-3.1-8b-instant','llama-3.3-70b-versatile','meta-llama/llama-4-scout-17b-16e-instruct','openai/gpt-oss-120b','qwen/qwen3-32b']
+      .map(m => [m, 'groq/' + m.split('/').pop()]);
+  } else if (currentProvider === 'openrouter') {
+    opts = [['openrouter/auto', 'openrouter/auto']];
+  } else if (currentProvider === 'web') {
+    opts = WEB_ENGINES.map(([v,l]) => [v, 'web/' + l]);
+  } else if (currentProvider === 'research') {
+    // Synthesis happens on local Ollama; show installed models minus
+    // llava (vision, wrong tool for summarizing text). Fall back to the
+    // trifecta default if Ollama isn't reachable.
+    let models = [];
+    try {
+      const host = settings.ollamaHost || defaultOllamaHost();
+      const res = await fetch(host + '/api/tags');
+      if (res.ok) {
+        const data = await res.json();
+        models = (data.models || []).map(m => m.name).filter(n => !/llava/i.test(n));
+      }
+    } catch (e) {}
+    if (!models.length) models = ['qwen2.5:7b', 'qwen2.5:3b'];
+    opts = models.map(m => [m, 'research/' + m.split('/').pop()]);
+  }
+  const current = currentProvider === 'ollama'
+    ? (document.getElementById('ollama-model')?.value || 'qwen2.5:7b')
+    : (opts[0] ? opts[0][0] : '');
+  opts.forEach(([value, label]) => {
     const o = document.createElement('option');
-    o.value = m;
-    o.textContent = currentProvider + '/' + m.split('/').pop();
-    if (m === current) o.selected = true;
+    o.value = value;
+    o.textContent = label;
+    if (value === current) o.selected = true;
     sel.appendChild(o);
   });
 }
@@ -574,7 +1183,7 @@ function addMsg(role, text, id) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
   if (id) div.id = id;
-  div.innerHTML = `<span class="msg-text">${escHtml(text)}</span>`;
+  div.innerHTML = `<span class="msg-text">${linkify(text)}</span>`;
 
   if (role === 'ai') {
     const ts = document.createElement('span');
@@ -600,12 +1209,954 @@ function escHtml(t) {
   return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
 }
 
-// Rotating ninja phrases while the AI is generating — matches Sensei's set.
-const THINKING_PHRASES = [
+// Escape + auto-link. Used whenever we render chat content so URLs in
+// web-search results (Gemini grounding sources, DDG hits, Wikipedia
+// links) become clickable instead of plain text. Matches http/https,
+// trims trailing punctuation, opens in a new tab with rel=noopener.
+function linkify(t) {
+  let s = escHtml(t);
+  return s.replace(/(https?:\/\/[^\s<>"'`]+)/g, function(m) {
+    // Split off trailing sentence punctuation so "see http://x.com." doesn't
+    // include the period in the link.
+    const trailMatch = m.match(/[.,;!?)\]]+$/);
+    const trail = trailMatch ? trailMatch[0] : '';
+    const url = trail ? m.slice(0, -trail.length) : m;
+    // href needs the real URL (not &amp;) for browsers to navigate correctly.
+    const href = url.replace(/&amp;/g, '&');
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${url}</a>${trail}`;
+  });
+}
+
+// ── Template system — mode picker shown on a fresh session ────
+const TEMPLATES = {
+  brainstorm: {
+    prompt: "You are Pupil in BRAINSTORM mode. Help the user narrow a vague idea before anything gets built. Ask 2-3 clarifying questions covering: (1) who the end user is, (2) what 'finished' looks like, (3) the smallest first version. DO NOT write code, scripts, or detailed solutions. Wait for the user to say a build trigger ('build it', 'code it', 'make it', 'ship it', 'ok go') before transitioning to solutions. Keep each reply tight.",
+    greet: "🧠 Brainstorm mode. What are we scoping? (Tell me the rough idea — I'll ask the right questions to narrow it.)"
+  },
+  debug: {
+    prompt: "You are Pupil in DEBUG mode. Before suggesting any fix, ask diagnostic questions: (1) exact symptom or error message, (2) last known working state, (3) what the user already tried, (4) relevant environment (OS, versions, commands run). Only propose a fix after you understand the problem. Never guess blindly.",
+    greet: "🔧 Debug mode. What's broken? Paste the error or describe the symptom."
+  },
+  chat: {
+    prompt: "",  // uses the default Pupil system prompt
+    greet: "💬 Free chat. What's on your mind?"
+  },
+  projects: {
+    prompt: "You are Pupil in PROJECTS mode. The user wants to discuss a project they've already started. Read the project details they share carefully. Help them think through next steps, blockers, decisions, or improvements. Reference specific details when responding. Do NOT re-scope the project from scratch or try to rewrite it.",
+    greet: "📁 Projects mode. Which project are we talking about? Paste the entry from ~/scripts/PROJECTS.md or describe it in a few lines."
+  },
+  plan_budget: {
+    prompt: "You are Pupil in BUDGET PLANNING mode. Ask about: monthly income, fixed expenses, variable expenses, savings goals, timeframe. Build a realistic month-by-month budget. Call out tradeoffs honestly.",
+    greet: "💰 Budget planning. What's your monthly income and what are you saving toward?"
+  },
+  plan_diet: {
+    prompt: "You are Pupil in DIET PLANNING mode. Ask about: goal (lose / build / maintain), current weight & target, dietary restrictions, activity level, cooking time available, food preferences. Build a weekly meal plan that fits their real life.",
+    greet: "🥗 Diet planning. What's your goal, and are there foods you can't or won't eat?"
+  },
+  plan_project: {
+    prompt: "You are Pupil in PROJECT PLANNING mode. Ask about: scope, deadline, resources available, success criteria, known risks. Deliver a step-by-step plan with milestones and check-in points.",
+    greet: "🚀 Project planning. What's the project, and when does it need to be done?"
+  },
+  plan_travel: {
+    prompt: "You are Pupil in TRAVEL PLANNING mode. Ask about: destination, dates, budget, party size, preferences (adventure / relax / culture / food), constraints. Build a day-by-day itinerary.",
+    greet: "✈️ Travel planning. Where to, when, and how long?"
+  },
+  plan_custom: {
+    prompt: "You are Pupil in CUSTOM PLANNING mode. Ask the user what kind of plan they need, then ask the right questions to build it, then deliver a structured plan.",
+    greet: "✨ Custom plan. What are we planning — and what kind of plan is it (financial / life / learning / something else)?"
+  }
+};
+
+let activeTemplate = null;  // current session's template key
+
+function selectTemplate(key) {
+  const t = TEMPLATES[key];
+  if (!t) return;
+  activeTemplate = key;
+  // Hide the template panel — replaced by the chat area.
+  const panel = document.getElementById('template-panel');
+  if (panel) panel.classList.add('hidden');
+  // Override system prompt for THIS session (doesn't persist to settings).
+  // We keep the user's saved sys-prompt in the textarea untouched; override
+  // via a per-session var that streamResponse reads.
+  window._sessionPrompt = t.prompt || '';
+  // Seed the chat with the mode's greeting.
+  addMsg('ai', t.greet);
+  // Focus the input so user can start typing right away.
+  document.getElementById('user-input')?.focus();
+}
+
+function showPlanSubs() {
+  document.getElementById('plan-subs').style.display = 'grid';
+  const ps = document.getElementById('projects-subs');
+  if (ps) ps.style.display = 'none';
+}
+
+function showProjectsSubs() {
+  document.getElementById('projects-subs').style.display = 'grid';
+  const ps = document.getElementById('plan-subs');
+  if (ps) ps.style.display = 'none';
+}
+
+async function selectProject(name) {
+  // Enter Projects mode seeded with the picked project name.
+  // Fetches /project_summary for a pre-computed briefing — cached summaries
+  // come back fast; a cold miss spends ~30-60s generating one.
+  activeTemplate = 'projects';
+  const panel = document.getElementById('template-panel');
+  if (panel) panel.classList.add('hidden');
+  window._sessionPrompt = (TEMPLATES.projects && TEMPLATES.projects.prompt) || '';
+
+  // Placeholder "loading" briefing while we fetch the real one.
+  addMsg('ai',
+    `⏳ **Pulling your ${name} briefing…**\n\n` +
+    `I'm reading your project notes + recent sessions. If this is the first time today, I'll also write a fresh summary (takes ~30–60s while my brain warms up). After that, it's instant from cache.`
+  );
+
+  let data = null;
+  try {
+    const res = await fetch('/project_summary?name=' + encodeURIComponent(name));
+    if (res.ok) data = await res.json();
+  } catch (e) { /* offline / file:// — fall back to plain mode */ }
+
+  if (data && data.summary) {
+    renderBriefing(data);
+  } else {
+    // Graceful fallback when the server isn't there
+    addMsg('ai',
+      `📁 **${name}** — ready to work. Paste the entry from \`~/scripts/PROJECTS.md\` (or just describe what you need) and I'll help you move it forward.`
+    );
+  }
+  const ta = document.getElementById('user-input');
+  if (ta) { ta.value = `I want to work on ${name}. `; ta.focus(); }
+}
+
+// ── Paperwork-style briefing render ──
+// Shown in the chat area as a scroll-down document: header + bulletin
+// summary + project board block. Fresh/cache tag at the top so you know
+// if the AI just thought about it or is reading from its notes.
+function renderBriefing(data) {
+  const cachedAgo = data.cached_at
+    ? Math.max(0, Math.floor((Date.now()/1000 - data.cached_at) / 60))
+    : 0;
+  const freshTag = data.source === 'cache'
+    ? `🗂  cached · ${cachedAgo} min ago`
+    : `✨ fresh · just read by your AI`;
+
+  // Clean up Ollama's summary — keep bullet lines starting with "- " or "•"
+  const bullets = (data.summary || '')
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.startsWith('- ') || l.startsWith('• ') || l.startsWith('* '))
+    .map(l => l.replace(/^[-•*]\s*/, ''));
+
+  // When the AI brain is cold/unreachable we still show the hardcoded
+  // briefing (project board). This is the "expected because we're doing
+  // cold" behavior — the scaffolding stays even when the AI fades.
+  const aiFailed = !bullets.length &&
+    ((data.summary || '').startsWith('(briefing generation') ||
+     !(data.summary || '').trim());
+
+  const bulletHtml = bullets.length
+    ? bullets.map(b => `• ${escHtmlSafe(b)}`).join('\n')
+    : aiFailed
+      ? `_The AI brain is still warming up. The hardcoded briefing below is complete — scroll for it. Type **refresh briefing** in a minute for a live summary._`
+      : escHtmlSafe(data.summary || '');
+
+  const md =
+`**📁 Project Briefing — ${data.name}**
+
+${freshTag}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**🥷 AI Summary** _(5-second read)_
+
+${bulletHtml}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**📋 Project Board**
+
+\`\`\`
+${(data.project_block || '(no PROJECTS.md block)').trim()}
+\`\`\`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_Scroll down and tell me what you want to do. Type **refresh briefing** to regenerate the summary. Type **menu** to go back._`;
+
+  addMsg('ai', md);
+}
+
+// Minimal HTML escape for text going into the briefing
+function escHtmlSafe(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// "refresh briefing" command inside projects mode regenerates the summary
+async function refreshBriefing(name) {
+  addMsg('ai', `⏳ regenerating your ${name} briefing…`);
+  try {
+    const res = await fetch('/project_summary?name=' + encodeURIComponent(name) + '&refresh=1');
+    if (res.ok) {
+      const data = await res.json();
+      renderBriefing(data);
+      return true;
+    }
+  } catch (e) {}
+  addMsg('ai', `⚠ couldn't regenerate — server might be down.`);
+  return false;
+}
+
+function openBashTutor() {
+  // Inline lesson — don't push the user to a terminal. Drop them on Class 1.
+  activeTemplate = 'lesson_bash';
+  window._sessionPrompt = '';
+  const panel = document.getElementById('template-panel');
+  if (panel) panel.classList.add('hidden');
+  startLesson('bash');
+}
+
+function openPythonPath() {
+  activeTemplate = 'lesson_python';
+  window._sessionPrompt = '';
+  const panel = document.getElementById('template-panel');
+  if (panel) panel.classList.add('hidden');
+  startLesson('python');
+}
+
+// ── LESSON ENGINE (inline digital test) ────────────────────────
+// Mini in-chat quiz. No paste required. First question on-screen at start.
+// Answer key lookup is loose (lowercased + trimmed + substring match).
+// Per-lesson progress persists across sessions in localStorage under
+// "ta_lessons_done". Pupil uses this to unlock next class + show the
+// next question the user hasn't yet answered.
+function lessonDone(key) {
+  const done = JSON.parse(localStorage.getItem(lsKey('ta_lessons_done')) || '{}');
+  done[key] = (done[key] || 0) + 1;
+  localStorage.setItem(lsKey('ta_lessons_done'), JSON.stringify(done));
+}
+function lessonCount(key) {
+  const done = JSON.parse(localStorage.getItem(lsKey('ta_lessons_done')) || '{}');
+  return done[key] || 0;
+}
+
+const LESSONS = {
+  bash: {
+    title: "Bash — Class 1",
+    intro: "🥋 **Welcome, pupil.** You're on Class 1 of bash. I'll ask, you answer — short answers work. Say **next** to move on, **exit** to leave.\n\n**Bash** is the language your terminal speaks. You type bash commands; the computer runs them. Every `.sh` file is a bash file.",
+    questions: [
+      {
+        q: "**Q1.** What character starts a comment in bash (the shell ignores everything after it on that line)?",
+        accept: ['#', 'hash', 'pound', 'hashtag', 'sharp'],
+        hint: "It looks like this:  # this is a note",
+        explain: "✅ `#` starts a comment. Bash ignores everything after it on that line. Shebangs like `#!/bin/bash` are a special case at the very top of a script."
+      },
+      {
+        q: "**Q2.** Which command lists the files in a folder?",
+        accept: ['ls'],
+        hint: "Two letters. L and S.",
+        explain: "✅ `ls` = 'list'. Try `ls ~/scripts` in a terminal later — that's your scripts folder."
+      },
+      {
+        q: "**Q3.** In `~/scripts/PROJECTS.md`, what does the `~` mean?",
+        accept: ['home', 'home folder', 'home directory', 'my home', 'user home', '/home', 'home dir'],
+        hint: "It's a shortcut for where your personal files live.",
+        explain: "✅ `~` is your home folder (for you: `/home/elijah`). `~/scripts` = the scripts folder inside home."
+      },
+      {
+        q: "**Q4.** What does the pipe `|` do between two commands, like `cat file | grep word`?",
+        accept: ['pipe', 'pass', 'sends', 'feeds', 'chain', 'connects', 'output', 'send output'],
+        hint: "It connects the FIRST command's output to the SECOND command's input.",
+        explain: "✅ `|` pipes output from the left command into the right one. `cat` shows the file → `grep word` keeps only lines with 'word'."
+      },
+      {
+        q: "**Q5.** What's the ONE red flag that means *don't paste that command*?",
+        accept: ['sudo', 'rm', 'rm -rf', "don't know them", "unknown", "unfamiliar", "curl", "pipe bash", "curl | bash", "i don't recognize"],
+        hint: "Anything that DELETES, ESCALATES, or DOWNLOADS-THEN-RUNS from a source you don't know.",
+        explain: "✅ Top red flags: `rm -rf` (deletes recursively), `sudo` from strangers (admin power), `curl ... | bash` (runs remote code blind). If you don't recognize it, don't paste it."
+      },
+    ],
+    outro: "🥋 **Class 1 complete.** You now know: comments (`#`), list (`ls`), home (`~`), pipes (`|`), and paste-safety. Say **next lesson** to unlock **Bash Class 2**, or type anything else to free-chat."
+  },
+  bash2: {
+    title: "Bash — Class 2: Folders + Files",
+    intro: "🥋 **Class 2.** You know how to look around — now you'll *move* around. 5 questions.",
+    questions: [
+      {
+        q: "**Q1.** What command changes into a folder? (e.g. to enter `~/scripts`)",
+        accept: ['cd', 'change directory'],
+        hint: "Two letters. C and D. 'change directory'.",
+        explain: "✅ `cd ~/scripts` moves you there. `cd ~` alone goes home. `cd ..` goes up one level."
+      },
+      {
+        q: "**Q2.** What command shows the file's name of where you currently are?",
+        accept: ['pwd', 'print working directory'],
+        hint: "Three letters. P, W, D. 'print working directory'.",
+        explain: "✅ `pwd` = 'print working directory'. Handy when you're lost — it tells you the exact path you're in."
+      },
+      {
+        q: "**Q3.** Which command COPIES a file?",
+        accept: ['cp', 'copy'],
+        hint: "Two letters. Short for 'copy'.",
+        explain: "✅ `cp source.txt target.txt` copies source to target. `cp -r folder new_folder` for a whole folder."
+      },
+      {
+        q: "**Q4.** Which command MOVES or RENAMES a file?",
+        accept: ['mv', 'move'],
+        hint: "Two letters. Same idea as 'move' (and a rename is really a 'move to a new name').",
+        explain: "✅ `mv old.txt new.txt` renames. `mv file.txt ~/Documents/` moves it to another folder."
+      },
+      {
+        q: "**Q5.** Which command DELETES a file — AND what flag makes it delete a whole folder recursively? (two parts)",
+        accept: ['rm', 'rm -r', 'rm -rf', 'remove'],
+        hint: "Two letters for delete, then `-r` or `-rf` for folders.",
+        explain: "✅ `rm file.txt` deletes a file. `rm -r folder/` deletes a folder recursively. `-f` forces, no confirm. **Be careful.** `rm -rf /` would wipe your whole system."
+      },
+    ],
+    outro: "🥋 **Class 2 complete.** You can now navigate and move files: `cd`, `pwd`, `cp`, `mv`, `rm`. Class 3 covers chaining commands (`&&`, `||`, `;`) and redirecting output (`>`, `>>`). Say **next lesson** for Class 3."
+  },
+  bash3: {
+    title: "Bash — Class 3: Chaining & Redirecting",
+    intro: "🥋 **Class 3.** You can read, navigate, move things. Now you'll *combine* commands and *capture* their output.",
+    questions: [
+      {
+        q: "**Q1.** What does `&&` do between two commands, like `mkdir logs && cd logs`?",
+        accept: ['and', 'both', 'success', 'if the first succeeds', 'second only if first succeeds', 'and then', 'run the second if the first works'],
+        hint: "Second command only runs if the first succeeded.",
+        explain: "✅ `&&` = AND. Second runs only if the first succeeded. Safer than `;` because it stops on error."
+      },
+      {
+        q: "**Q2.** What does `>` do at the end of a command, like `ls > files.txt`?",
+        accept: ['redirect', 'save', 'write', 'send to file', 'output to file', 'to file', 'overwrite'],
+        hint: "Captures the output and puts it somewhere.",
+        explain: "✅ `>` redirects output TO a file, overwriting it. `ls > files.txt` saves the `ls` output into `files.txt`."
+      },
+      {
+        q: "**Q3.** What's the difference between `>` and `>>`?",
+        accept: ['append', 'adds', 'two appends', '>> adds', 'overwrites vs appends', 'one overwrites one appends', 'doesnt overwrite', "doesn't overwrite"],
+        hint: "One overwrites, the other… adds on.",
+        explain: "✅ `>` overwrites the file. `>>` appends to it (adds to the end, keeps existing content). Use `>>` for logs."
+      },
+      {
+        q: "**Q4.** What does `2>` do? (hint: `1` is stdout, `2` is stderr)",
+        accept: ['error', 'stderr', 'redirect error', 'redirect stderr', 'send error', '2 is error', 'captures error'],
+        hint: "It redirects error messages specifically — separate from normal output.",
+        explain: "✅ `2>` redirects stderr (error output). `2>/dev/null` throws errors into the void. `2>&1` merges errors into regular output."
+      },
+      {
+        q: "**Q5.** What does `/dev/null` mean?",
+        accept: ['nothing', 'void', 'black hole', 'discard', 'trash', 'throws away', 'nowhere', 'into nothing', 'ignore output'],
+        hint: "It's the 'black hole' of Linux — anything sent there disappears.",
+        explain: "✅ `/dev/null` is the black hole. Writing to it discards output. Used a lot: `command > /dev/null 2>&1` = run silently, hide everything."
+      },
+    ],
+    outro: "🥋 **Class 3 complete.** You've graduated from *using* commands to *combining* them. Say **next lesson** for Class 4 (permissions + sudo)."
+  },
+  bash4: {
+    title: "Bash — Class 4: Permissions & sudo",
+    intro: "🥋 **Class 4.** Every file on Linux has an owner and permissions. This class is about who can read, write, and run stuff — and why `sudo` is a big deal.",
+    questions: [
+      {
+        q: "**Q1.** What command shows file permissions along with the file list?",
+        accept: ['ls -l', 'ls-l', 'ls -al', 'ls -la'],
+        hint: "It's `ls` with a flag. The flag is a single letter.",
+        explain: "✅ `ls -l` (long format) — shows who owns each file and what everyone is allowed to do with it. `ls -la` adds hidden files too."
+      },
+      {
+        q: "**Q2.** What command changes a file's permissions — for example, to make it runnable?",
+        accept: ['chmod', 'chmod +x'],
+        hint: "Five letters. Short for 'change mode'.",
+        explain: "✅ `chmod +x file.sh` makes a script runnable. `chmod 644 file.txt` gives you read/write and everyone else read-only. (The numbers are shorthand for permission bits — don't worry about them yet.)"
+      },
+      {
+        q: "**Q3.** What's `sudo`? What does it do when you put it in front of a command?",
+        accept: ['super', 'admin', 'root', 'superuser', 'super user', 'runs as admin', 'as admin', 'elevated', 'admin rights', 'administrator', 'permissions'],
+        hint: "It gives the command admin-level power.",
+        explain: "✅ `sudo` runs that command as the system admin. Stands for 'super user do'. You need it to install software or change system files. **Never paste a `sudo` command you don't understand.** It can change anything."
+      },
+      {
+        q: "**Q4.** What command tells you YOUR username?",
+        accept: ['whoami', 'who am i'],
+        hint: "Literally: 'who am I'. One word, no space.",
+        explain: "✅ `whoami` — tells you which user you're logged in as. Useful when you're not sure if you're root, your normal user, or someone else."
+      },
+      {
+        q: "**Q5.** If `file.sh` isn't running and you see 'permission denied', what's the fix?",
+        accept: ['chmod +x', 'chmod', 'make executable', 'executable', 'runnable'],
+        hint: "Back to a command from Q2. You need to make it runnable first.",
+        explain: "✅ `chmod +x file.sh` — flips on the 'executable' permission. THEN you can run it with `bash file.sh` or `./file.sh`."
+      },
+    ],
+    outro: "🥋 **Class 4 complete.** Permissions, owners, `sudo`, `whoami`, `chmod +x`. Say **next lesson** for Class 5 (processes — what's running and how to stop it)."
+  },
+  bash5: {
+    title: "Bash — Class 5: Processes",
+    intro: "🥋 **Class 5.** A *process* is any program that's currently running. Your browser, Ollama, Sensei — all processes. This class is about seeing them and controlling them.",
+    questions: [
+      {
+        q: "**Q1.** What command shows running processes?",
+        accept: ['ps', 'ps aux', 'ps -ef', 'top', 'htop'],
+        hint: "Two letters — short for 'process status'. Or the fancier one: `top` (like Task Manager).",
+        explain: "✅ `ps` shows processes. `ps aux` shows ALL of them with details. `top` is an interactive view (press `q` to quit). `htop` is the prettier version."
+      },
+      {
+        q: "**Q2.** What command stops a running process by its ID number?",
+        accept: ['kill'],
+        hint: "Four letters. Sounds scary but it's normal.",
+        explain: "✅ `kill 1234` — asks process 1234 to stop politely. If it won't, use `kill -9 1234` which is forceful. (`9` means 'can't be ignored'.)"
+      },
+      {
+        q: "**Q3.** What does adding `&` to the END of a command do, like `ollama serve &`?",
+        accept: ['background', 'runs in background', 'background job', 'in background', 'behind'],
+        hint: "It lets the command run while you keep using your terminal.",
+        explain: "✅ `&` runs it in the background so you get your prompt back immediately. The command keeps going; you can keep working."
+      },
+      {
+        q: "**Q4.** What command finds processes matching a name, like 'python'?",
+        accept: ['pgrep', 'ps | grep', 'grep python', 'pgrep python'],
+        hint: "There's a shortcut command just for this — `pgrep`. Or the long way: `ps aux | grep python`.",
+        explain: "✅ `pgrep python` lists process IDs with 'python' in the name. Or `ps aux | grep python` shows full lines. Both work."
+      },
+      {
+        q: "**Q5.** What command tells you how much memory and CPU you have free right now?",
+        accept: ['free', 'top', 'htop', 'free -h'],
+        hint: "For memory specifically: one short word. For everything: the interactive one from Q1.",
+        explain: "✅ `free -h` shows memory (the `-h` makes it human-readable, like '8.0 GB' instead of '8192000'). `top` or `htop` shows live CPU + memory + processes all at once."
+      },
+    ],
+    outro: "🥋 **Class 5 complete.** You can see what's running, kill it if it's stuck, and keep an eye on system health. Say **next lesson** for Class 6 (writing your first bash script)."
+  },
+  bash6: {
+    title: "Bash — Class 6: Your First Script",
+    intro: "🥋 **Class 6.** Until now you've been TYPING commands. Now you'll SAVE a bunch of them into a `.sh` file and run the whole thing at once. That's a script.",
+    questions: [
+      {
+        q: "**Q1.** What line goes at the top of every bash script to tell Linux 'this is a bash file'?",
+        accept: ['#!/bin/bash', 'shebang', '#!bin/bash', '#! /bin/bash'],
+        hint: "Starts with `#!`. People call it the 'shebang' line.",
+        explain: "✅ `#!/bin/bash` — the first line of almost every `.sh` file. It's called a 'shebang'. It tells the OS to use bash to run the file."
+      },
+      {
+        q: "**Q2.** How do you make a variable called `name` that holds 'Elijah'?",
+        accept: ['name=elijah', 'name="elijah"', 'name=\'elijah\'', 'name=', 'name='],
+        hint: "Variable name, equals sign, value. NO spaces around the equals sign.",
+        explain: "✅ `name=\"Elijah\"` — notice NO spaces around `=`. That's a bash quirk. `name = \"Elijah\"` would error out."
+      },
+      {
+        q: "**Q3.** How do you USE a variable — for example, print it with `echo`?",
+        accept: ['$name', '${name}', '$', 'dollar sign'],
+        hint: "Put a dollar sign in front.",
+        explain: "✅ `echo $name` prints the value. `$` says 'read the variable'. Without it, `echo name` just prints the literal word 'name'."
+      },
+      {
+        q: "**Q4.** Once you've written `hello.sh`, what are TWO ways to run it?",
+        accept: ['bash hello.sh', './hello.sh', 'bash', './'],
+        hint: "One uses the word `bash`. The other uses `./` (dot-slash).",
+        explain: "✅ `bash hello.sh` always works. `./hello.sh` works if you gave it execute permission first (`chmod +x hello.sh`). Same result either way."
+      },
+      {
+        q: "**Q5.** What command do you use inside a script to print text to the screen?",
+        accept: ['echo', 'printf'],
+        hint: "Four letters. Like the sound you hear in a canyon.",
+        explain: "✅ `echo \"hello\"` — prints text. `printf` is fancier (lets you format numbers, align columns) but `echo` covers 95% of cases."
+      },
+    ],
+    outro: "🥋 **Class 6 complete.** You just crossed a line — you're not just USING the shell, you're WRITING for it. Say **next lesson** to switch to Python Class 1."
+  },
+  _bash7_archived: {
+    title: "Bash — Class 7: The Chunker",
+    intro: "🥋 **Class 7.** Local AI models can't write 15,000 words in one shot — but they can write 5,000 × 3 and stitch them together. That's the chunker. You need this for apocalypse-mode document work. 5 questions on how to drive it.",
+    questions: [
+      {
+        q: "**Q1.** You have a big task — say \"write a 5000 word manual for restarting a diesel generator.\" What's the right shell command to fire it through the chunker?\n_(hint: the chunker command is called `chunker` after we installed the symlink. Your task goes in quotes.)_",
+        accept: ['chunker "write', 'chunker  "write', 'chunker  write', 'chunker "', 'chunker\t"', 'bash ~/scripts/chunker.sh "write', 'bash ~/scripts/chunker.sh "'],
+        hint: 'Format is: `chunker "your full task in one set of quotes"`',
+        explain: "✅ `chunker \"write a 5000 word manual for restarting a diesel generator\"` — the whole task stays inside ONE pair of double quotes. Without quotes, bash would read each word as a separate argument and the chunker would only see 'write'."
+      },
+      {
+        q: "**Q2.** Why do the quotes matter? In your own words, what would go wrong if you left them off?",
+        accept: ['separate', 'multiple args', 'multiple arguments', 'split', 'would break', 'wouldn\'t work', 'each word', 'one argument', 'single argument', 'spaces break', 'spaces split', 'only see', 'loses', 'bash splits', 'different arguments'],
+        hint: "Think about what bash does with spaces — it splits on them.",
+        explain: "✅ Without quotes, bash treats each space as a separator and passes each word as a SEPARATE argument. The chunker only reads `$1` (the first argument), so it would only see the word 'write' and throw away the rest. Quotes fuse everything into one string."
+      },
+      {
+        q: "**Q3.** You fired a task and walked away. Come back later — what command shows you which chunker tasks are in progress?",
+        accept: ['chunker list', 'list'],
+        hint: "One word after `chunker`. Not a flag, just a plain word.",
+        explain: "✅ `chunker list` — shows every task with its completion status like `[3/8]` meaning 3 of 8 chunks done. Each task has a unique ID you'll need for Q4."
+      },
+      {
+        q: "**Q4.** Your laptop crashed at chunk 5 of 8. The work from chunks 1-5 is already saved. How do you pick up where you left off?\n_(hint: the command uses the task ID from `chunker list`)_",
+        accept: ['chunker resume', 'resume'],
+        hint: "`chunker resume <task_id>` — the task ID comes from `chunker list`.",
+        explain: "✅ `chunker resume <task_id>` — reads the `plan.json` in the task folder, sees which chunks are done, starts from the next one. This is why the chunker is crash-safe: every chunk is on disk the second it's generated."
+      },
+      {
+        q: "**Q5.** When the whole task finishes, where does your final document live? What's the file called?\n_(hint: it's inside `~/.sensei_chunks/<task_id>/` — name of the file is the easy part)_",
+        accept: ['final.md', 'final', '.sensei_chunks', '~/.sensei_chunks', 'sensei_chunks'],
+        hint: "Two parts: the folder starts with `.sensei_chunks/<task_id>/`, the filename is what any 'last step' file would logically be called.",
+        explain: "✅ `~/.sensei_chunks/<task_id>/final.md` — the merged document. You'll also find `chunk_01.md`, `chunk_02.md` etc. (each raw chunk before merge) and `plan.json` (the outline + progress state). `final.md` is the one you actually use."
+      },
+    ],
+    outro: "🥋 **Class 7 complete.** You can now drive the chunker: fire tasks, check progress, resume crashes, find your output. This is the tool that makes local AI produce book-length work.\n\n**Try it for real:** `chunker \"write a 3000 word field guide to purifying water without electricity\"` — takes ~5-8 minutes, gives you a real reference document.\n\nThat's the end of the Bash track (Classes 1-7). Say **next lesson** to switch tracks → Python Class 1."
+  },
+  python: {
+    title: "Python — Class 1",
+    intro: "🎓 **Welcome to Class 1 of Python.** I'll ask, you answer. Say **next** to move on, **exit** to leave.\n\n**Python** is a language you read almost like English. It runs scripts (`.py` files) and is what most AI tools — including this one — are built with.",
+    questions: [
+      {
+        q: "**Q1.** How do you print the text `hello` in Python? (one line of code)",
+        accept: ['print("hello")', "print('hello')", 'print(hello)', 'print "hello"', "print 'hello'"],
+        hint: "It's literally the word `print` and then parentheses.",
+        explain: "✅ `print(\"hello\")` — the parens call the print function, the quotes mark text. Single OR double quotes both work."
+      },
+      {
+        q: "**Q2.** In Python, what symbol starts a comment (ignored by the computer)?",
+        accept: ['#', 'hash', 'pound', 'hashtag'],
+        hint: "Same as bash, actually.",
+        explain: "✅ `#` — same as bash. Python and bash both use `#` for comments."
+      },
+      {
+        q: "**Q3.** Which of these saves the number 5 into a box called `age`?  a) age = 5   b) age == 5   c) 5 = age",
+        accept: ['a', 'age = 5', 'a)', 'option a'],
+        hint: "`=` alone means assign. `==` means compare.",
+        explain: "✅ `age = 5` (option a) assigns. `==` is for comparing. You can't put a number on the left of `=`."
+      },
+      {
+        q: "**Q4.** How do you check if `age` equals 5 inside an `if` statement?",
+        accept: ['if age == 5', 'age == 5', '==', 'if age==5'],
+        hint: "Double equals.",
+        explain: "✅ `if age == 5:` — one equals assigns, two equals compares."
+      },
+      {
+        q: "**Q5.** What file extension do Python scripts use?",
+        accept: ['.py', 'py'],
+        hint: "Two letters after the dot.",
+        explain: "✅ `.py` — like `hello.py`. Run it with `python3 hello.py` in a terminal."
+      },
+    ],
+    outro: "🎓 **Class 1 complete.** You've met: `print`, comments `#`, assignment `=` vs compare `==`, and the `.py` extension. Say **next lesson** for Class 2 (if/else)."
+  },
+  python2: {
+    title: "Python — Class 2: If / Else",
+    intro: "🎓 **Class 2.** Python can make decisions. 5 questions on `if`, `else`, and `elif`.",
+    questions: [
+      {
+        q: "**Q1.** What symbol ends an `if` line in Python? (the punctuation right before the indented block)",
+        accept: [':', 'colon'],
+        hint: "A single punctuation mark. Not a semicolon.",
+        explain: "✅ A colon `:` ends `if`, `else`, `elif`, `for`, `while`, `def` — anything that opens an indented block."
+      },
+      {
+        q: "**Q2.** If `age >= 18` is True, what does this print?  `if age >= 18: print(\"adult\")  else: print(\"minor\")`",
+        accept: ['adult'],
+        hint: "Pick the first line — the True branch.",
+        explain: "✅ `adult`. When the `if` condition is True, the first branch runs and `else` is skipped."
+      },
+      {
+        q: "**Q3.** What keyword means 'otherwise if' — for a second condition when the first didn't match?",
+        accept: ['elif'],
+        hint: "Four letters. Blend of 'else' and 'if'.",
+        explain: "✅ `elif`. Example:  `if x==1:` ... `elif x==2:` ... `else:` — you can chain many `elif`s."
+      },
+      {
+        q: "**Q4.** In Python, what do you use instead of curly braces `{}` to group lines under an `if`?",
+        accept: ['indent', 'indentation', 'spaces', 'whitespace', 'tab', 'tabs'],
+        hint: "Python uses whitespace, not punctuation.",
+        explain: "✅ **Indentation.** 4 spaces is standard. Everything indented under an `if:` belongs to the if-block. Python is *picky* about consistent indentation."
+      },
+      {
+        q: "**Q5.** What does `if not logged_in:` mean in plain English?",
+        accept: ['if not logged in', 'not logged in', 'user is not logged in', 'if the user is not logged in', 'opposite', 'reverse', 'invert'],
+        hint: "`not` flips True/False.",
+        explain: "✅ It means 'if the user is NOT logged in'. `not` inverts a boolean. Reads almost like English: *if not logged in, then…*"
+      },
+    ],
+    outro: "🎓 **Class 2 complete.** You know `:`, `if`/`else`/`elif`, indentation, and `not`. Say **next lesson** for Class 3 (lists + loops)."
+  },
+  python3: {
+    title: "Python — Class 3: Lists & Loops",
+    intro: "🎓 **Class 3.** Now you repeat and collect. 5 questions on lists and `for` loops.",
+    questions: [
+      {
+        q: "**Q1.** How do you make a list in Python that contains the words 'red', 'green', 'blue'?",
+        accept: ["['red', 'green', 'blue']", '["red", "green", "blue"]', "['red','green','blue']", 'red green blue', 'red, green, blue'],
+        hint: "Square brackets, commas between items, quotes around each word.",
+        explain: "✅ `colors = ['red', 'green', 'blue']`. Square brackets make a list. Commas separate items. Quotes mark each string."
+      },
+      {
+        q: "**Q2.** How do you get the FIRST item of a list called `colors`?",
+        accept: ['colors[0]', '[0]', 'index 0', 'zero', 'first is zero'],
+        hint: "Lists count from zero, not one.",
+        explain: "✅ `colors[0]`. Python (like most languages) starts counting at 0. So `colors[0]` is 'red', `colors[1]` is 'green', and so on."
+      },
+      {
+        q: "**Q3.** What keyword starts a loop that walks through every item in a list?",
+        accept: ['for'],
+        hint: "Three letters.",
+        explain: "✅ `for`. Example:  `for c in colors:` then an indented `print(c)`. Prints each color on its own line."
+      },
+      {
+        q: "**Q4.** What does `len(colors)` return if `colors = ['red', 'green', 'blue']`?",
+        accept: ['3', 'three'],
+        hint: "Count the items.",
+        explain: "✅ `3`. `len()` gives the length (count of items). Works on lists, strings, and many other things."
+      },
+      {
+        q: "**Q5.** How do you ADD the word 'yellow' to the end of the `colors` list?",
+        accept: ['colors.append', 'append', '.append(', "append('yellow')", 'append(\"yellow\")', 'colors.append(yellow)', "colors.append('yellow')", 'colors.append(\"yellow\")'],
+        hint: "It's a method on the list. `list.X(item)`.",
+        explain: "✅ `colors.append('yellow')`. Adds to the end. Mutates the list in place — no `=` needed."
+      },
+    ],
+    outro: "🎓 **Class 3 complete.** Lists + loops + `len` + `append`. You can now write programs that DO things repeatedly. Say **next lesson** for Class 4 (functions — the building blocks)."
+  },
+  python4: {
+    title: "Python — Class 4: Functions",
+    intro: "🎓 **Class 4.** A *function* is a reusable chunk of code with a name. You write it once, then you can call it from anywhere. It's how real programs are built.",
+    questions: [
+      {
+        q: "**Q1.** What keyword starts a function definition in Python?",
+        accept: ['def'],
+        hint: "Three letters. Short for 'define'.",
+        explain: "✅ `def`. Example: `def greet():` — you've just defined a function called `greet`. The `:` starts its body (which must be indented)."
+      },
+      {
+        q: "**Q2.** How do you CALL a function named `greet`?",
+        accept: ['greet()', 'greet(', '()'],
+        hint: "Write the name, then parentheses.",
+        explain: "✅ `greet()` — the parentheses tell Python 'actually run this function'. Without them, `greet` alone just refers to the function without calling it."
+      },
+      {
+        q: "**Q3.** How do you write a function that takes a name as input and says hello to them?",
+        accept: ['def greet(name)', 'def greet(name):', 'greet(name)', 'name'],
+        hint: "Put the input inside the parentheses. The input is called a 'parameter'.",
+        explain: "✅ `def greet(name):` — then inside, `print('Hello ' + name)`. Call it with `greet('Elijah')` and it prints 'Hello Elijah'."
+      },
+      {
+        q: "**Q4.** What keyword sends a value BACK from a function to whoever called it?",
+        accept: ['return'],
+        hint: "Six letters. Says what it does.",
+        explain: "✅ `return`. Example: `def double(x): return x * 2`. Then `result = double(5)` puts `10` into `result`. Without `return`, the function gives you `None` by default."
+      },
+      {
+        q: "**Q5.** Why write functions? Pick the best reason:  a) to look smart  b) to reuse code without copying it  c) Python requires them",
+        accept: ['b', 'reuse', 'reuse code', 'b)', 'option b', 'not repeating', "don't repeat"],
+        hint: "The one about not copy-pasting the same 10 lines every time.",
+        explain: "✅ Option b — **reuse without copy-paste**. Write the logic once, call it 50 times. When the logic changes, you fix it in ONE place. This is the whole game of clean code."
+      },
+    ],
+    outro: "🎓 **Class 4 complete.** `def`, parameters, `return`, and WHY functions matter. Say **next lesson** for Class 5 (dictionaries — named storage)."
+  },
+  python5: {
+    title: "Python — Class 5: Dictionaries",
+    intro: "🎓 **Class 5.** Lists give you items by position (item 0, item 1...). Dictionaries give you items by NAME — like a real dictionary where you look up a word to get its meaning.",
+    questions: [
+      {
+        q: "**Q1.** How do you make a dictionary mapping names to ages — Alice=30, Bob=25?",
+        accept: ["{'alice': 30, 'bob': 25}", "{'Alice': 30, 'Bob': 25}", '{"Alice": 30, "Bob": 25}', 'alice 30 bob 25', '{', 'dict'],
+        hint: "Curly braces. Inside, `key: value` pairs separated by commas.",
+        explain: "✅ `ages = {'Alice': 30, 'Bob': 25}`. Curly braces make a dictionary. Each entry is `key: value`. Keys are usually strings."
+      },
+      {
+        q: "**Q2.** How do you GET Alice's age from the `ages` dictionary above?",
+        accept: ["ages['alice']", "ages['Alice']", 'ages["Alice"]', "ages.get('Alice')", 'bracket', '[Alice]'],
+        hint: "Square brackets with the name inside.",
+        explain: "✅ `ages['Alice']` — returns `30`. This is called 'lookup by key'. If the key doesn't exist, you get an error."
+      },
+      {
+        q: "**Q3.** What's safer than `ages['Bob']` — a way that doesn't crash if Bob isn't there?",
+        accept: ['.get', 'ages.get', 'get', "ages.get('bob')", "ages.get('Bob')"],
+        hint: "It's a method. Starts with `.g`.",
+        explain: "✅ `ages.get('Bob')` — returns `25` if Bob is there, or `None` if he isn't. No crash. Great for when you're not sure the key exists."
+      },
+      {
+        q: "**Q4.** How do you ADD a new entry — say, 'Charlie': 40?",
+        accept: ["ages['charlie'] = 40", "ages['Charlie'] = 40", 'ages[', 'bracket', '=', 'assign'],
+        hint: "Same bracket lookup, but put it on the LEFT of `=` to assign.",
+        explain: "✅ `ages['Charlie'] = 40` — that's it. If 'Charlie' was already there, it'd overwrite. If not, it adds."
+      },
+      {
+        q: "**Q5.** What does `ages.keys()` give you?",
+        accept: ['keys', 'names', 'list of keys', 'all keys', 'alice and bob', "['alice', 'bob']"],
+        hint: "A list-like thing with every... what?",
+        explain: "✅ A list-like view of all the KEYS: `['Alice', 'Bob']`. There's also `.values()` for the values and `.items()` for pairs. Useful for looping over a dictionary."
+      },
+    ],
+    outro: "🎓 **Class 5 complete.** Curly braces, `[key]` lookup, `.get`, assignment, `.keys()`. Dictionaries are how you store named stuff — your API keys, your user settings, your config. Say **next lesson** for Class 6 (files)."
+  },
+  python6: {
+    title: "Python — Class 6: Reading & Writing Files",
+    intro: "🎓 **Class 6.** Most real programs read or write files. This class covers opening a file, reading it, writing to it, and the `with` pattern that keeps you safe.",
+    questions: [
+      {
+        q: "**Q1.** How do you open a file called `notes.txt` to read it?",
+        accept: ["open('notes.txt')", 'open(', 'open', "open('notes.txt', 'r')"],
+        hint: "Function name is `open`. Pass the filename.",
+        explain: "✅ `open('notes.txt')` — opens for reading by default. You can be explicit with `open('notes.txt', 'r')` (the `r` means 'read')."
+      },
+      {
+        q: "**Q2.** What's the BEST way to open a file so it gets closed automatically — no leaks?",
+        accept: ['with', 'with open', 'with statement'],
+        hint: "One keyword. Four letters. Before `open`.",
+        explain: "✅ `with open('notes.txt') as f:` — the `with` block auto-closes the file when it's done, even if there's an error. Always prefer `with` over bare `open`."
+      },
+      {
+        q: "**Q3.** Inside `with open('notes.txt') as f:`, how do you read the whole file into a string?",
+        accept: ['.read()', 'f.read()', 'read()', 'read'],
+        hint: "Method on `f`.",
+        explain: "✅ `f.read()` — returns the whole file as one big string. For line-by-line, use `f.readlines()` (gets a list)."
+      },
+      {
+        q: "**Q4.** What mode letter do you pass to `open()` to WRITE (and wipe whatever was there)?",
+        accept: ['w', '\'w\'', '"w"'],
+        hint: "One letter. Short for 'write'.",
+        explain: "✅ `open('file.txt', 'w')` — opens for writing. **Warning:** this erases the file first. Use `'a'` (append) if you want to add WITHOUT erasing."
+      },
+      {
+        q: "**Q5.** Inside a `with` block opened for writing, how do you write the text 'hello' to the file?",
+        accept: ['.write', 'f.write', "f.write('hello')", 'write'],
+        hint: "Method on `f`. Takes the text as an argument.",
+        explain: "✅ `f.write('hello')`. Note: `.write()` does NOT add a newline for you — add `\\n` yourself if you want one."
+      },
+    ],
+    outro: "🎓 **Class 6 complete.** `open`, `with`, `.read()`, `.write()`, read/write/append modes. You can now make Python read your notes, write your logs, and build real tools. You've got the foundation."
+  }
+};
+
+// Flow: after the last question outro, if user types "next lesson",
+// advance to the paired next class.
+const LESSON_NEXT = {
+  bash:    'bash2',
+  bash2:   'bash3',
+  bash3:   'bash4',
+  bash4:   'bash5',
+  bash5:   'bash6',
+  bash6:   'python',   // bash7 (chunker) archived 2026-04-19
+  // bash7: archived — not offered as a lesson
+  python:  'python2',
+  python2: 'python3',
+  python3: 'python4',
+  python4: 'python5',
+  python5: 'python6',
+  python6: null,       // end of python track
+};
+
+let _lessonState = null;  // { key, qIndex, awaitingNext }
+
+function startLesson(key) {
+  const lesson = LESSONS[key];
+  if (!lesson) return;
+  _lessonState = { key, qIndex: 0, awaitingNext: false };
+  addMsg('ai', `**${lesson.title}**\n\n${lesson.intro}`);
+  askCurrentQuestion();
+}
+
+function askCurrentQuestion() {
+  const lesson = LESSONS[_lessonState.key];
+  const q = lesson.questions[_lessonState.qIndex];
+  addMsg('ai', q.q + `\n\n*(hint: type **hint** if stuck, **skip** to pass, **exit** to leave)*`);
+}
+
+function handleLessonInput(text) {
+  if (!_lessonState) return false;
+  const lesson = LESSONS[_lessonState.key];
+  const lower = text.toLowerCase().trim();
+
+  if (lower === 'exit' || lower === 'quit' || lower === 'menu' || lower === 'back' || lower === 'home') {
+    addMsg('ai', "🥋 left the lesson. Pick another project from the menu below.");
+    _lessonState = null;
+    // Re-show the template panel so user sees Projects ▾ again.
+    const panel = document.getElementById('template-panel');
+    if (panel) panel.classList.remove('hidden');
+    return true;
+  }
+
+  // "next lesson" / "next class" after a completed class — jump to paired next key
+  if (lower === 'next lesson' || lower === 'next class' || lower === 'continue lesson') {
+    const nextKey = LESSON_NEXT[_lessonState.key];
+    if (nextKey && LESSONS[nextKey]) {
+      _lessonState = null;
+      startLesson(nextKey);
+    } else {
+      addMsg('ai', "🥋 that's the end of this track. Great work. Pick another project from the menu.");
+      _lessonState = null;
+      const panel = document.getElementById('template-panel');
+      if (panel) panel.classList.remove('hidden');
+    }
+    return true;
+  }
+
+  // Between questions, waiting for "next"
+  if (_lessonState.awaitingNext) {
+    if (lower === 'next' || lower === 'n' || lower === 'continue' || lower === '') {
+      _lessonState.qIndex += 1;
+      _lessonState.awaitingNext = false;
+      if (_lessonState.qIndex >= lesson.questions.length) {
+        addMsg('ai', lesson.outro);
+        lessonDone(_lessonState.key);
+        _lessonState = null;
+        // Show the template panel again so user has an obvious next move.
+        const panel = document.getElementById('template-panel');
+        if (panel) panel.classList.remove('hidden');
+      } else {
+        askCurrentQuestion();
+      }
+    } else {
+      addMsg('ai', "type **next** to continue, or **exit** to leave.");
+    }
+    return true;
+  }
+
+  const q = lesson.questions[_lessonState.qIndex];
+
+  if (lower === 'hint') { addMsg('ai', '💡 ' + q.hint); return true; }
+  if (lower === 'skip') {
+    addMsg('ai', `(skipped) ${q.explain}`);
+    _lessonState.awaitingNext = true;
+    return true;
+  }
+
+  // Loose grading: substring match against any accepted form.
+  const hit = q.accept.some(a => lower.includes(a.toLowerCase()));
+  if (hit) {
+    addMsg('ai', q.explain + "\n\n*(type **next** to continue)*");
+    _lessonState.awaitingNext = true;
+  } else {
+    addMsg('ai', `not quite — try again, or type **hint** / **skip**.`);
+  }
+  return true;
+}
+
+function showTemplatePanelIfFresh() {
+  const panel = document.getElementById('template-panel');
+  if (!panel) return;
+  if (history.length === 0) panel.classList.remove('hidden');
+}
+
+function hideTemplatePanel() {
+  document.getElementById('template-panel')?.classList.add('hidden');
+}
+
+// ── CANONICAL VOICE (shared with Sensei) ──────────────────────
+// Fetched synchronously at load from stt_server's /thoughts endpoint,
+// which reads ~/scripts/master_ai_voice.json. One source of truth for
+// trademark quotes + tips + thinking phrases across the whole product.
+// Falls back to these built-ins when stt_server is unreachable (file://).
+let THINKING_PHRASES = [
   "Grinding...", "Pushing through...", "In deep meditation...",
   "Leveling up...", "Getting to the goal...", "Ninja-ing...",
   "Doing what ninjas do...",
 ];
+
+let IDLE_PHRASES = [
+  "💭 still there? take your time.",
+  "💭 \u201cYour AI. Every entry point. Your hardware.\u201d",
+  "💭 \u201cGenius right next to you.\u201d",
+  "💭 did you know? press the 🎙 mic to talk instead of typing.",
+  "💭 did you know? save a session with (name) in parens.",
+  "💭 did you know? Projects ▾ has your projects AND the Bash Tutor.",
+];
+
+(function loadVoice() {
+  try {
+    const x = new XMLHttpRequest();
+    x.open('GET', '/thoughts', false);  // sync at init, one shot, localhost
+    x.send();
+    if (x.status !== 200) return;
+    const v = JSON.parse(x.responseText || '{}');
+    if (Array.isArray(v.thinking) && v.thinking.length) {
+      THINKING_PHRASES = v.thinking;
+    }
+    // Rebuild IDLE_PHRASES: trademark quotes (italic quotes) + pupil tips (did you know)
+    const out = [];
+    out.push('💭 still there? take your time.');
+    (v.quotes || []).forEach(q => out.push('💭 \u201c' + q + '\u201d'));
+    (v.pupil_tips || []).forEach(t => out.push('💭 did you know? ' + t));
+    if (out.length > 1) IDLE_PHRASES = out;
+  } catch (e) { /* file:// mode or stt_server down — keep fallbacks */ }
+})();
+const IDLE_DELAY_MS = 30000;   // 30s of inactivity → idle bubble appears
+const IDLE_ROTATE_MS = 5000;   // rotate phrase every 5s while idle
+
+let _idleTimer = null;
+let _idleRotateTimer = null;
+let _idleBubble = null;
+let _idleIndex = 0;
+
+function ensureIdleStyles() {
+  if (document.getElementById('idle-bubble-styles')) return;
+  const s = document.createElement('style');
+  s.id = 'idle-bubble-styles';
+  s.textContent = `
+    .idle-bubble {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: 100px;
+      max-width: 420px;
+      padding: 8px 14px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text-soft);
+      font-size: 13px;
+      font-family: 'DM Sans', sans-serif;
+      z-index: 400;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .idle-bubble.visible { opacity: 1; }
+  `;
+  document.head.appendChild(s);
+}
+
+function showIdleBubble() {
+  // Mutex with thinking: if the AI is streaming, idle is definitionally
+  // false — bail and let resetIdleTimer re-arm once the reply lands.
+  if (isStreaming) return;
+  ensureIdleStyles();
+  if (!_idleBubble) {
+    _idleBubble = document.createElement('div');
+    _idleBubble.className = 'idle-bubble';
+    document.body.appendChild(_idleBubble);
+  }
+  _idleIndex = Math.floor(Math.random() * IDLE_PHRASES.length);
+  _idleBubble.textContent = IDLE_PHRASES[_idleIndex];
+  // next frame so the transition actually runs
+  requestAnimationFrame(() => _idleBubble.classList.add('visible'));
+
+  if (_idleRotateTimer) clearInterval(_idleRotateTimer);
+  _idleRotateTimer = setInterval(() => {
+    _idleIndex = (_idleIndex + 1) % IDLE_PHRASES.length;
+    if (_idleBubble) _idleBubble.textContent = IDLE_PHRASES[_idleIndex];
+  }, IDLE_ROTATE_MS);
+}
+
+function hideIdleBubble() {
+  if (_idleBubble) _idleBubble.classList.remove('visible');
+  if (_idleRotateTimer) { clearInterval(_idleRotateTimer); _idleRotateTimer = null; }
+}
+
+function resetIdleTimer() {
+  hideIdleBubble();
+  if (_idleTimer) clearTimeout(_idleTimer);
+  _idleTimer = setTimeout(showIdleBubble, IDLE_DELAY_MS);
+}
+
+// Activity = any of these → reset the clock.
+['keydown', 'mousemove', 'click', 'touchstart', 'wheel', 'scroll'].forEach(ev => {
+  window.addEventListener(ev, resetIdleTimer, { passive: true });
+});
+// Kick off once the page is loaded.
+document.addEventListener('DOMContentLoaded', resetIdleTimer);
+// Also reset whenever we're streaming (AI is working — not idle).
+// We rely on existing isStreaming flag; the activity events above already
+// cover the "AI finished, user started typing" case.
 
 function getThinking() {
   const div = addMsg('ai', '🥷 [thinking] ' + THINKING_PHRASES[0], 'thinking-' + Date.now());
@@ -631,6 +2182,340 @@ function inputKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
 }
 
+// ── TIME-SENSITIVE INTERCEPT ──
+// Mirrors _looks_time_sensitive() in master_ai.py. When the user asks a
+// current-events question, frozen local models confidently hallucinate.
+// Detect client-side, POST to /web_search on stt_server, show live
+// results instead of guessing. Conservative keyword set — false
+// positives cost a search (cheap); false negatives cost trust.
+// Phrase-only triggers — single words like "latest"/"recent"/"currently"
+// false-fire on casual use ("my latest project", "currently working on").
+// Keep the two strong single words, rely on multi-word phrases for the
+// rest. Mirrors _TIME_WORDS / _TIME_PHRASES in master_ai.py — keep in sync.
+const _TIME_WORDS = new Set(['yesterday','tonight']);
+const _TIME_PHRASES = [
+  'last night','this morning',
+  'who won',"who's winning",'whos winning',
+  'what happened at','what happened last','what happened yesterday',
+  'what happened today','what happened tonight',
+  'score of','result of','results of',
+  'as of today','as of now',
+  'who is the president','who is the ceo of',
+  'stock price of','current stock','stock market today',
+  'weather in',"what's the weather",'whats the weather',
+  'news today',"today's news",'todays news','latest news',
+  'breaking news','headlines today',
+  'playoff games','playoff game tonight','games tonight','games today',
+  'game tonight','game today',
+];
+function looksTimeSensitive(text) {
+  const low = (text || '').toLowerCase();
+  const words = low.split(/\s+/).map(w => w.replace(/[.,!?]/g, ''));
+  for (const w of words) if (_TIME_WORDS.has(w)) return true;
+  for (const p of _TIME_PHRASES) if (low.indexOf(p) !== -1) return true;
+  return false;
+}
+// Friendly names used for both the progress checklist and the final
+// "engines that answered" badge. Keep in sync with the server's
+// _engine_map keys in stt_server.py /web_search.
+const ENGINE_NICE = {
+  gemini_grounded: 'Google (via Gemini)',
+  brave: 'Brave',
+  serper: 'Google (via Serper)',
+  wikipedia: 'Wikipedia',
+  duckduckgo: 'DuckDuckGo',
+  duckduckgo_instant: 'DDG Instant',
+  wikihow: 'WikiHow',
+};
+
+async function runWebSearch(query) {
+  // Light up the 🌐 Web provider button so the user can see which route
+  // is active. Auto-revert to the previous provider after the response
+  // lands, unless the user explicitly selected web mode (sticky).
+  const forced = (currentProvider === 'web');
+  const priorProvider = forced ? 'web' : currentProvider;
+  document.querySelectorAll('.prov-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.prov === 'web'));
+
+  // Engine picker: when the Web provider is active, the model-sel
+  // dropdown shows the engine list. Anything else → "all" (blend).
+  const engine = (currentProvider === 'web'
+    ? (document.getElementById('model-sel')?.value || 'all')
+    : 'all');
+  const singleEngine = (engine && engine !== 'all');
+
+  const hint = addMsg('ai',
+    forced
+      ? '🌐 Web mode — fetching live results…'
+      : '🌐 That\'s time-sensitive — fetching live web results instead of guessing…'
+  );
+
+  try {
+    // Single-engine: one-shot, no need to stream a single result.
+    if (singleEngine) {
+      const res = await fetch('/web_search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, engine }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        hint.textContent = `⚠ search failed: ${data.error || res.statusText}`;
+        return;
+      }
+      const badge = ENGINE_NICE[engine] || engine;
+      const rendered = `🌐 Live web results (${badge}):\n\n${data.results || '(no results)'}`;
+      const span = hint.querySelector('.msg-text');
+      if (span) span.innerHTML = linkify(rendered);
+      else hint.innerHTML = `<span class="msg-text">${linkify(rendered)}</span>`;
+      history.push({ role: 'assistant', content: rendered, ephemeral: true });
+      return;
+    }
+
+    // Live-stream: all-engines blend, NDJSON from /web_search with
+    // `stream: true`. Each engine paints into the card as it finishes
+    // so fast ones (Wikipedia ~1s) show up long before slow ones
+    // (Gemini ~20s) instead of the user staring at a spinner.
+    const res = await fetch('/web_search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, stream: true }),
+    });
+    if (!res.ok) {
+      hint.textContent = `⚠ search failed: ${res.statusText}`;
+      return;
+    }
+
+    const engineState = {};  // key → {status, header, result, error}
+    const rendered = [];     // in-order results for final history entry
+
+    function paint() {
+      const lines = ['🌐 Live web results (streaming — engines light up as they answer):', ''];
+      for (const key of Object.keys(ENGINE_NICE)) {
+        const s = engineState[key];
+        if (!s) continue;
+        const nice = ENGINE_NICE[key];
+        if (s.status === 'pending')  lines.push(`⏳  ${nice} — checking…`);
+        else if (s.status === 'done')    lines.push(`✓  ${nice}`);
+        else if (s.status === 'empty')   lines.push(`—  ${nice} (no result)`);
+        else if (s.status === 'error')   lines.push(`✗  ${nice} (error: ${s.error})`);
+      }
+      lines.push('');
+      for (const key of Object.keys(ENGINE_NICE)) {
+        const s = engineState[key];
+        if (!s || s.status !== 'done') continue;
+        lines.push(s.header || `[${ENGINE_NICE[key]}]`);
+        lines.push(s.result);
+        lines.push('');
+      }
+      const txt = lines.join('\n').trim();
+      const span = hint.querySelector('.msg-text');
+      if (span) span.innerHTML = linkify(txt);
+      if (!scrollLocked) {
+        const area = document.getElementById('chat-area');
+        area.scrollTop = area.scrollHeight;
+      }
+      return txt;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let finalText = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let evt;
+        try { evt = JSON.parse(line); } catch { continue; }
+        if (evt.type === 'start') {
+          for (const e of (evt.engines || [])) {
+            engineState[e] = { status: 'pending' };
+          }
+        } else if (evt.type === 'engine_start') {
+          engineState[evt.engine] = { status: 'pending' };
+        } else if (evt.type === 'engine_done') {
+          engineState[evt.engine] = {
+            status: 'done', header: evt.header || '', result: evt.result || '',
+          };
+        } else if (evt.type === 'engine_empty') {
+          engineState[evt.engine] = { status: 'empty' };
+        } else if (evt.type === 'engine_error') {
+          engineState[evt.engine] = { status: 'error', error: evt.error || '?' };
+        } else if (evt.type === 'done') {
+          // final paint below
+        }
+        finalText = paint();
+      }
+    }
+
+    // ephemeral: shown on screen + stored in session, but stripped from
+    // the context we hand back to the model — the next Qwen turn would
+    // otherwise re-chew every Gemini/Brave/Wiki/DDG blob and stall.
+    if (finalText) {
+      history.push({ role: 'assistant', content: finalText, ephemeral: true });
+    }
+  } catch (e) {
+    hint.textContent = `⚠ search failed: ${e.message}`;
+  } finally {
+    // Restore the prior provider button unless user clicked 🌐 to stick.
+    if (!forced) {
+      document.querySelectorAll('.prov-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.prov === priorProvider));
+    }
+  }
+}
+
+async function runFetchUrl(url) {
+  const hint = addMsg('ai', `🔗 Fetching ${url} …`);
+  try {
+    const res = await fetch('/fetch_url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      hint.textContent = `⚠ fetch failed: ${data.error || res.statusText}`;
+      return;
+    }
+    const md = data.markdown || '(empty response)';
+    const span = hint.querySelector('.msg-text');
+    if (span) span.innerHTML = linkify(md);
+    else hint.innerHTML = `<span class="msg-text">${linkify(md)}</span>`;
+    // ephemeral — same reason as web search: keep the page text out of
+    // the context window we send to the local model.
+    history.push({ role: 'assistant', content: md, ephemeral: true });
+  } catch (e) {
+    hint.textContent = `⚠ fetch failed: ${e.message}`;
+  }
+}
+
+// ── RESEARCH — web search + local synthesis ──
+// Web button returns raw search blobs; Research pipes those blobs
+// through the local model with instructions to answer the user's
+// question directly from them. Two steps, one message on screen.
+// Used when the user wants the ANSWER, not a study guide.
+async function runResearch(query) {
+  const priorProvider = (currentProvider === 'research') ? 'research' : currentProvider;
+  document.querySelectorAll('.prov-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.prov === 'research'));
+
+  const hint = addMsg('ai', '🔬 Researching — pulling live results, then writing the answer…');
+  let fullText = '';
+  isStreaming = true;
+  hideIdleBubble();
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+  abortController = new AbortController();
+  document.getElementById('stop-btn').style.display = 'flex';
+  document.getElementById('send-btn').disabled = true;
+
+  try {
+    const res = await fetch('/web_search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: abortController.signal,
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      hint.querySelector('.msg-text').innerHTML = `⚠ research failed: ${data.error || res.statusText}`;
+      return;
+    }
+    const raw = data.results || '(no results found)';
+    // Cap the blob before it hits the model. On CPU the prompt-processing
+    // cost scales ~linearly with input length — a 17k-char blob takes the
+    // same ~6 min to chew as it does to generate. The first 4k chars of
+    // the blended results carry almost all the actionable info; capping
+    // here cuts total time roughly in half AND lets us drop num_ctx to
+    // 4096 (further speedup). Swapped the 3b synthesis back to 7b since
+    // 3b regressed on instruction-following (skipped Sources, hedged to
+    // "check forums") — size wasn't the bottleneck.
+    const capped = raw.length > 4000 ? raw.slice(0, 4000) + '\n\n[...results truncated for speed...]' : raw;
+
+    hint.querySelector('.msg-text').innerHTML = '🔬 Found results — writing a direct answer…';
+
+    const sysPrompt =
+      "You are Pupil's research synthesizer. The user asked a question; live web search results are attached. " +
+      "Write a direct, concrete answer USING the results. Name specific tools, paste specific commands, list specific options with one-line trade-offs. " +
+      "Do NOT say 'here's how to research this' — the research is already done. " +
+      "Do NOT generically summarize the search output. Answer the user's question. " +
+      "End with a 'Sources:' line listing any URLs that appeared in the results.";
+    const userMsg = `Question: ${query}\n\n---\n\nLive web results:\n${capped}\n\n---\n\nAnswer the question above directly using these results.`;
+
+    const host = document.getElementById('ollama-host')?.value || defaultOllamaHost();
+    // Synthesis model: when the Research provider is active, the dropdown
+    // shows installed Ollama models (minus llava). Fall back to 7b when
+    // the user came in via `research:` prefix from another provider.
+    const model = (currentProvider === 'research'
+      ? (document.getElementById('model-sel')?.value || 'qwen2.5:7b')
+      : 'qwen2.5:7b');
+    const r2 = await fetch(host + '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: sysPrompt },
+          { role: 'user', content: userMsg },
+        ],
+        stream: true,
+        options: { num_ctx: 4096 },
+      }),
+      signal: abortController.signal,
+    });
+    const reader = r2.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = dec.decode(value);
+      for (const line of chunk.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const d = JSON.parse(line);
+          const t = d.message?.content || '';
+          fullText += t;
+          const span = hint.querySelector('.msg-text');
+          if (span) span.innerHTML = linkify(fullText);
+          if (!scrollLocked) document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+        } catch {}
+      }
+    }
+    if (fullText) {
+      // User turn is already in history (pushed in sendMsg before
+      // routing); only the assistant reply needs to be added here.
+      history.push({ role: 'assistant', content: fullText });
+      autosaveSession();
+      if (settings.autoSpeak && fullText.trim()) speakText(fullText);
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      const span = hint.querySelector('.msg-text');
+      if (span) span.innerHTML = linkify(fullText || '[stopped]');
+    } else {
+      const span = hint.querySelector('.msg-text');
+      if (span) span.innerHTML = '⚠ research error: ' + e.message;
+    }
+  } finally {
+    isStreaming = false;
+    abortController = null;
+    document.getElementById('stop-btn').style.display = 'none';
+    document.getElementById('send-btn').disabled = false;
+    // Revert to prior provider unless the user explicitly clicked 🔬
+    // to stick. Matches the runWebSearch convention.
+    if (priorProvider !== 'research') {
+      document.querySelectorAll('.prov-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.prov === priorProvider));
+    }
+  }
+}
+
 async function sendMsg() {
   const input = document.getElementById('user-input');
   const text = input.value.trim();
@@ -642,8 +2527,70 @@ async function sendMsg() {
   if (text === 'x') { stopStream(); input.value = ''; return; }
 
   input.value = '';
+  // First message of a fresh session — hide the template picker.
+  hideTemplatePanel();
   addMsg('user', text);
   history.push({ role: 'user', content: text });
+
+  // Lesson mode intercepts — answer the quiz locally; don't hit the model.
+  if (_lessonState) { handleLessonInput(text); return; }
+
+  // Time-sensitive intercept — when the user asks about recent/current
+  // events, the local brain (and even cloud models) will confidently
+  // guess from frozen training data. Route through /web_search instead,
+  // which hits Gemini-grounded (Google) + DDG on the server. Also fires
+  // when user has explicitly clicked the 🌐 Web provider button (forces
+  // every question through web search regardless of content). Skipped if
+  // the user typed an explicit text prefix like "fast:" or "local:"
+  // (respect intent over click state).
+  // Research intercept — search + synthesize. Fires on the `research:`
+  // prefix OR when the 🔬 Research button is active. Beats Web/time-
+  // sensitive because research subsumes both (search + direct answer).
+  const researchMatch = text.match(/^\s*research:?\s+(.+)$/i);
+  if (researchMatch || currentProvider === 'research') {
+    const q = researchMatch ? researchMatch[1] : text;
+    await runResearch(q);
+    return;
+  }
+
+  const explicitPrefix = text.match(/^\s*(fast|deep|local|private|search)[:\s]/i);
+  if (!explicitPrefix && (currentProvider === 'web' || looksTimeSensitive(text))) {
+    await runWebSearch(text);
+    return;
+  }
+
+  // Read-a-URL intercept — `read: https://...` or `read https://...`
+  // fetches the full page markdown via Firecrawl through /fetch_url.
+  // Different from search: gets ONE page's full content, not a list of
+  // snippets. Needs a Firecrawl key paired in settings/keys.
+  const readMatch = text.match(/^\s*read:?\s+(https?:\/\/\S+)\s*$/i);
+  if (readMatch) {
+    await runFetchUrl(readMatch[1]);
+    return;
+  }
+
+  // Projects mode intercepts — the briefing commands ('refresh briefing',
+  // 'menu'/'back') stay local. Everything else falls through to the AI
+  // so the user can chat about the project.
+  if (activeTemplate === 'projects') {
+    const low = text.toLowerCase().trim();
+    if (low === 'menu' || low === 'back' || low === 'home' || low === 'exit') {
+      activeTemplate = null;
+      const panel = document.getElementById('template-panel');
+      if (panel) panel.classList.remove('hidden');
+      addMsg('ai', '↩ back to the main menu. Pick a template or project.');
+      return;
+    }
+    if (low === 'refresh briefing' || low === 'refresh') {
+      const name = (history.slice().reverse().find(m => m.content && m.content.includes('Project Briefing'))
+                    || {content:''}).content.match(/Project Briefing — ([^\n*]+)/);
+      const projName = (name && name[1]) ? name[1].trim() : '';
+      if (projName) refreshBriefing(projName);
+      else addMsg('ai', '⚠ not sure which project to refresh. Pick one from Projects ▾.');
+      return;
+    }
+    // fall through — let the AI answer questions about the project
+  }
 
   // auto-route
   let prov = currentProvider;
@@ -671,11 +2618,13 @@ function getAvailableProviders() {
 
 async function streamResponse(userText, prov) {
   isStreaming = true;
+  hideIdleBubble();
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
   abortController = new AbortController();
   document.getElementById('stop-btn').style.display = 'flex';
   document.getElementById('send-btn').disabled = true;
   if (prov !== 'ollama') {
-    const key = 'ta_count_' + prov + '_' + new Date().toDateString();
+    const key = lsKey('ta_count_' + prov + '_' + new Date().toDateString());
     const used = parseInt(localStorage.getItem(key) || '0') + 1;
     localStorage.setItem(key, used);
     updateTokenCounter();
@@ -685,11 +2634,24 @@ async function streamResponse(userText, prov) {
   let fullText = '';
 
   try {
-    const sysPrompt = document.getElementById('sys-prompt')?.value || 'You are a helpful assistant.';
-    const msgs = [{ role: 'system', content: sysPrompt }, ...history.slice(-20)];
+    // If a template is active this session, prepend its prompt to the base
+    // Pupil system prompt. That way the user's saved preferences still apply
+    // but the mode-specific behavior wins.
+    const baseSysPrompt = document.getElementById('sys-prompt')?.value || 'You are a helpful assistant.';
+    const tPrompt = window._sessionPrompt || '';
+    const sysPrompt = tPrompt
+      ? tPrompt + '\n\n---\n\n' + baseSysPrompt
+      : baseSysPrompt;
+    // Drop ephemeral turns (web-search blobs, fetched-page dumps) before
+    // handing context to the model — they stay visible on screen and in
+    // saved sessions, but they don't count as chat history. Otherwise a
+    // single /web_search detour can balloon the next Qwen turn from ~2k
+    // to ~15k tokens of recycled search output.
+    const msgs = [{ role: 'system', content: sysPrompt },
+                  ...history.slice(-20).filter(m => !m.ephemeral)];
 
     if (prov === "master-ai") {
-      const host = document.getElementById("ollama-host")?.value || "http://localhost:11434";
+      const host = document.getElementById("ollama-host")?.value || defaultOllamaHost();
       let model = "qwen2.5:7b";
       if (/code|python|bash|function|script|debug/.test(userText.toLowerCase())) {
         model = "qwen2.5:7b";
@@ -699,7 +2661,11 @@ async function streamResponse(userText, prov) {
       const res = await fetch(host + "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: msgs, stream: true }),
+        // num_ctx caps the model's attention window. Qwen2.5's default
+        // is 32k — way more than we need for chat and the main reason
+        // large threads stall on CPU. 4096 tokens ≈ 3k words, matches
+        // the "4000 words in 20s" budget.
+        body: JSON.stringify({ model, messages: msgs, stream: true, options: { num_ctx: 4096 } }),
         signal: abortController.signal
       });
       const reader = res.body.getReader();
@@ -721,12 +2687,12 @@ async function streamResponse(userText, prov) {
       }
     } else 
     if (prov === 'ollama') {
-      const host = document.getElementById('ollama-host')?.value || 'http://localhost:11434';
-      const model = document.getElementById('model-sel')?.value || document.getElementById('ollama-model')?.value || 'master-ai:latest';
+      const host = document.getElementById('ollama-host')?.value || defaultOllamaHost();
+      const model = document.getElementById('model-sel')?.value || document.getElementById('ollama-model')?.value || 'qwen2.5:7b';
       const res = await fetch(host + '/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages: msgs, stream: true }),
+        body: JSON.stringify({ model, messages: msgs, stream: true, options: { num_ctx: 4096 } }),
         signal: abortController.signal
       });
       const reader = res.body.getReader();
@@ -753,7 +2719,7 @@ async function streamResponse(userText, prov) {
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-          body: JSON.stringify({ model: document.getElementById('model-sel')?.value || 'llama3-70b-8192', messages: msgs, stream: true }),
+          body: JSON.stringify({ model: document.getElementById('model-sel')?.value || 'llama-3.3-70b-versatile', messages: msgs, stream: true }),
           signal: abortController.signal
         });
         const reader = res.body.getReader();
@@ -816,6 +2782,9 @@ async function streamResponse(userText, prov) {
   if (thinking._thinkingInterval) { clearInterval(thinking._thinkingInterval); thinking._thinkingInterval = null; }
   if (fullText) {
     history.push({ role: 'assistant', content: fullText });
+    // Autosave after every reply so nothing is lost if the tab dies.
+    // Name is auto-derived until the user types (name) or clicks rename.
+    autosaveSession();
     // Auto-speak the finished reply if the user has it on.
     if (settings.autoSpeak && fullText.trim()) {
       speakText(fullText);
@@ -829,7 +2798,7 @@ async function streamResponse(userText, prov) {
 
 // ── Piper TTS — shared by speak button and auto-speak ──────────
 async function speakText(text) {
-  const host = settings.ttsHost || 'http://localhost:5050';
+  const host = settings.ttsHost || defaultTTSHost();
   try {
     await fetch(host + '/speak', {
       method: 'POST',
@@ -908,7 +2877,7 @@ function copyMsg(btn) {
 
 async function speakMsg(btn) {
   const text = btn.closest('.msg').querySelector('.msg-text').textContent;
-  const host = settings.ttsHost || 'http://localhost:5050';
+  const host = settings.ttsHost || defaultTTSHost();
   try {
     await fetch(host + '/speak', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
     btn.textContent = 'speaking...';
@@ -927,23 +2896,88 @@ function regenMsg(btn) {
 }
 
 // ---- SESSIONS ----
+// Derive a default name from the first user turn (first 40 chars) or
+// fall back to the time. Called every autosave so the title stays in
+// sync with the actual topic until the user renames.
+function _autoSessionName() {
+  const firstUser = history.find(m => m.role === 'user' && m.content);
+  if (firstUser) {
+    const s = firstUser.content.trim().replace(/\s+/g, ' ');
+    return s.length > 40 ? s.slice(0, 40) + '…' : s;
+  }
+  return 'session ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function autosaveSession() {
+  if (!history.length) return;
+  if (_autoSessionId === null) {
+    _autoSessionId = Date.now();
+    sessions.unshift({
+      id: _autoSessionId,
+      name: _autoSessionName(),
+      date: new Date().toLocaleDateString(),
+      messages: [...history],
+      ts: _autoSessionId,
+      auto: true,
+    });
+  } else {
+    const existing = sessions.find(s => s.id === _autoSessionId);
+    if (!existing) { _autoSessionId = null; return autosaveSession(); }
+    existing.messages = [...history];
+    existing.date = new Date().toLocaleDateString();
+    // Only re-derive the name while it's still an auto name. Once the
+    // user has renamed (auto=false), leave their title alone.
+    if (existing.auto) existing.name = _autoSessionName();
+  }
+  localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions));
+  renderSessionList();
+}
+
 function saveSession(name) {
-  const session = { name, date: new Date().toLocaleDateString(), messages: [...history], ts: Date.now() };
+  // If there's already an auto-saved row for this conversation, adopt
+  // it — rename in place instead of spawning a duplicate.
+  if (_autoSessionId !== null) {
+    const existing = sessions.find(s => s.id === _autoSessionId);
+    if (existing) {
+      existing.name = name;
+      existing.auto = false;
+      existing.messages = [...history];
+      existing.date = new Date().toLocaleDateString();
+      localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions));
+      addMsg('ai', `session renamed to "${name}"`);
+      renderSessionList();
+      return;
+    }
+  }
+  const session = { id: Date.now(), name, date: new Date().toLocaleDateString(), messages: [...history], ts: Date.now(), auto: false };
   sessions.unshift(session);
-  localStorage.setItem('ta_sessions', JSON.stringify(sessions));
+  _autoSessionId = session.id;
+  localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions));
   addMsg('ai', `session saved as "${name}"`);
+  renderSessionList();
+}
+
+function renameSession(idx) {
+  const s = sessions[idx];
+  if (!s) return;
+  const next = prompt('Rename session:', s.name);
+  if (!next || !next.trim()) return;
+  s.name = next.trim();
+  s.auto = false;
+  localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions));
   renderSessionList();
 }
 
 function renderSessionList() {
   const list = document.getElementById('session-list-inner');
   if (!list) return;
-  if (sessions.length === 0) { list.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text-soft)">no sessions yet — type (name) to save</div>'; return; }
+  if (sessions.length === 0) { list.innerHTML = '<div style="padding:12px;font-size:12px;color:var(--text-soft)">no sessions yet — autosave kicks in on the first reply</div>'; return; }
   list.innerHTML = sessions.map((s, i) => `
-    <div class="session-item" onclick="viewSession(${i})">
-      <div class="session-item-name">${escHtml(s.name)}</div>
+    <div class="session-item" style="position:relative" onclick="viewSession(${i})">
+      <div class="session-item-name">${s.auto ? '✎ ' : ''}${escHtml(s.name)}</div>
       <div class="session-item-date">${s.date}</div>
       <div class="session-item-count">${s.messages.length} messages</div>
+      <button class="sess-btn" onclick="event.stopPropagation();renameSession(${i})" style="position:absolute;top:8px;right:10px;padding:2px 8px;font-size:10px" title="rename">rename</button>
     </div>`).join('');
 }
 
@@ -960,7 +2994,7 @@ function viewSession(idx) {
 
 function deleteSession(idx) {
   sessions.splice(idx, 1);
-  localStorage.setItem('ta_sessions', JSON.stringify(sessions));
+  localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions));
   renderSessionList();
   document.getElementById('session-viewer').innerHTML = '<div class="session-viewer-empty">select a session to read it</div>';
 }
@@ -974,7 +3008,7 @@ function exportSession() {
 }
 
 function clearAllSessions() {
-  if (confirm('clear all sessions?')) { sessions = []; localStorage.setItem('ta_sessions', JSON.stringify(sessions)); renderSessionList(); }
+  if (confirm('clear all sessions?')) { sessions = []; localStorage.setItem(lsKey('ta_sessions'), JSON.stringify(sessions)); renderSessionList(); }
 }
 
 
@@ -984,7 +3018,7 @@ async function verifyKey(provider) {
   el.style.color = 'var(--text-soft)';
   try {
     if (provider === 'ollama') {
-      const host = document.getElementById('ollama-host').value.trim() || 'http://localhost:11434';
+      const host = document.getElementById('ollama-host').value.trim() || defaultOllamaHost();
       const res = await fetch(host + '/api/tags');
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();
@@ -1039,11 +3073,11 @@ function saveSettings() {
 }
 
 function saveSettingsToStorage() {
-  localStorage.setItem('ta_settings', JSON.stringify(settings));
+  localStorage.setItem(lsKey('ta_settings'), JSON.stringify(settings));
 }
 
 async function checkTTS() {
-  const host = settings.ttsHost || 'http://localhost:5050';
+  const host = settings.ttsHost || defaultTTSHost();
   const el = document.getElementById('tts-status');
   el.textContent = 'checking...';
   try {

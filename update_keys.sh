@@ -64,8 +64,14 @@ detect_service() {
     [[ "$key" == ya29.* || "$key" == 1//* ]]        && { echo "google|Google Cloud|console.cloud.google.com"; return; }
     [[ "$key" == xai-* ]]                           && { echo "xai|xAI / Grok|x.ai"; return; }
     [[ "$key" == AIzaSy* ]]                         && { echo "gemini|Google Gemini|aistudio.google.com/app/apikey"; return; }
+    [[ "$key" == BSA* ]]                            && { echo "brave|Brave Search|api.search.brave.com"; return; }
+    [[ "$key" == fc-* ]]                            && { echo "firecrawl|Firecrawl|firecrawl.dev"; return; }
     [[ "$key" == Bearer\ * ]]                       && { echo "bearer|Bearer token|unknown"; return; }
-    [[ $len -ge 30 && $len -le 50 && "$key" =~ ^[a-zA-Z0-9_-]+$ ]] && { echo "gumroad|Gumroad|app.gumroad.com/settings/advanced"; return; }
+    # NOTE: removed the "30-50 chars alphanumeric → Gumroad" catch-all. It
+    # was matching Brave / Serper / Gumroad / any-raw-hex-key indiscriminately,
+    # which kept filing Brave keys under the gumroad slot. Anything that
+    # doesn't match a known prefix now falls through to "unknown" and the
+    # user picks from the menu (including Gumroad as option 7).
 
     echo "unknown||"
 }
@@ -331,28 +337,36 @@ main() {
                     echo -e "  ${Y}⚠  Could not auto-detect this key.${X}"
                     echo ""
                     echo -e "  ${D}Which service is this for?${X}"
-                    echo -e "  ${Y}1)${W} Groq           ${D}groq.com${X}"
-                    echo -e "  ${Y}2)${W} OpenAI         ${D}platform.openai.com${X}"
-                    echo -e "  ${Y}3)${W} OpenRouter     ${D}openrouter.ai${X}"
-                    echo -e "  ${Y}4)${W} Anthropic      ${D}console.anthropic.com${X}"
-                    echo -e "  ${Y}5)${W} Gemini (free)  ${D}aistudio.google.com/app/apikey${X}"
-                    echo -e "  ${Y}6)${W} DeepSeek R1    ${D}platform.deepseek.com${X}"
-                    echo -e "  ${Y}6)${W} Gumroad        ${D}app.gumroad.com${X}"
-                    echo -e "  ${Y}7)${W} HuggingFace    ${D}huggingface.co${X}"
-                    echo -e "  ${Y}8)${W} Other (custom name)${X}"
+                    echo -e "  ${Y} 1)${W} Groq           ${D}groq.com${X}"
+                    echo -e "  ${Y} 2)${W} OpenAI         ${D}platform.openai.com${X}"
+                    echo -e "  ${Y} 3)${W} OpenRouter     ${D}openrouter.ai${X}"
+                    echo -e "  ${Y} 4)${W} Anthropic      ${D}console.anthropic.com${X}"
+                    echo -e "  ${Y} 5)${W} Gemini (free)  ${D}aistudio.google.com/app/apikey${X}"
+                    echo -e "  ${Y} 6)${W} DeepSeek R1    ${D}platform.deepseek.com${X}"
+                    echo -e "  ${Y} 7)${W} Gumroad        ${D}app.gumroad.com${X}"
+                    echo -e "  ${Y} 8)${W} HuggingFace    ${D}huggingface.co${X}"
+                    echo -e "  ${Y} 9)${W} Brave Search   ${D}api.search.brave.com${X}"
+                    echo -e "  ${Y}10)${W} Firecrawl      ${D}firecrawl.dev${X}"
+                    echo -e "  ${Y}11)${W} Serper         ${D}serper.dev${X}"
+                    echo -e "  ${Y}12)${W} xAI / Grok     ${D}console.x.ai${X}"
+                    echo -e "  ${Y}13)${W} Other (custom name)${X}"
                     echo ""
-                    echo -ne "  ${C}Choose (1-8): ${X}"
+                    echo -ne "  ${C}Choose (1-13): ${X}"
                     read -r SVC_CHOICE
                     case "$SVC_CHOICE" in
-                        1) FIELD="groq";         LABEL="Groq" ;;
-                        2) FIELD="openai";       LABEL="OpenAI" ;;
-                        3) FIELD="openrouter";   LABEL="OpenRouter" ;;
-                        4) FIELD="anthropic";    LABEL="Anthropic" ;;
-                        5) FIELD="gemini";       LABEL="Gemini" ;;
-                        6) FIELD="deepseek";     LABEL="DeepSeek" ;;
-                        7) FIELD="gumroad";      LABEL="Gumroad" ;;
-                        8) FIELD="huggingface";  LABEL="HuggingFace" ;;
-                        9)
+                        1)  FIELD="groq";         LABEL="Groq" ;;
+                        2)  FIELD="openai";       LABEL="OpenAI" ;;
+                        3)  FIELD="openrouter";   LABEL="OpenRouter" ;;
+                        4)  FIELD="anthropic";    LABEL="Anthropic" ;;
+                        5)  FIELD="gemini";       LABEL="Gemini" ;;
+                        6)  FIELD="deepseek";     LABEL="DeepSeek" ;;
+                        7)  FIELD="gumroad";      LABEL="Gumroad" ;;
+                        8)  FIELD="huggingface";  LABEL="HuggingFace" ;;
+                        9)  FIELD="brave";        LABEL="Brave Search" ;;
+                        10) FIELD="firecrawl";    LABEL="Firecrawl" ;;
+                        11) FIELD="serper";       LABEL="Serper" ;;
+                        12) FIELD="xai";          LABEL="xAI / Grok" ;;
+                        13)
                             echo -ne "  ${C}Service name (lowercase, no spaces): ${X}"
                             read -r FIELD
                             LABEL="$FIELD"

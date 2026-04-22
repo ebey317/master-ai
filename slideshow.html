@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Master AI — Welcome Slideshow</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  :root{
+    --bg:#F0F6FF; --bg2:#E6F1FB; --text:#042C53; --text-mid:#0C447C; --text-soft:#378ADD;
+    --accent:#2266CC; --border:rgba(34,102,204,0.2);
+  }
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'DM Sans',sans-serif}
+  body{min-height:100vh;background:var(--bg);color:var(--text);display:flex;flex-direction:column;padding:20px}
+  .wrap{flex:1;display:flex;flex-direction:column;max-width:820px;margin:0 auto;width:100%}
+  header{text-align:center;padding:20px 0;border-bottom:1px solid var(--border);margin-bottom:20px}
+  h1{font-family:'DM Serif Display',serif;font-size:32px;color:var(--accent)}
+  .sub{font-size:13px;color:var(--text-soft);margin-top:4px}
+  .slide{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:30px 36px;flex:1;display:flex;flex-direction:column;min-height:320px}
+  .slide h2{font-family:'DM Serif Display',serif;font-size:26px;color:var(--text);margin-bottom:14px}
+  .slide .body{font-size:16px;line-height:1.7;color:var(--text-mid);flex:1}
+  .slide .body ul{margin-left:20px;margin-top:8px}
+  .slide .body li{margin-bottom:6px}
+  .slide code{background:var(--bg);padding:2px 6px;border-radius:4px;font-family:'Courier New',monospace;font-size:14px;color:var(--accent)}
+  .nav{display:flex;justify-content:space-between;align-items:center;padding:20px 0 10px;gap:12px;flex-wrap:wrap}
+  button{font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 20px;border:1px solid var(--border);background:transparent;color:var(--text-mid);border-radius:10px;cursor:pointer}
+  button:hover{background:var(--bg2)}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.primary:hover{opacity:0.92}
+  button:disabled{opacity:0.4;cursor:not-allowed}
+  .tts-toggle{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-soft)}
+  .tts-toggle input{width:16px;height:16px;cursor:pointer}
+  .progress{display:flex;justify-content:center;gap:6px;margin-top:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:background 0.2s}
+  .dot.active{background:var(--accent)}
+  .status{text-align:center;font-size:12px;color:var(--text-soft);margin-top:10px;min-height:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Welcome to <span style="color:var(--text)">Master AI</span></h1>
+    <div class="sub">A 12-slide tour. Read-along, or press Play to have it read aloud.</div>
+  </header>
+
+  <div class="slide" id="slide">
+    <h2 id="title"></h2>
+    <div class="body" id="body"></div>
+  </div>
+
+  <div class="nav">
+    <button id="prev" onclick="prev()">◀ Back</button>
+    <div class="tts-toggle">
+      <button id="play" onclick="togglePlay()" class="primary">🔊 Play</button>
+      <label><input type="checkbox" id="auto-advance" checked/> auto-advance when spoken</label>
+    </div>
+    <button id="next" onclick="next()">Next ▶</button>
+  </div>
+
+  <div class="progress" id="dots"></div>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+const SLIDES = [
+  {
+    title: "Master AI — your local AI operating layer.",
+    body: `<b>Master AI turns your machine into an agent system with memory, coding ability, and tool execution — fully offline, with optional cloud acceleration.</b><br><br>One product. Two doors:<br>&bull; <b>Sensei</b> — the terminal side.<br>&bull; <b>Pupil</b> — the browser side.<br><br>Same brain. Same memory. Same keys. This slideshow walks you through it.`
+  },
+  {
+    title: "You just stopped using a computer. You started programming one.",
+    body: `No subscription. No rate limits. No one reading your chats. Master AI runs on your own hardware. But more than that — this is where you stop being a computer <i>user</i> and start being someone who tells the machine what to do. Your mouse loses rank. The terminal is your new office. The AI sits beside you, not above you.`
+  },
+  {
+    title: "Two doors, one brain.",
+    body: `<b>Sensei</b> — the terminal agent. Reads files, writes files, runs commands. This is where you build things.<br><br><b>Pupil</b> — the browser UI. Brainstorm, learn, chat, pick projects.<br><br>Both share one memory, one project list, one set of API keys. Use whichever door fits the moment.<br><br><b>Remote</b> — a second device (phone, laptop, guest PC) can connect to the same brain over Tailscale.`
+  },
+  {
+    title: "The front door is master dot sh.",
+    body: `Open a terminal and run: <code>bash ~/scripts/master.sh</code> — that's your menu. Every option is numbered. Press the number, hit Enter.
+<ul>
+<li><b>1</b> starts everything at once.</li>
+<li><b>4</b> opens Sensei.</li>
+<li><b>5</b> opens Pupil in your browser.</li>
+<li><b>6</b> shows you how to connect from another device.</li>
+</ul>
+When in doubt, start with 5.`
+  },
+  {
+    title: "The dojo gate.",
+    body: `Sensei is not a casual chat. Your first time in, the gate asks: "What project are you working on? Which task?" You pick. The pinned task shows in the status bar, and about every 3000 characters the AI asks: "Still on this?" — so you don't wander.
+<br><br>
+<b>Once you pass, you're in.</b> Every time after, the gate shows your pinned project + task above a "welcome back" banner. Continue where you left off, pick something new, or skip. <i>Once you get a black belt, you're a black belt forever.</i>
+<br><br>
+This is by design. Sensei is a dojo, not a break room. You come here to build. The gate makes entry feel earned — once.`
+  },
+  {
+    title: "Pupil is the workshop.",
+    body: `Pupil is the browser UI. It's where you:
+<ul>
+<li>Brainstorm an idea before you build it</li>
+<li>Debug a problem with a checklist</li>
+<li>Take lessons — Linux and Bash first, then Python</li>
+<li>Pick a project from your board to discuss</li>
+</ul>
+It has belt themes (white, yellow, blue, green, purple, brown, black, and a hacker-green) so you can pick what feels right.`
+  },
+  {
+    title: "Lessons are real tests.",
+    body: `Click Projects dropdown, then Linux / Bash. You drop straight into Class 1, Question 1. Answer. The system grades you, explains, moves you to Question 2. There are three classes in each track right now. More coming.
+<br><br>
+Order matters: <b>Linux first, then Python.</b> Commands before code. Once you can move around the terminal, Python makes more sense.`
+  },
+  {
+    title: "API keys just work.",
+    body: `If you want cloud models alongside local ones (Groq, OpenAI, Anthropic, DeepSeek, Gemini…), just paste any key into the "Any Key" card. Master AI figures out which provider it belongs to from the prefix and files it automatically.
+<br><br>
+If you already entered keys in menu 11, Pupil picks them up automatically when you open it from menu 5. One keystore, shared everywhere.`
+  },
+  {
+    title: "Remote access — the Tailscale move.",
+    body: `Hit menu 6. You'll see your LAN IP, your Tailscale IP (if installed), and copy-ready URLs.
+<br><br>
+Recommended setup for phone access:
+<ul>
+<li>Install Tailscale on this machine and your phone</li>
+<li>Log into the same Tailscale account on both (free)</li>
+<li>On your phone, open the URL menu 6 printed for you</li>
+</ul>
+Now your phone and desktop share the same Sensei and Pupil. Same memory, same sessions, same projects.`
+  },
+  {
+    title: "Commands to know inside Sensei.",
+    body: `Once you're in Sensei, these commands work:
+<ul>
+<li><code>dojo</code> — show your pinned project and task</li>
+<li><code>done</code> — mark the current task complete, auto-pin the next</li>
+<li><code>mode plan</code> — drafts a plan, no execution (default)</li>
+<li><code>mode review</code> — confirm each step before it runs</li>
+<li><code>mode auto</code> — runs without asking</li>
+<li><code>remember: something</code> — save a long-term memory</li>
+<li><code>save session</code> — write this chat to a file</li>
+<li><code>refresh</code> — soft restart if things feel stuck</li>
+<li><code>x</code> — clean exit</li>
+</ul>`
+  },
+  {
+    title: "Straight talk: what your AI can touch.",
+    body: `Your AI runs as <b>you</b> — your user account, your permissions. Not root. Not administrator. Same reach as anything you type into your own terminal.
+<br><br>
+<b>What it CAN do (because you can):</b>
+<ul>
+<li>Read and write files in your home folder</li>
+<li>Run any command your user can run without a password</li>
+<li>Make web calls using the API keys you pasted in</li>
+<li>Start and stop your own background services</li>
+</ul>
+<b>What it CAN'T do — OS-enforced, not bypassable:</b>
+<ul>
+<li>Use <code>sudo</code> or install packages — you run those in a separate terminal yourself</li>
+<li>Touch system files, other users' folders, or networks you aren't on</li>
+<li>See, store, or ask for your password — the rule is hard-coded, every mode, every prefix</li>
+<li>Phone home to anyone — there is no "us" on the other end</li>
+</ul>
+<b>Before anything destructive:</b> it pauses, shows you the command, waits for your "yes". <code>rm -rf</code>, <code>git reset --hard</code>, <code>systemctl stop</code> — all gated.
+<br><br>
+<b>Every action is logged</b> to <code>~/.master_ai_audit.log</code>. Plain text. Grep it, back it up, read it anytime. No hidden history.`
+  },
+  {
+    title: "Your data stays yours.",
+    body: `Master AI does not phone home. Nothing you type goes to us. The models run on your hardware; your memory files live on your disk; your session logs live on your disk.
+<br><br>
+If you use a cloud key (Groq, OpenAI, etc.), THAT specific request goes to THAT provider. Your local-only chats never leave the box.`
+  },
+  {
+    title: "When something breaks.",
+    body: `<ul>
+<li><b>Pupil says Ollama offline</b> → run <code>systemctl start ollama</code></li>
+<li><b>Sensei won't start</b> → menu 7 (Force rebuild)</li>
+<li><b>Lost the menu in Pupil</b> → type <code>menu</code> or <code>back</code> and it returns</li>
+<li><b>Keys not syncing</b> → make sure you opened Pupil at <code>localhost:8080</code>, not as a file</li>
+</ul>
+Full reference is in <code>~/scripts/README_FOR_BUYER.md</code>.`
+  },
+  {
+    title: "It's basically having a genius right next to you.",
+    body: `That's what you just bought.
+<br><br>
+As soon as your chats and notes start piling up, your AI <b>knows you</b>. It remembers your projects. It reads your files. It runs commands. It changes the system. It builds apps. It helps you study.
+<br><br>
+You can work hands-free all day, just telling it what you want done. No subscription. No middle-man. No one renting you your own intelligence.
+<br><br>
+Close this tab. Hit menu 5 for Pupil, or menu 4 for Sensei. Your genius is waiting.`
+  },
+];
+
+// ── State ──
+let idx = 0;
+let isPlaying = false;
+let currentAudio = null;
+
+// ── Render ──
+function render() {
+  const s = SLIDES[idx];
+  document.getElementById('title').textContent = s.title;
+  document.getElementById('body').innerHTML = s.body;
+  document.getElementById('prev').disabled = (idx === 0);
+  document.getElementById('next').disabled = (idx === SLIDES.length - 1);
+  renderDots();
+  stopAudio();
+  if (isPlaying) speakCurrent();
+}
+function renderDots() {
+  const dots = document.getElementById('dots');
+  dots.innerHTML = '';
+  SLIDES.forEach((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i === idx ? ' active' : '');
+    dots.appendChild(d);
+  });
+}
+
+// ── Navigation ──
+function next() { if (idx < SLIDES.length - 1) { idx++; render(); } }
+function prev() { if (idx > 0) { idx--; render(); } }
+
+// ── TTS via :5050 (the Piper voice server) ──
+// Strip HTML for the spoken version.
+function plainText(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  return (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+async function speakCurrent() {
+  const s = SLIDES[idx];
+  const text = s.title + '. ' + plainText(s.body);
+  const status = document.getElementById('status');
+  status.textContent = '🔊 reading…';
+  try {
+    const res = await fetch('http://localhost:5050/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    if (!res.ok) throw new Error('TTS server error ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    currentAudio = new Audio(url);
+    currentAudio.play();
+    currentAudio.onended = () => {
+      status.textContent = '';
+      URL.revokeObjectURL(url);
+      if (isPlaying && document.getElementById('auto-advance').checked && idx < SLIDES.length - 1) {
+        setTimeout(() => next(), 400);
+      }
+    };
+  } catch (e) {
+    status.textContent = '⚠ TTS server not running on :5050 — text only';
+    // Fall back: use the browser's built-in speech synthesis
+    if ('speechSynthesis' in window) {
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.onend = () => {
+        status.textContent = '';
+        if (isPlaying && document.getElementById('auto-advance').checked && idx < SLIDES.length - 1) {
+          setTimeout(() => next(), 400);
+        }
+      };
+      window.speechSynthesis.speak(utt);
+    }
+  }
+}
+
+function stopAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
+
+function togglePlay() {
+  isPlaying = !isPlaying;
+  const btn = document.getElementById('play');
+  if (isPlaying) {
+    btn.textContent = '⏸ Pause';
+    speakCurrent();
+  } else {
+    btn.textContent = '🔊 Play';
+    stopAudio();
+    document.getElementById('status').textContent = '';
+  }
+}
+
+// ── Keyboard nav ──
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft') prev();
+});
+
+render();
+</script>
+</body>
+</html>

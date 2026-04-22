@@ -561,6 +561,174 @@ cmd_lesson() {
     [[ "$BACK" == "y" || "$BACK" == "Y" ]] && linux_menu
 }
 
+dojo_bash_tutor() {
+    # Interactive 5-step lesson: learn the bash moves behind the dojo gate
+    # by copy-pasting them. Lives in Learn Python, not in Sensei's gate.
+    clear
+    banner_master_ai
+    echo ""
+    echo -e "${BC}  ╔═════════════════════════════════════════════╗${X}"
+    echo -e "${BC}  ║${X}  ${BW}🥷  DOJO BASH TUTOR — 5 moves${X}               ${BC}║${X}"
+    echo -e "${BC}  ╚═════════════════════════════════════════════╝${X}"
+    echo ""
+    echo -e "  ${BW}Goal:${X} get comfortable with copy-paste, identifying bash,"
+    echo -e "        and finding a project — the exact moves the Sensei gate does."
+    echo ""
+    echo -e "  Each step: ${BW}I show a command → you copy it → paste here → Enter.${X}"
+    echo ""
+    read -rp "  press Enter to start (or x to cancel) " go
+    [[ "$go" =~ ^[xX]$ ]] && return
+
+    # ── Step 1: identify bash ──
+    clear
+    echo ""
+    echo -e "  ${BW}Move 1/5 — Identify bash${X}"
+    echo ""
+    echo -e "  Bash commands look like this:  ${G}ls ~/scripts${X}"
+    echo -e "  A comment looks like this:     ${Y}# this is a note, not a command${X}"
+    echo -e "  A shebang at the top of a file: ${C}#!/bin/bash${X}  (tells the OS to use bash)"
+    echo ""
+    echo -e "  ${BW}The prompt${X} — text your terminal shows before you type —"
+    echo -e "  usually ends in ${C}\$${X} or ${C}#${X}. Everything AFTER the prompt is what you type."
+    echo -e "  Everything NOT after a prompt is output."
+    echo ""
+    read -rp "  press Enter when ready " _
+
+    # ── Step 2: copy-paste ──
+    clear
+    echo ""
+    echo -e "  ${BW}Move 2/5 — Copy & paste safely${X}"
+    echo ""
+    echo -e "  ${BW}Copy this command:${X}"
+    echo ""
+    echo -e "      ${G}echo \"hello dojo\"${X}"
+    echo ""
+    echo -e "  Highlight it with your mouse/finger → right-click → Copy."
+    echo -e "  Then right-click in this terminal → Paste → press Enter."
+    echo ""
+    echo -e "  ${Y}Safety rule:${X} never paste commands you don't recognize."
+    echo -e "  Red flags: ${R}curl ... | bash${X}, ${R}sudo${X}, ${R}rm -rf${X} from strangers."
+    echo ""
+    while true; do
+        read -rp "  paste here: " typed
+        case "$typed" in
+            *"hello dojo"*)
+                echo -e "  ${G}✅ paste worked.${X} The shell ran your pasted text as a command."
+                break ;;
+            "") echo -e "  ${Y}nothing pasted — try again (right-click → Paste)${X}" ;;
+            *)
+                echo -e "  ${Y}got:${X} $typed"
+                echo -e "  ${Y}expected something containing 'hello dojo' — try copying again${X}" ;;
+        esac
+    done
+    sleep 1
+
+    # ── Step 3: open a project folder ──
+    clear
+    echo ""
+    echo -e "  ${BW}Move 3/5 — Open a project folder${X}"
+    echo ""
+    echo -e "  ${BW}~${X} means your home folder (${C}$HOME${X})."
+    echo -e "  ${BW}/${X} separates folders — like ${C}~/scripts/PROJECTS.md${X}"
+    echo ""
+    echo -e "  ${BW}Copy + paste:${X}"
+    echo ""
+    echo -e "      ${G}ls ~/scripts${X}"
+    echo ""
+    echo -e "  It lists every file in your scripts folder."
+    echo ""
+    while true; do
+        read -rp "  paste here: " typed
+        if [[ "$typed" =~ ^ls[[:space:]]+~?/?scripts ]] || [[ "$typed" =~ ^ls[[:space:]]+\$HOME/scripts ]]; then
+            echo -e "  ${G}✅ correct.${X} Running it for you:"
+            echo ""
+            ls ~/scripts | head -20 | sed 's/^/    /'
+            echo -e "  ${D}(truncated to 20 lines)${X}"
+            break
+        elif [ -z "$typed" ]; then
+            echo -e "  ${Y}paste the line above${X}"
+        else
+            echo -e "  ${Y}close — expected:${X} ${G}ls ~/scripts${X}"
+        fi
+    done
+    read -rp "  press Enter to continue " _
+
+    # ── Step 4: find a project ──
+    clear
+    echo ""
+    echo -e "  ${BW}Move 4/5 — Find a project${X}"
+    echo ""
+    echo -e "  Project names live in ${C}~/scripts/PROJECTS.md${X} under headings"
+    echo -e "  that start with ${C}### ${X}(three hashes + space)."
+    echo ""
+    echo -e "  ${BW}The pipe (|) chains two commands:${X}"
+    echo -e "      ${G}cat${X}  = show file contents"
+    echo -e "      ${G}grep '^### '${X} = keep only lines starting with ### (^ = start)"
+    echo ""
+    echo -e "  ${BW}Copy + paste:${X}"
+    echo ""
+    echo -e "      ${G}cat ~/scripts/PROJECTS.md | grep '^### '${X}"
+    echo ""
+    while true; do
+        read -rp "  paste here: " typed
+        if [[ "$typed" == *"PROJECTS.md"* ]] && [[ "$typed" == *"### "* ]]; then
+            echo -e "  ${G}✅ correct.${X} Output:"
+            echo ""
+            cat ~/scripts/PROJECTS.md | grep '^### ' | sed 's/^/    /'
+            break
+        elif [ -z "$typed" ]; then
+            echo -e "  ${Y}paste the line above${X}"
+        else
+            echo -e "  ${Y}expected a line referencing PROJECTS.md and '### '${X}"
+        fi
+    done
+    read -rp "  press Enter to continue " _
+
+    # ── Step 5: pick one ──
+    clear
+    echo ""
+    echo -e "  ${BW}Move 5/5 — Paste a project name${X}"
+    echo ""
+    echo -e "  Pick one from the list above and type its exact name."
+    echo -e "  (e.g. ${C}Sensei${X}, ${C}Pupil${X}, ${C}Master AI${X})"
+    echo ""
+    local -a valid_names
+    mapfile -t valid_names < <(awk '
+        /^## Project Boards/ { in_b = 1; next }
+        /^## / && in_b  { in_b = 0 }
+        /^### / && in_b { sub(/^### /, ""); print }
+    ' "$HOME/scripts/PROJECTS.md")
+    while true; do
+        read -rp "  project name: " pick
+        local hit=0
+        for n in "${valid_names[@]}"; do
+            if [ "$n" = "$pick" ]; then
+                hit=1
+                echo -e "  ${G}✅ matched:${X} ${BW}$n${X}"
+                echo ""
+                echo -e "  ${BW}🥷 Tutor complete.${X} You can now:"
+                echo -e "    • tell bash apart from comments + output"
+                echo -e "    • copy/paste safely"
+                echo -e "    • list folders (${G}ls${X})"
+                echo -e "    • read + filter files (${G}cat | grep${X})"
+                echo -e "    • select a project by name"
+                echo ""
+                echo -e "  Next: try the Sensei gate (${C}master.sh → 4${X}) and do it live."
+                echo ""
+                read -rp "  press Enter to return to learn menu " _
+                return 0
+            fi
+        done
+        if [ "$hit" -eq 0 ]; then
+            if [ -z "$pick" ]; then
+                echo -e "  ${Y}enter a project name exactly as shown${X}"
+            else
+                echo -e "  ${Y}no match. valid: ${valid_names[*]}${X}"
+            fi
+        fi
+    done
+}
+
 linux_menu() {
     clear
     banner_master_ai
@@ -663,6 +831,7 @@ main() {
     echo ""
     echo -e "${BC}  ── TRACK 1: LINUX COMMANDS ────────────────────────────${X}"
     echo -e "  ${Y}c)${W}  Linux Commands  ${D}— learn commands used by PC Control${X}"
+    echo -e "  ${Y}b)${W}  Dojo Bash Tutor ${D}— 5 moves to talk to Sensei (copy-paste, find a project)${X}"
     echo ""
     echo -e "${BC}  ── TRACK 2: PYTHON + BUILD AI APPS ────────────────────${X}"
 
@@ -700,6 +869,7 @@ main() {
 
     case "$CHOICE" in
         c|C) linux_menu ;;
+        b|B) dojo_bash_tutor ;;
         1)  [ "$UNLOCKED" -ge 1 ] && lesson_1  || echo -e "${R}  🔒 Locked.${X}" ;;
         2)  [ "$UNLOCKED" -ge 2 ] && lesson_2  || echo -e "${R}  🔒 Complete lesson 1 first.${X}" ;;
         3)  [ "$UNLOCKED" -ge 3 ] && lesson_3  || echo -e "${R}  🔒 Complete lesson 2 first.${X}" ;;
