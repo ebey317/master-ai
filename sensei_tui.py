@@ -37,9 +37,10 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import has_focus
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
@@ -47,7 +48,7 @@ from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
     ConditionalContainer, Float, FloatContainer, HSplit, Window, WindowAlign,
 )
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.styles import Style
@@ -58,7 +59,7 @@ HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
 COMPLETER_WORDS: List[str] = [
     "hub", "menu", "home", "help", "tips", "model", "model auto",
-    "mode safe", "mode plan", "mode auto", "mode",
+    "mode plan", "mode review", "mode auto", "mode",
     "memory", "remember:", "forget:",
     "task", "task add", "task list", "task done", "task clear", "tasks",
     "save session", "load summary", "load session",
@@ -80,16 +81,23 @@ LEGEND_WORDS = [
 
 IDLE_TIPS = [
     "type 'hub' for the full command menu",
-    "'mode plan' previews commands before they run",
+    "'mode plan' brainstorms + drafts plans (default — no execution)",
+    "'mode review' confirms every command one at a time",
+    "'mode auto' runs commands without asking — destructive still pauses",
+    "'fast: your prompt' routes through Groq (fast cloud, needs key)",
+    "'deep: your prompt' routes to DeepSeek-R1 (deep reasoning)",
+    "'local: your prompt' forces local model explicitly",
+    "'mode connected' switches the whole session to cloud-first",
+    "on a pending plan — press 1 or Enter to accept, 4 to keep talking",
+    "'copy chat' saves the full session to a markdown file",
+    "'clear cache' if Sensei is serving the same cached answer",
     "'chats' to browse saved sessions",
     "'up' / 'down' scrolls output; 'top' / 'bottom' jumps",
-    "'refresh' soft-reloads the engine",
+    "'refresh' soft-reloads the engine; 'kick' forces a supervisor respawn",
     "'e' edits this thread's label",
     "'model' switches the active AI model",
     "'tts on' speaks replies out loud (Piper voice)",
     "'remember: <fact>' saves a fact across all sessions",
-    "'mode auto' runs commands without asking — disclaimer pops up first",
-    "'kick' force-restarts if things are stuck",
 ]
 
 
@@ -132,12 +140,53 @@ class _TUIStdout:
         except Exception: return -1
 
 
+class SafeFormattedTextControl(FormattedTextControl):
+    """FormattedTextControl that never throws IndexError from get_line.
+
+    Reason: prompt_toolkit's render loop calls get_line(i) where i can
+    come from the cursor position, ScrollState, or wrap calculations.
+    If a background thread mutates the output text between frame-start
+    and line-fetch, `fragment_lines[i]` can trip `list index out of
+    range` (controls.py:413) and crash the render. We wrap the returned
+    UIContent's get_line callable so out-of-range indices return an
+    empty fragment list (rendered as a blank line) instead of throwing.
+    The next frame will re-measure with the current content.
+    """
+
+    def create_content(self, width, height):
+        content = super().create_content(width, height)
+        # prompt_toolkit caches UIContent between frames with the same
+        # (width, height). Without this guard, every frame re-wraps the
+        # previous wrapper, building a chain that blows the recursion
+        # limit after ~1000 frames. Tag the wrapper so we only wrap once.
+        if getattr(content.get_line, "_sensei_safe_wrapped", False):
+            return content
+        original_get_line = content.get_line
+        def safe_get_line(i):
+            try:
+                return original_get_line(i)
+            except IndexError:
+                return []
+        safe_get_line._sensei_safe_wrapped = True
+        content.get_line = safe_get_line
+        return content
+
+
 class SenseiApp:
     def __init__(self) -> None:
         self._label = ""
         self._status = ""
         self._output_chunks: List[str] = []
         self._output_lock = threading.Lock()
+        # Micro-cache for _render_output. prompt_toolkit calls the text
+        # getter multiple times per frame (line-count then get_line); if
+        # the chunks grow between those calls the returned fragment list
+        # shrinks/grows and triggers "list index out of range" inside
+        # FormattedTextControl. Caching for one render tick (~50ms) makes
+        # every getter call within a single frame return identical
+        # content. Frame interval is 1s, so 50ms is safe.
+        self._output_render_cache = None
+        self._output_render_cache_ts = 0.0
         self._tip_cycle = itertools.cycle(IDLE_TIPS)
         self._tip = next(self._tip_cycle)
         self._tip_last = time.time()
@@ -156,12 +205,34 @@ class SenseiApp:
         self._thinking_interval = 1.8
         self._scroll_offset = 0  # lines scrolled up from bottom
 
+        # Three thought-states: IDLE (rotating hints), THINKING (AI working),
+        # HANDOFF (Plan→Review transition). Handoff suppresses idle + thinking
+        # so the dispatch moment isn't drowned out by other thoughts.
+        # Elijah 2026-04-21: "animate the handoff plan with thoughts and turn
+        # off all the other thoughts during the handoff plan. three different
+        # modes for the thoughts."
+        self._plan_pending = False
+        self._handoff_active = False
+        self._handoff_cycle = itertools.cycle([
+            "⚡ handing off to Review...",
+            "🥋 → 🔴 mode flipping...",
+            "plan accepted — Review taking over...",
+            "executing plan step by step...",
+            "🥋 Review mode active...",
+        ])
+        self._handoff_line = "⚡ handing off to Review..."
+        self._handoff_last = 0.0
+        self._handoff_interval = 1.0
+
         self._input = TextArea(
             prompt="🥷  ",
             multiline=True,
             wrap_lines=True,
             scrollbar=False,
-            height=Dimension(min=3, max=8, preferred=3),
+            # Reduced from min=3,preferred=3 to min=2,preferred=2 — Elijah
+            # 2026-04-20 needs max reading space on phone-over-RustDesk.
+            # Input still grows up to max=8 if the user types a long block.
+            height=Dimension(min=2, max=8, preferred=2),
             history=FileHistory(HISTORY_FILE),
             completer=WordCompleter(
                 COMPLETER_WORDS, ignore_case=True,
@@ -173,7 +244,11 @@ class SenseiApp:
             style="class:textinput",
         )
 
-        self._output_control = FormattedTextControl(
+        # SafeFormattedTextControl catches IndexError inside get_line so
+        # a mid-frame race (output thread appending while renderer is
+        # measuring) never crashes the render loop. Last-frame content
+        # simply blanks the affected line; next frame re-measures fresh.
+        self._output_control = SafeFormattedTextControl(
             text=self._render_output,
             focusable=False,
             show_cursor=False,
@@ -183,7 +258,28 @@ class SenseiApp:
             content=self._output_control,
             wrap_lines=True,
             always_hide_cursor=True,
-            right_margins=[ScrollbarMargin(display_arrows=True)],
+            # class:chat is defined as `noinherit` in _build_style so the
+            # Frame's mode-accent color does NOT bleed into chat content.
+            # Elijah's rule 2026-04-21: chrome follows mode, TEXT stays on
+            # stable semantic colors (blue=file/info, yellow=plan steps,
+            # green=voice, red=warning, etc.) so his eye trains on meaning
+            # instead of being re-tinted every mode change.
+            style="class:chat",
+            # display_arrows=False — ▲/▼ arrows at top+bottom of the track
+            # read as a little pennant flag on screen, which distracts from
+            # the chat content. Keep the track (useful scroll indicator),
+            # drop the arrows. Typed `up`/`down`/`top`/`bottom` still scroll.
+            right_margins=[ScrollbarMargin(display_arrows=False)],
+        )
+        # Framed chat region — wraps the output window in a bordered box so
+        # text stays inside the frame on scroll instead of bleeding past the
+        # edges. Title is mode-tinted (class:frame picks up the mode accent
+        # color). 2026-04-20 per Elijah: "keep everything in frame instead
+        # of bleeding out… we get that whole slideshow that comes down."
+        self._output_frame = Frame(
+            self._output_window,
+            title=" 🥋  chat ",
+            style="class:frame",
         )
 
         self._status_control = FormattedTextControl(text=self._render_status)
@@ -204,8 +300,10 @@ class SenseiApp:
             content=self._tip_control, height=1, style="class:tip",
         )
 
-        # Tip sits ABOVE the ninja inside the frame — same "text area",
-        # always visible next to the input like original classic mode.
+        # Tip/thinking slot ABOVE the ninja — rotating idle hints (💭) or
+        # thinking animation (🥷 [thinking] ...) depending on state.
+        # Restored 2026-04-20 per Elijah: "make sure the thoughts for
+        # idle and thinking are on" — 1 row cost, real feedback benefit.
         input_stack = HSplit([
             self._tip_window,
             self._input,
@@ -230,12 +328,17 @@ class SenseiApp:
         root = HSplit([
             self._header_window,
             self._status_window,
-            self._output_window,
+            self._output_frame,
             self._frame,
         ])
 
         self._on_submit: Optional[Callable[[str], None]] = None
 
+        # Mode-aware palette — set_mode() rebuilds the Style with one of
+        # these accent colors so the header, frame, status, and legend
+        # all visually signal the current mode at a glance. Default
+        # 'plan' at startup — chat-only brainstorm mode, no execution.
+        self._mode = "plan"
         self._app = Application(
             layout=Layout(root, focused_element=self._input),
             key_bindings=self._build_keys(),
@@ -245,36 +348,114 @@ class SenseiApp:
             # Opt-in with SENSEI_MOUSE=1 if you want wheel scroll inside the app.
             mouse_support=os.environ.get("SENSEI_MOUSE", "0") == "1",
             refresh_interval=1.0,
-            style=Style.from_dict({
-                "status":      "#2266cc bold",
-                "frame":       "#2266cc bold",
-                "frame.label": "#2266cc bold",
-                "legend":      "#2266cc",
-                "sep":         "#999999",
-                "tip":         "#1a7a3a italic bold",   # warmer: forest green on light bg
-                "thinking":    "#c7761a bold",           # amber — clearly distinct from idle tip
-                "textinput":   "#ffffff noinherit",      # white typed text, no cascade from frame
-                "header":      "bg:#2266cc #ffffff bold", # brand header: blue bg, white text
-            }),
+            style=self._build_style("plan"),
+            # Force 24-bit truecolor so hex values like #ef4444 / #dc143c
+            # render exactly instead of being quantized to the nearest of
+            # 256 palette colors. Elijah 2026-04-20: "didnt render like
+            # yours" — the issue was prompt_toolkit defaulting to 256
+            # mode even though COLORTERM=truecolor.
+            color_depth=ColorDepth.DEPTH_24_BIT,
         )
+
+    # ── mode-aware theming ────────────────────────────────────
+    # Accent color per mode — traffic-light scheme, dimmed so nothing
+    # blares on the monitor. Header gets solid bg; frame/status/legend
+    # get the color as foreground. Tip and thinking stay on their own
+    # warm colors so they're always readable on any accent.
+    # Dimmed down 2026-04-19 — original #c62828 was too bright on RustDesk-over-phone.
+    _MODE_ACCENT = {
+        # Stoplight remapped 2026-04-21 by semantic, not by old habit:
+        #   Plan = full STOP (no execution ever) → RED
+        #   Review = CAUTION (approve each step)  → AMBER
+        #   Auto = GO (runs freely)               → GREEN
+        # Plan's red is #cc0000 — the "true red without glare or tint" that
+        # Elijah locked 2026-04-20 after the full tuning walk (#8b1a1a →
+        # #b91c1c → #ef4444 → #dc2626 → #ef4444 → #dc143c → #ef4444 →
+        # #c0392b → #ef4444 → #cc0000). Do NOT re-tune without his ask.
+        "plan":   "#cc0000",  # true red — STOP: drafting only, no execution. Approved hex 2026-04-20.
+        "review": "#c7761a",  # amber — CAUTION: per-command confirm, press 1/Enter to approve each
+        "auto":   "#1a7a3a",  # forest green — GO: runs without asking (destructive still pauses)
+    }
+
+    def _build_style(self, mode: str) -> Style:
+        accent = self._MODE_ACCENT.get(mode, "#2266cc")
+        # Chrome follows the mode accent — frame borders, header, and
+        # label all shift color when the mode changes. Plan=muted red,
+        # Review=amber, Auto=green. The stoplight signal spans the full
+        # chrome so the mode is visible at a glance, not just in status.
+        return Style.from_dict({
+            "status":      f"{accent} bold",
+            "frame":       f"{accent} bold",
+            "frame.label": f"{accent} bold",
+            "legend":      f"{accent}",
+            "sep":         "#999999",
+            "tip":         "#1a7a3a italic bold",
+            "thinking":    "#c7761a bold",
+            "textinput":   "#ffffff noinherit",
+            "header":      f"{accent} bold",
+            # Chat content — noinherit so the Frame's mode color doesn't
+            # bleed onto text. Semantic ANSI codes from _paint_line render
+            # true (blue=file/info, yellow=plan, green=voice, red=warning).
+            "chat":        "noinherit",
+        })
+
+    def set_mode(self, mode: str) -> None:
+        """Swap the accent color when MODE changes. Called by master_ai.py
+        on `mode plan|review|auto`. Silent no-op for unknown modes."""
+        if mode not in self._MODE_ACCENT:
+            return
+        self._mode = mode
+        try:
+            self._app.style = self._build_style(mode)
+            self._app.invalidate()
+        except Exception:
+            pass
 
     # ── rendering callbacks ────────────────────────────────────
 
     def _render_output(self):
         """Return the FULL output as ANSI — scroll is handled by positioning
-        an invisible cursor that Window tracks (see _get_output_cursor)."""
+        an invisible cursor that Window tracks (see _get_output_cursor).
+
+        Per-frame micro-cache: prompt_toolkit calls this getter multiple
+        times per render cycle (height measure → then per-line fetch). If
+        a background thread appends between calls, the fragment lists
+        have different lengths and FormattedTextControl trips on `list
+        index out of range` (controls.py:413). Caching locks the content
+        to one consistent snapshot per frame; the line count is cached
+        alongside so _get_output_cursor can't report a y beyond the
+        cached fragments.
+        """
+        now = time.time()
+        if self._output_render_cache is not None and (now - self._output_render_cache_ts) < 0.05:
+            return self._output_render_cache
         with self._output_lock:
             text = "".join(self._output_chunks)
-        return ANSI(text)
+        rendered = ANSI(text)
+        self._output_render_cache = rendered
+        self._output_render_cache_ts = now
+        # Line count matched to the rendered snapshot. Using count("\n")
+        # here may differ from fragment-list length by 1 (trailing empty
+        # split), so we subtract one defensively — better to under-report
+        # the cursor y than over-report and trip IndexError.
+        self._output_render_lines = max(0, text.count("\n") - 1)
+        return rendered
 
     def _get_output_cursor(self):
         """Invisible cursor that Window auto-scrolls to keep visible.
         - scroll_offset == 0 → cursor at bottom of buffer → Window shows latest
         - scroll_offset  > 0 → cursor N lines above bottom → Window shows N back
+
+        Uses the line count cached by _render_output so cursor y can
+        never exceed what the control's fragment_lines actually contains.
+        Prevents `list index out of range` in FormattedTextControl when
+        output is appended between render-cycle getter calls.
         """
-        with self._output_lock:
-            text = "".join(self._output_chunks)
-        total = text.count("\n")
+        # Ensure cache is populated for this frame. If _render_output
+        # hasn't been called yet this tick (cold start), populate now.
+        if self._output_render_cache is None:
+            self._render_output()
+        total = self._output_render_lines
         y = max(0, total - self._scroll_offset)
         return Point(x=0, y=y)
 
@@ -302,8 +483,20 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
+        # Legend's mode slot is now word-for-word identical to what
+        # the TOP status line shows: uppercase "MODE:SAFE" / "MODE:PLAN"
+        # / "MODE:AUTO". When you toggle with `mode X`, BOTH update.
+        # Elijah 2026-04-19: "don't look at the color look at the
+        # words" — match the literal string exactly.
+        current_mode = getattr(self, "_mode", "plan").upper()
+        words = []
+        for w in LEGEND_WORDS:
+            if w == "mode plan":
+                words.append(f"MODE:{current_mode}")
+            else:
+                words.append(w)
         parts = []
-        for i, w in enumerate(LEGEND_WORDS):
+        for i, w in enumerate(words):
             if i:
                 parts.append(("class:sep", " · "))
             parts.append(("class:legend", w))
@@ -367,24 +560,19 @@ class SenseiApp:
             else:
                 event.app.exit()
 
-        @kb.add("pageup")
-        def _pgup(event):
-            self._scroll_offset += 10
+        # Single scroll binding — Shift+Up / Shift+Down. Elijah's pick
+        # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
+        # modifier, so terminal key-repeat fires continuous Shift+Up
+        # events while held → smooth scroll. Tap = one event = 3 lines.
+        # Plain Up/Down stay reserved for input history.
+        @kb.add("s-up")
+        def _s_up(event):
+            self._scroll_offset += 3
             event.app.invalidate()
 
-        @kb.add("pagedown")
-        def _pgdn(event):
-            self._scroll_offset = max(0, self._scroll_offset - 10)
-            event.app.invalidate()
-
-        @kb.add("c-home")
-        def _home(event):
-            self._scroll_offset = 10_000
-            event.app.invalidate()
-
-        @kb.add("c-end")
-        def _end(event):
-            self._scroll_offset = 0
+        @kb.add("s-down")
+        def _s_down(event):
+            self._scroll_offset = max(0, self._scroll_offset - 3)
             event.app.invalidate()
 
         return kb
@@ -464,6 +652,43 @@ class SenseiApp:
     def exit(self) -> None:
         try: self._app.exit()
         except Exception: pass
+
+    def enable_number_confirm(self, check_fn: Callable[[], bool],
+                               submit_fn: Callable[[str], None]) -> None:
+        """Make number keys (1-5) auto-submit during confirm prompts.
+
+        check_fn() — return True when a confirm prompt is awaiting input.
+        submit_fn(digit_str) — called with "1" / "2" / "3" / "4" / "5"
+            when the user presses that key while a confirm is awaiting.
+
+        Registered with a Condition filter so number keys ONLY auto-submit
+        when (a) a confirm is awaiting AND (b) the input field is empty
+        (so the user can still type "type 1 2 3" as a normal message).
+
+        Elijah 2026-04-21: "if I press the number, make sure it automatically
+        enters. I don't wanna press one enter." Numbers without Enter is the
+        target UX on his phone keyboard — Enter is a two-tap motion.
+        """
+        kb = self._app.key_bindings
+
+        def _filter():
+            try:
+                return bool(check_fn()) and not self._input.text
+            except Exception:
+                return False
+
+        cond = Condition(_filter)
+
+        def _make_handler(digit: str):
+            def _h(event):
+                try:
+                    submit_fn(digit)
+                except Exception:
+                    pass
+            return _h
+
+        for d in ("1", "2", "3", "4", "5"):
+            kb.add(d, filter=cond)(_make_handler(d))
 
 
 __all__ = [

@@ -1,5 +1,42 @@
 # MASTER AI — HOW WE WORK
-# [2026-04-18] v1.8 — Sensei TUI (pinned input box), Auto-mode disclaimer
+# [2026-04-22] OPERATOR MODE rules — numbered options + 5W+H before execution
+#   Elijah revoked open-Auto trust 2026-04-22 after silent cascading edits
+#   burned hours. Going forward:
+#     • Before non-trivial execution: present numbered options. Each option
+#       gets a 5W+H block (WHO / WHAT / WHERE / WHY / HOW). User picks a number.
+#       Execute that one. Report. Wait for next pick.
+#     • Read-only probes + explicit single-action asks skip the menu.
+#     • "Done" = user-facing verification (run it, watch log/UI, show evidence).
+#       Not "syntax OK." Not "edit applied." Call unverified work "staged."
+#     • "Where were we" → open latest ~/Desktop/master_ai_brainstorm_*.md
+#       and present. Canonical phrase; aliases: catch me up / read me in /
+#       what's the story. Don't re-synthesize from scratch.
+#     • Consult ~/Desktop/master_ai_phrasebook.md before translating plain-
+#       English phrases. Unknown phrase → ask once, write to phrasebook,
+#       never ask again.
+#     • Questions + reassurance BEFORE write. Write once, done right first time.
+#     • No bundled scope creep. Adjacent fix → its own numbered option,
+#       never slip into the current change.
+#     • Hobby → business framing. Functioning at the surface user will
+#       click is the bar; polish is cheap by comparison.
+#
+# [2026-04-19] post-v1.7 in-testing — The Trifecta (fast/brain/eyes), dojo gate,
+#              chunker, portable cache, Apocalypse Mode, multi-user plumbing
+#
+# [2026-04-19 evening additions, still in-testing]
+#   • AUTO MODE actually flows — was prompting on everything, now only destructive
+#     patterns pause (rm, git reset --hard, drop table, systemctl stop, package
+#     uninstall, ollama rm, chmod -R). Everything else runs + audits.
+#   • Scroll = Shift+↑ / Shift+↓. Single binding, tap = 3 lines, hold = continuous.
+#     Other scroll keys removed per user pref "only want one."
+#   • Render crash guard — SafeFormattedTextControl catches IndexError in
+#     prompt_toolkit render loop; 50ms output cache prevents mid-frame races.
+#   • 🔬 Research mode in Pupil (and `research:` prefix) — runs web_search then
+#     feeds results to qwen2.5:7b for a direct-answer synthesis + Sources.
+#   • 🌐 Web mode streams live — NDJSON per engine, results paint as they land.
+#   • Local Ollama calls capped at num_ctx:4096 (was 32k default) + timeout 90s.
+#   • Approval queue (~/scripts/approval_queue.py) written, dormant by default.
+#   • Default user profile bio → master_ai.py top comment + .sensei_behavior.md.
 
 ## WHO MASTER AI IS
 Master AI is a personal AI agent that lives on Elijah's computer (Madam-Mary).
@@ -19,40 +56,61 @@ Access: No mouse, no keyboard — Elijah uses voice-to-text input only.
   bash ~/scripts/launch_master_ai.sh   — attach to persistent tmux session (or start it)
   bash ~/scripts/master.sh             — main menu (all services)
 
-Option 1  = Full startup (Ollama, TTS, UI, Firefox)
-Option 4  = Sensei (tmux AI) — primary terminal UI, uses master_ai.py
-Option 5  = :8080 Master AI Web Chat (browser)
-Option 6  = :5173 SKS Hub Client (local harness for base44 Sunkissed Soul)
+Option 1  = Full startup (Ollama, TTS, UI, Pupil, Remote)
+Option 4  = Sensei (local) — tmux AI; dojo gate gates entry
+Option 5  = Pupil (local) — browser UI; keys auto-sync via /keys when opened at localhost:8080/pupil.html
+Option 6  = Remote — hookup info + UI to connect another device to this node
+Option 13 = Learn Python + Build AI — curriculum, includes Dojo Bash Tutor
+Option 15 = Add User (multi-user profile — testing)
+Option 16 = Projects viewer
 
-## LOCAL MODELS (on-device, free, private, no limits)
-master-ai:latest     — 14B general AI (based on qwen2.5:14b) — general + agent loop
-qwen2.5-coder:7b     — 7B dedicated code model — faster for code tasks
-llava:latest         — 7B vision model — image/photo analysis
-qwen3.5:cloud        — 397B via Ollama cloud routing — complex analysis, deep thinking
-kimi-k2.5:cloud      — 1T via Ollama cloud routing — vision + deep reasoning
+## THE TRIFECTA — local models (post 2026-04-19)
+qwen2.5:3b         — SPARK · 1.9 GB · instant (<1s) · briefings, idle, quick answers
+qwen2.5:7b         — BRAIN · 4.7 GB · ~2s warm · code, chat, reasoning — the daily driver
+llava:latest       — EYES  · 4.7 GB · ~5s · image + follow-up chat — scrap/apothecary scanner
+qwen3.5:cloud      — cloud · 397B via Ollama cloud — complex analysis
+kimi-k2.5:cloud    — cloud · 1T via Ollama cloud — best vision online
+
+REMOVED 2026-04-19: master-ai:latest (14B), qwen2.5:14b. Too slow on this CPU (4 min cold).
+Apocalypse plan: pull a bigger local model FRESH when cloud's dying (e.g. llama3.1:8b, qwen3:30b-a3b).
 
 ## CLOUD PROVIDERS (free tiers, auto-routed)
 Groq:       llama-3.3-70b-versatile   — fastest, most reliable FREE
-OpenRouter: gpt-oss-120b:free         — 120B, working ✅
-OpenRouter: nemotron-3-super-120b:free— 120B NVIDIA, working ✅
-OpenRouter: deepseek-r1:free          — reasoning (rate-limited sometimes)
-OpenRouter: hermes-3-405b:free        — 405B (rate-limited sometimes)
-OpenRouter: qwen3-coder:free          — code cloud (rate-limited sometimes)
-Gemini:     gemini-2.0-flash          — web/research (quota resets daily)
-Fallback:   llama-3.3-70b:free        — last resort via OpenRouter
+OpenRouter: deepseek-r1:free          — reasoning (best Claude-class free option)
+OpenRouter: gpt-oss-120b:free         — 120B
+OpenRouter: hermes-3-405b:free        — 405B
+OpenRouter: qwen3-coder:free          — code cloud
+Gemini:     gemini-2.0-flash          — web/research
 
-API keys stored in: ~/.master_ai_keys (chmod 600, JSON)
-Keys: groq ✅  openrouter ✅  gemini ✅
+API keys: ~/.master_ai_keys (chmod 600, JSON).
+/keys endpoint on stt_server (:8080) bridges menu 11 ⇄ Pupil. Pupil's 🔑 Any Key card
+auto-detects provider from prefix (gsk_, sk-ant-, sk-or-v1-, sk-proj-, AIzaSy, etc.)
+and saves both locally + pushes to the shared file.
 
 ## SMART ROUTING (fully automatic — type 'model' to override)
-General talk      → master-ai (14B local, ~3-4s)
-Code / scripts    → qwen2.5-coder:7b (7B local, specialized)
-Complex / analysis→ qwen3.5:cloud (397B, deep thinking)
-Vision / images   → kimi-k2.5:cloud (1T, best vision)
-Reasoning / math  → DeepSeek R1 (OpenRouter cloud)
-Web / current info→ Gemini 2.0 Flash + DuckDuckGo search
-Cloud unavailable → auto-fallback: Groq → GPT-OSS 120B → Nemotron 120B
-Local timeout     → auto-fallback to cloud (45s timeout)
+Briefings / quick     → qwen2.5:3b (local, <1s)
+General / chat / code → qwen2.5:7b (local, ~2s warm)
+Vision / images       → llava (local) or kimi-k2.5:cloud if online
+Complex / analysis    → qwen3.5:cloud (397B, deep thinking)
+Reasoning / math      → DeepSeek R1 (OpenRouter cloud, free)
+Web / current info    → Gemini 2.0 Flash
+Cloud unavailable     → auto-fallback to local trifecta
+Local timeout         → cloud fallback (45s timeout)
+
+## RAM DISCIPLINE — OLLAMA_MAX_LOADED_MODELS=1
+Set via /etc/systemd/system/ollama.service.d/max-loaded.conf. Ensures only ONE
+model is resident at a time; router asks for another → Ollama swaps. No RAM war.
+
+## DOJO GATE (menu 4)
+Before entering Sensei: pick a project from PROJECTS.md, pick a task.
+Pinned task shows in status bar. Every ~3000 chars a drift check fires:
+  🥷 [reminder] still on: <task>
+Type 'done' to flip [ ] → [x] in PROJECTS.md and auto-pin next task.
+Soft-mode (testing): gate can be skipped with 's'. Sealed (~/.dojo_gate_sealed): hard-block.
+
+## CHUNKER — archived 2026-04-19
+Feature archived. Scripts still on disk (~/scripts/chunker.sh) but NOT wired
+into Sensei. Do not surface in UI or docs unless explicitly un-archived.
 
 ## HOW RESPONSES WORK
 - Local models stream token-by-token as they generate (no waiting)
@@ -76,15 +134,32 @@ Text wraps cleanly inside the box; cursor always lands in the same spot.
 Output scrolls above the box — typing is never interrupted.
 On RustDesk-from-phone: arrow keys are flaky, prefer typed words.
 
-### NAVIGATION
-Tab         — auto-complete any command from the 60+ word list
-↑ / ↓       — scroll command history (readline, arrows only)
-PgUp/PgDn   — scroll the output region above the input box
-up / down   — scroll output by a page (typed word, works on mobile)
-top / bottom— jump to top / back to latest output
-last        — re-print the last AI reply inline
-mouse wheel — scroll output (mouse_support=True by default in TUI)
-Ctrl+C      — interrupt + save session
+### NAVIGATION — HOW TO SCROLL UP/DOWN AND OTHER MOVES
+The input box (🥷) stays pinned at the bottom. These scroll the chat
+output region ABOVE it without moving your cursor.
+
+KEYBOARD (when focus is in the input):
+  Tab            — auto-complete any command from the 60+ word list
+  ↑ / ↓          — scroll your input HISTORY (what you previously typed)
+  Shift+↑        — SCROLL CHAT UP.   Tap = 3 lines. Hold = continuous.
+  Shift+↓        — SCROLL CHAT DOWN. Tap = 3 lines. Hold = continuous.
+  Ctrl+C         — interrupt the current reply + save session
+
+TYPED WORDS (alternative to keys — works on any keyboard, any remote):
+  up     — scroll up one page
+  down   — scroll down one page
+  top    — jump to the very top of the chat
+  bottom — jump back to the latest reply
+  last   — re-print the most recent AI reply inline
+  copy   — push last AI reply to X11 clipboard (via xclip)
+
+MOUSE (opt-in):
+  wheel   — works when launched with SENSEI_MOUSE=1
+
+"Tap vs hold" is the OS's key-repeat. One press fires once. Hold fires
+~30/sec for as long as you hold. Useful with Shift+↑/↓.
+
+(Locked 2026-04-19 to ONE scroll chord — Shift+arrow — per user preference.)
 
 ### COPY / PASTE IN SENSEI
 Because the TUI captures mouse events for scrolling, plain click-drag does
@@ -101,17 +176,29 @@ NOT select text — the terminal passes the click to the app. Two ways to copy:
 To temporarily disable mouse capture (and get back classic click-drag),
 launch with SENSEI_MOUSE=0: `SENSEI_MOUSE=0 bash ~/scripts/launch_master_ai.sh`
 
-### MODES
-mode safe   — ask before every command (default)
-mode plan   — AI shows plan first, type 'go' to run, 'cancel' to clear
-mode auto   — ⚠  commands run without asking. See disclaimer below.
+### MODES — three only (plan / review / auto). Color tinted top-to-bottom.
+Type any of these at the 🥷 prompt to switch. Both the top status bar AND
+the bottom legend re-tint together so you always see the current mode.
+
+mode plan   — DEEP RED — STOP: drafts a plan, NO execution. Default at startup.
+mode review — AMBER    — CAUTION: confirm each RUN/CREATE/EDIT one at a time.
+mode auto   — GREEN    — GO: runs without asking (destructive still pauses).
+
+After toggling, the whole Sensei frame (header text, status line, frame
+borders, legend) shifts to the new accent color. MODE:<CURRENT> shows
+identical at top AND bottom of the window. Remapped 2026-04-21 — plan's
+red is #cc0000 (the "true red" Elijah locked 2026-04-20).
+
+Companion toggles (orthogonal — these are NOT modes, they're routing):
+  mode local / mode apocalypse   — force all asks to local (no cloud)
+  mode connected / mode peacetime — allow cloud-first (needs keys)
 
 ### AUTO MODE DISCLAIMER (shown when you type 'mode auto')
 Turning on auto mode means you allow:
   1. Execute immediately — RUN: / EDIT: / CREATE: fire with no confirmation.
   2. Minimize interruptions — Sensei won't pause to ask routine questions.
   3. Prefer action over planning — skips plan review, starts working.
-  4. Expect course corrections — type 'mode safe' any time to take back control.
+  4. Expect course corrections — type 'mode plan' any time to take back control.
   5. No destructive blast-radius actions — rm -rf, drop tables, force-push,
      and package uninstall STILL pause for explicit OK.
   6. No data exfiltration — secrets/keys never sent to external services.
@@ -225,13 +312,13 @@ Engine PID check:             pgrep -af "python3.*master_ai.py"
 
 ## SERVICES
 Ollama API:   http://localhost:11434  (systemd managed, auto-starts)
-Master AI UI: http://localhost:8080/master_ai.html
+Pupil UI:     http://localhost:8080/pupil.html
 TTS Server:   http://localhost:5050   (Piper, en_US-lessac-medium voice)
 Tailscale IP: 100.101.249.96          (remote access)
 RustDesk ID:  1808427068
 Sunkissed:    http://localhost:5173   (npm run dev)
 
-Remote: http://100.101.249.96:8080/master_ai.html (from phone via Tailscale)
+Remote: http://100.101.249.96:8080/pupil.html (from phone via Tailscale)
 
 ## KEY FILES
 ~/scripts/master_ai.py       — AI engine (routing, STT, TTS, sessions, agent loop)
