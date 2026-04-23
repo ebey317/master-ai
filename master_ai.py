@@ -186,6 +186,15 @@ def save_mode(mode):
         pass
 
 MODE                 = _load_saved_mode()  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
+# Sync TUI chrome to the persisted mode — SenseiApp() at line 107 above
+# constructs with a hardcoded "plan" style; this repaints the chrome to
+# match what was actually loaded from disk. Without this, user types
+# `mode auto` and exits, then on reopen internals say auto but the
+# chrome shows plan — "looks like it didn't save" even though it did.
+# 2026-04-22.
+if _SENSEI_APP is not None:
+    try: _SENSEI_APP.set_mode(MODE)
+    except Exception: pass
 LAST_ROUTE           = ""      # route used by the most recent handle() — for Review's "who" line
 LAST_MODEL           = ""      # model name used by the most recent handle() — for Review's "who" line
 PENDING_PLAN_TEXT    = ""
@@ -5512,8 +5521,25 @@ def main():
         # SenseiApp.set_mode() so the color signals the mode at a glance.
         if lo in ("mode plan", "mode review", "mode auto"):
             new_mode = lo.split()[1]
+            old_mode = MODE
             globals()['MODE'] = new_mode
             save_mode(new_mode)  # persist so next launch opens in this mode
+            # Handshake banner for non-trivial transitions — completes the
+            # sequence so every mode flip carries the same visual language as
+            # the original Plan→Review handshake. 2026-04-22.
+            if old_mode != new_mode:
+                _HANDSHAKE = {
+                    ("plan",   "review"): (C, "Plan → Review — per-step confirms ready"),
+                    ("plan",   "auto"):   (G, "Plan → Auto — flow mode engaged"),
+                    ("review", "auto"):   (G, "Review → Auto — trust earned, full flow"),
+                    ("review", "plan"):   (R, "Review → Plan — back to thinking"),
+                    ("auto",   "review"): (C, "Auto → Review — stepping back for per-step confirms"),
+                    ("auto",   "plan"):   (R, "Auto → Plan — back to thinking"),
+                }
+                banner = _HANDSHAKE.get((old_mode, new_mode))
+                if banner:
+                    color, text = banner
+                    print(f"\n{color}  ▶ handoff: {text}{X}")
             show_mode_status()
             if _SENSEI_APP is not None:
                 try: _SENSEI_APP.set_mode(new_mode)
@@ -5556,6 +5582,24 @@ def main():
             if TTS_ENABLED and reply:
                 threading.Thread(target=speak, args=(reply,), daemon=True).start()
             print(f"\n  {D}(still in Review mode — type 'mode plan' to go back){X}")
+            continue
+
+        # Plan → Auto: "accept all" / "a" / "aa" / "all" skips per-step
+        # Review and runs the plan in flow. Direct Plan→Auto completes
+        # the mode sequence when the user trusts the plan. 2026-04-22.
+        if PENDING_PLAN_TEXT and lo in ("a", "aa", "all", "accept all"):
+            globals()['MODE'] = "auto"
+            save_mode("auto")  # persist handoff state
+            if _SENSEI_APP is not None:
+                try: _SENSEI_APP.set_mode("auto")
+                except Exception: pass
+            print(f"\n{G}  ▶ handoff: Plan → Auto — running in flow...{X}")
+            reply = handle(PENDING_PLAN_REQUEST, history)
+            globals()['PENDING_PLAN_TEXT'] = ""
+            globals()['PENDING_PLAN_REQUEST'] = ""
+            if TTS_ENABLED and reply:
+                threading.Thread(target=speak, args=(reply,), daemon=True).start()
+            print(f"\n  {D}(now in Auto mode — type 'mode plan' to go back){X}")
             continue
 
         # "go"/"yes"/"proceed" with no pending plan → explain
@@ -5823,8 +5867,17 @@ def main():
                 print(f"  {Y}not in tmux.{X}")
             continue
 
-        # ── Refresh: restart engine in-place (for screen glitches) ────
-        if lo in ("refresh", "reload", "restart"):
+        # ── Refresh / abort / new task — full override. ──────────────
+        # Saves session silently, clears screen, exec's a fresh Python
+        # process. New blank history — ready to type, memory of the
+        # current conversation is gone. Aliases cover every natural
+        # way Elijah might say "start over" (2026-04-22).
+        if lo in (
+            "refresh", "reload", "restart",
+            "abort", "cancel", "override", "reset",
+            "new task", "new chat", "new session", "start over",
+            "wipe", "blank slate",
+        ):
             try:
                 save_session(list(history), silent=True)
             except Exception:

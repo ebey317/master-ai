@@ -645,7 +645,28 @@ main_menu() {
     echo -e "  ${Y}x)${W} Exit${X}"
     echo ""
     echo -ne "${C}  Choose: ${X}"
-    read -r CHOICE
+    # Single-key dispatch — no Enter required for common options.
+    # 2026-04-22: matches Sensei's 5-button confirm UX — "press the
+    # number, it automatically enters." On phone via RustDesk, Enter
+    # is a two-tap motion; this removes it for options 3-9 and x.
+    # Options 1 and 2 wait 0.5s for a possible second digit (so 10-19
+    # and 20-21 still work via two fast keypresses).
+    read -n 1 -r CHOICE
+    case "$CHOICE" in
+        1|2)
+            # Could be 1/2 alone or the first digit of 10-19/20-21.
+            # 2.5-second grace window after the first digit to collect
+            # the second — gives comfortable time to double-tap on
+            # phone/voice-to-text. If nothing arrives, we fire on the
+            # first digit alone.
+            if read -n 1 -t 2.5 -r SECOND 2>/dev/null; then
+                if [[ "$SECOND" =~ [0-9] ]]; then
+                    CHOICE="${CHOICE}${SECOND}"
+                fi
+            fi
+            ;;
+    esac
+    echo  # newline after single-keypress for clean formatting
 
     # Short pause after read-only check commands so output is readable
     # before the menu redraws. Enter to continue, or auto-skip after 8 sec.
@@ -655,7 +676,7 @@ main_menu() {
     }
 
     case "$CHOICE" in
-        1)  startup ;;
+        1)  startup; pause_read ;;
         2)  check_ollama; pause_read ;;
         3)  check_rustdesk; pause_read ;;
         4)  launch_master_ai_terminal ;;
@@ -664,22 +685,22 @@ main_menu() {
         7)  echo -e "  ${Y}🔄 Force-rebuilding Sensei (kills tmux session, fresh start)...${X}"
             bash ~/scripts/master_ai_kick.sh
             pause_read ;;
-        8)  view_sessions ;;
-        9)  prompt_idea ;;
+        8)  view_sessions; pause_read ;;
+        9)  prompt_idea; pause_read ;;
         10) less ~/scripts/howwework.txt ;;
-        11) bash ~/scripts/update_keys.sh ;;
-        12) sudo bash ~/scripts/system_tune.sh ;;
-        13) bash ~/scripts/learn.sh ;;
-        14) bash ~/scripts/uninstall.sh ;;
+        11) bash ~/scripts/update_keys.sh; pause_read ;;
+        12) sudo bash ~/scripts/system_tune.sh; pause_read ;;
+        13) bash ~/scripts/learn.sh; pause_read ;;
+        14) bash ~/scripts/uninstall.sh; pause_read ;;
         15) add_user; pause_read ;;
-        16) view_projects ;;
+        16) view_projects; pause_read ;;
         17) switch_user; pause_read ;;
         18) bash ~/scripts/mesh.sh menu ;;
         19) bash ~/scripts/selfscan.sh; pause_read ;;
         20) less ~/scripts/LINKS.md ;;
         21) bash ~/scripts/benchmark_sensei.sh; pause_read ;;
         x|X) log "--- Script Exited ---"; echo -e "${G}Goodbye.${X}"; exit 0 ;;
-        *) echo "Invalid option." ;;
+        *) echo "Invalid option."; pause_read ;;
     esac
 
     main_menu
