@@ -68,6 +68,24 @@ Use this wording when describing it:
 
 No known in-progress changes at this handoff. Worktree should be clean.
 
+## Current Sync Snapshot
+
+As of commit `ffb5475`, the older "WHERE WE WERE" snapshot that stops at
+`066c9fa` is stale. The current Codex lane has already moved past that point.
+
+- Buyer-safe zip exists at `~/Desktop/master-ai-v1.8-buyer-bundle.zip`.
+  - Built through `pack_for_sale.sh`.
+  - Scrubbed of personal keys, sessions, `.git`, logs, cache artifacts, and spam/unsubscribe scripts.
+
+- Personal working archive exists at `~/Desktop/master-ai-personal-working-archive-ffb5475.zip`.
+  - This is for Elijah's own stable-point archive, not for buyers.
+  - It contains the tracked repo state plus `master-ai-ffb5475-history.bundle`.
+
+- Latest terminal UX state:
+  - `master` opens the main portal/menu.
+  - `sensei` opens the terminal agent directly.
+  - Installer creates both commands and auto-configures PATH.
+
 ## Important Existing Architecture
 
 - `harvest.py` is already the reuse layer.
