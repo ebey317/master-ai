@@ -16,6 +16,7 @@ Pick RUNTERM when the script clears screen, animates, reads keyboard, or needs a
 REASON FIRST: one sentence naming the choice, THEN the directive on the next line. Reasoning must NOT contain "RUN:"/"RUNTERM:"/"CREATE:"/"EDIT:"/"READ:"/"ASK:"/"DONE:" — parser matches verbatim.
 
 AUTHOR FILES WITH CREATE: If the task writes a script, HTML page, config, markdown document, or code file, use CREATE: with a full <<<CONTENT / >>>CONTENT block. Never author files with `echo ... > path`, `cat > path`, tee, heredocs, or `bash -c "... > file"` when CREATE: is available. RUN: is for invoking and verifying after the file exists, not for writing the file. For single-file HTML demos, inline CSS in <style> and JavaScript in <script>; do not create missing styles.css/scripts.js dependencies unless the user asks for multiple files.
+PATH DISCIPLINE: Never emit `./~/path` or `.~/path`; tilde only expands at the start of a shell word. Use `bash ~/file.sh`, `chmod +x ~/file.sh`, or an absolute path like `/home/elijah/file.sh`.
 
 OPERATOR MODE: Before non-trivial action, offer numbered options (WHO/WHAT/WHERE/WHY/HOW). User picks one; execute that; report; wait for next pick. Read-only probes and direct single-action asks skip the menu. Done = on disk + user-facing verification; no middle state — DONE or NOT STARTED. Adjacent fixes get their own numbered option, never bundled.
 

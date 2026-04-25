@@ -63,7 +63,7 @@ COMPLETER_WORDS: List[str] = [
     "mode plan", "mode review", "mode auto", "mode",
     "memory", "remember:", "forget:",
     "task", "task add", "task list", "task done", "task clear", "tasks",
-    "save session", "load summary", "load session",
+    "save session", "load summary", "load session", "transcript", "log", "preview", "open preview",
     "clear", "clear history", "clear cache", "clear approved", "clear chats", "chats",
     "doctor", "health", "refresh", "reload", "restart", "kick",
     "up", "down", "top", "bottom", "last",
@@ -78,6 +78,7 @@ COMPLETER_WORDS: List[str] = [
 
 LEGEND_WORDS = [
     "hub", "help", "tips", "model", "mode plan", "chats", "tts",
+    "Ctrl+T transcript", "Ctrl+L log", "Ctrl+P preview", "Ctrl+K cache",
     "e=edit label", "x=exit",
 ]
 
@@ -550,6 +551,14 @@ class SenseiApp:
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
 
+        def _dispatch_command(text: str, echo: str = "") -> None:
+            if echo:
+                self.write(f"\n\033[2m[{echo}]\033[0m\n")
+            if self._on_submit:
+                threading.Thread(
+                    target=self._safe_dispatch, args=(text,), daemon=True,
+                ).start()
+
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
             # Multi-line paste fix (2026-04-24): pasted text contains \n
@@ -594,6 +603,48 @@ class SenseiApp:
                 ).start()
             else:
                 event.app.exit()
+
+        # Standard app-style shortcuts. These dispatch the same word commands
+        # a user can type, so keyboard and voice paths stay in sync.
+        @kb.add("c-t")
+        def _shortcut_transcript(event):
+            _dispatch_command("transcript", "Ctrl+T transcript")
+
+        @kb.add("c-l")
+        def _shortcut_log(event):
+            _dispatch_command("log", "Ctrl+L log")
+
+        @kb.add("c-o")
+        def _shortcut_open(event):
+            _dispatch_command("open preview", "Ctrl+O open")
+
+        @kb.add("c-p")
+        def _shortcut_preview(event):
+            _dispatch_command("preview", "Ctrl+P preview")
+
+        @kb.add("c-k")
+        def _shortcut_cache(event):
+            _dispatch_command("clear cache", "Ctrl+K clear cache")
+
+        @kb.add("c-r")
+        def _shortcut_refresh(event):
+            _dispatch_command("refresh", "Ctrl+R refresh")
+
+        @kb.add("c-m")
+        def _shortcut_mouse(event):
+            _dispatch_command("mouse status", "Ctrl+M mouse")
+
+        @kb.add("c-b")
+        def _shortcut_keyboard(event):
+            _dispatch_command("mouse local", "Ctrl+B keyboard/copy")
+
+        @kb.add("c-s")
+        def _shortcut_save(event):
+            _dispatch_command("save session", "Ctrl+S save")
+
+        @kb.add("c-q")
+        def _shortcut_quit(event):
+            _dispatch_command("x", "Ctrl+Q quit")
 
         # Bracketed paste — PROPER fix for multi-line paste-split bug
         # (2026-04-24). When the terminal sends bracketed-paste sequences
@@ -680,6 +731,10 @@ class SenseiApp:
     def write(self, text: str) -> None:
         if not text:
             return
+        # Chat-app behavior: new assistant/tool output follows the live bottom
+        # so handoff prompts and approval choices do not land off-screen after
+        # the user previously scrolled up.
+        self._scroll_offset = 0
         with self._output_lock:
             self._output_chunks.append(str(text))
         try: self._app.invalidate()

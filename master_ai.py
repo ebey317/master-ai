@@ -102,6 +102,16 @@ except ImportError:
 # ── SENSEI TUI — full-screen app, default ON; opt out with SENSEI_TUI=0 ──
 _SENSEI_APP = None
 _SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
+try:
+    _settings_path = Path.home() / ".master_ai_settings"
+    if "SENSEI_MOUSE" not in os.environ and _settings_path.exists():
+        for _line in _settings_path.read_text().splitlines():
+            if _line.startswith("SENSEI_MOUSE="):
+                os.environ["SENSEI_MOUSE"] = _line.split("=", 1)[1].strip() or "0"
+                break
+    os.environ.setdefault("SENSEI_MOUSE", "0")
+except Exception:
+    os.environ.setdefault("SENSEI_MOUSE", "0")
 if _SENSEI_ENABLED:
     try:
         from sensei_tui import SenseiApp
@@ -149,6 +159,7 @@ TASKS_FILE    = _pfile("tasks")
 APPROVED_FILE = _pfile("approved")
 PERMS_FILE    = _pfile("permissions_done")
 CACHE_FILE    = _pfile("cache.json")
+LAST_CREATED_FILE = _pfile("last_created")
 HINTS_FILE    = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
 OLLAMA_URL    = "http://localhost:11434"
@@ -508,6 +519,102 @@ def log(msg):
     except Exception:
         pass
 
+def _clear_runtime_cache(reason="startup"):
+    """Clear exact-response cache for a fresh run; harvest memory stays intact."""
+    try:
+        existed = CACHE_FILE.exists()
+        CACHE_FILE.unlink(missing_ok=True)
+        log(f"CACHE_CLEAR: {reason}")
+        return existed
+    except Exception as e:
+        log(f"CACHE_CLEAR_ERROR [{reason}]: {e}")
+        return False
+
+def _remember_created_file(filepath):
+    try:
+        p = Path(os.path.expanduser(filepath)).resolve()
+        LAST_CREATED_FILE.write_text(str(p))
+    except Exception as e:
+        log(f"LAST_CREATED_WRITE_ERROR: {e}")
+
+def _latest_created_file():
+    try:
+        p = Path(LAST_CREATED_FILE.read_text().strip()).expanduser()
+        if p.exists():
+            return p
+    except Exception:
+        pass
+    candidates = []
+    for root in (Path.home() / "Desktop", Path.cwd()):
+        try:
+            candidates.extend(
+                p for p in root.glob("*")
+                if p.is_file() and p.suffix.lower() in {".html", ".htm", ".sh", ".py", ".js", ".css", ".txt", ".md"}
+            )
+        except Exception:
+            pass
+    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+def _open_file_preview(path=None):
+    p = Path(os.path.expanduser(str(path))) if path else _latest_created_file()
+    if not p or not p.exists():
+        print(f"  {Y}No created file found to preview yet.{X}")
+        return False
+    try:
+        subprocess.Popen(["xdg-open", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"  {G}✅ Preview opened:{X} {p}")
+        log(f"PREVIEW_OPEN: {p}")
+        return True
+    except Exception as e:
+        print(f"  {R}preview failed: {e}{X}")
+        log(f"PREVIEW_ERROR: {e}")
+        return False
+
+def _show_recent_log(lines=80):
+    try:
+        raw = LOG_FILE.read_text(errors="replace").splitlines()
+    except Exception as e:
+        print(f"  {R}log read failed: {e}{X}")
+        return
+    tail = raw[-lines:]
+    print(f"\n{C}  ── recent log: {LOG_FILE} ──{X}")
+    for line in tail:
+        print(f"  {D}{line}{X}")
+    print(f"{C}  ─────────────────────────────{X}\n")
+
+_CLOUD_CIRCUITS = {}
+_NETWORK_DOWN_UNTIL = 0.0
+
+def _cloud_allowed(provider):
+    global _NETWORK_DOWN_UNTIL
+    now = time.time()
+    if now < _NETWORK_DOWN_UNTIL:
+        log(f"CLOUD_SKIP [{provider}]: network circuit open")
+        return False
+    until = _CLOUD_CIRCUITS.get(provider, 0)
+    if until and now < until:
+        log(f"CLOUD_SKIP [{provider}]: provider circuit open")
+        return False
+    return True
+
+def _cloud_trip(provider, reason, seconds=30):
+    _CLOUD_CIRCUITS[provider] = time.time() + seconds
+    log(f"CLOUD_CIRCUIT [{provider}]: {reason} for {seconds}s")
+
+def _cloud_trip_network(reason, seconds=60):
+    global _NETWORK_DOWN_UNTIL
+    _NETWORK_DOWN_UNTIL = time.time() + seconds
+    log(f"CLOUD_NETWORK_DOWN: {reason} for {seconds}s")
+
+def _network_error(e):
+    text = str(e).lower()
+    return isinstance(e, urllib.error.URLError) and any(
+        needle in text for needle in (
+            "name or service not known", "temporary failure", "nodename",
+            "network is unreachable", "no route to host"
+        )
+    )
+
 # ── ROUTER ───────────────────────────────────────────────────
 CODE_WORDS    = {"code","python","bash","javascript","js","script","debug","function",
                  "class","error","fix","bug","write","program","def","import","html","css"}
@@ -593,7 +700,7 @@ def detect_route(text, has_image=False):
             return "cloud", "gemini", f"pinned → Gemini"
         return "local", PINNED_MODEL, f"pinned → {PINNED_MODEL}"
 
-    if has_image or any(w in t for w in VISION_WORDS):
+    if has_image or (any(w in t for w in VISION_WORDS) and not _looks_app_shaped(t, words)):
         return "vision", MODELS["kimi"], "vision → kimi-k2.5 (1T) · llava locally in apocalypse mode"
     if words & CODE_WORDS:
         return "local", MODELS["coder"], f"code → {MODELS['coder']}"
@@ -993,7 +1100,7 @@ def orchestrate(history, user_text, image_path=None):
     # live route so Sensei can read, create, edit, run, and verify the current
     # filesystem. Cache remains for plain chat/knowledge repeats only.
     if (harvest is not None and stripped and not image_path
-            and _current_mode != "plan" and not work_request):
+            and _current_mode not in ("plan", "review", "auto") and not work_request):
         try:
             cached_resp, sim, entry = harvest.lookup(
                 stripped, min_similarity=0.85, max_age_days=90
@@ -1008,15 +1115,7 @@ def orchestrate(history, user_text, image_path=None):
             log(f"HARVEST_LOOKUP_ERROR: {e}")
 
     # 3. Vision — prefer local llava in apocalypse mode; cloud multimodal in peacetime
-    if image_path or any(w in low for w in VISION_WORDS):
-        # 3a. Vision-words but NO image AND text looks app-shaped → ASK
-        # before routing. Otherwise we burn 5+ minutes on llava trying to
-        # describe a non-existent image when the user actually wants an
-        # app built. (The slideshow-prompt-froze-on-llava bug 2026-04-24.)
-        if not image_path and _looks_app_shaped(low, word_set):
-            return {"route": "ask_user",
-                    "question": _vision_vs_app_question(stripped),
-                    "reason": "vision words but no image + app-shaped — clarify before routing"}
+    if image_path or (any(w in low for w in VISION_WORDS) and not _looks_app_shaped(low, word_set)):
         if run_mode == "peacetime" and any_cloud and have_gemini:
             return {"route": "cloud_vision", "model": "gemini",
                     "reason": "peacetime vision → Gemini 2.0 Flash"}
@@ -2015,6 +2114,8 @@ def local_thinking_stop(handle):
 
 # ── CLOUD AI ──────────────────────────────────────────────────
 def ask_cloud_groq(messages):
+    if not _cloud_allowed("groq"):
+        return None
     key = KEYS.get("groq")
     if not key:
         return None
@@ -2035,12 +2136,18 @@ def ask_cloud_groq(messages):
         label = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
                  429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
         log(f"GROQ_ERROR: {label}")
+        if code == 429:
+            _cloud_trip("groq", "rate limit", 30)
         return None
     except Exception as e:
         log(f"GROQ_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def ask_cloud_openai(messages):
+    if not _cloud_allowed("openai"):
+        return None
     key = KEYS.get("openai")
     if not key:
         return None
@@ -2052,9 +2159,13 @@ def ask_cloud_openai(messages):
         return resp.choices[0].message.content
     except Exception as e:
         log(f"OPENAI_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def ask_cloud_gemini(messages):
+    if not _cloud_allowed("gemini"):
+        return None
     key = KEYS.get("gemini")
     if not key:
         return None
@@ -2069,9 +2180,13 @@ def ask_cloud_gemini(messages):
             return json.loads(resp.read())["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         log(f"GEMINI_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def ask_cloud_anthropic(messages):
+    if not _cloud_allowed("anthropic"):
+        return None
     key = KEYS.get("anthropic")
     if not key:
         return None
@@ -2089,9 +2204,13 @@ def ask_cloud_anthropic(messages):
             return json.loads(resp.read())["content"][0]["text"]
     except Exception as e:
         log(f"ANTHROPIC_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def ask_cloud_deepseek(messages):
+    if not _cloud_allowed("deepseek"):
+        return None
     key = KEYS.get("deepseek")
     if not key:
         return None
@@ -2110,10 +2229,15 @@ def ask_cloud_deepseek(messages):
             return json.loads(resp.read())["choices"][0]["message"]["content"]
     except Exception as e:
         log(f"DEEPSEEK_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def _ask_openrouter(messages, model, label, timeout=60):
     """Generic OpenRouter caller with token tracking."""
+    provider_key = f"openrouter/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
     key = KEYS.get("openrouter")
     if not key:
         return None
@@ -2151,9 +2275,15 @@ def _ask_openrouter(messages, model, label, timeout=60):
         diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
                 429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
         log(f"OPENROUTER_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        elif code == 404:
+            _cloud_trip(provider_key, "model unavailable", 300)
         return None
     except Exception as e:
         log(f"OPENROUTER_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
         return None
 
 def ask_cloud_openrouter_405b(messages):
@@ -2198,7 +2328,7 @@ def ask_cloud(messages, provider="groq"):
         except Exception as e:
             log(f"HARVEST_RECORD_ERROR: {e}")
 
-    r = fn_map.get(provider, ask_cloud_groq)(messages)
+    r = None if not _cloud_allowed(provider) else fn_map.get(provider, ask_cloud_groq)(messages)
     if r:
         _record(r, provider)
         return r
@@ -4037,7 +4167,7 @@ def set_mouse_profile(profile):
     profile = (profile or "").strip().lower()
     if profile not in {"remote", "local"}:
         profile = "status"
-    current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
+    current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
     if profile == "status":
         label = "remote/phone scroll" if current != "0" else "local drag-copy"
         print(f"  {C}Mouse profile:{X} {label}  {D}(SENSEI_MOUSE={current}){X}")
@@ -4151,7 +4281,7 @@ def show_doctor():
     if ui_service not in ("active", "unknown"):
         warnings.append("master-ai-ui.service is " + ui_service)
 
-    mouse = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
+    mouse = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
     mouse_label = "remote/phone" if mouse != "0" else "local/copy"
     mem_count = _doctor_count_lines(MEMORY_FILE)
     approved_count = _doctor_count_lines(APPROVED_FILE)
@@ -4253,6 +4383,8 @@ def _normalize_run_cmd(cmd):
     # `./~/path` is never valid; the model means `~/path`.
     fixed = re.sub(r'(?<!\S)\./~/', '~/', fixed)
     fixed = re.sub(r'(?<=\s)\./~/', '~/', fixed)
+    fixed = re.sub(r'(?<!\S)\.~/+', '~/', fixed)
+    fixed = re.sub(r'(?<=\s)\.~/+', '~/', fixed)
     if fixed != (cmd or "").strip():
         print(f"{Y}  normalized command:{X} {fixed}")
     return fixed
@@ -4461,7 +4593,7 @@ def confirm_create(filepath, content):
         print(f"  {D}reason: {why}{X}")
         print(f"  {D}switch to 'mode review' to confirm manually.{X}")
         _audit("CREATE-FENCE-BLOCK", filepath)
-        return
+        return False
     line_count = content.count('\n') + 1
     lines = content.splitlines()
     # Diff-style preview — green `+` prefix with line numbers, same shape as
@@ -4494,9 +4626,11 @@ def confirm_create(filepath, content):
             print(_pill("CREATED", f"{W}{filepath}{X}"))
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE-AUTO", filepath)
+            _remember_created_file(filepath)
+            return True
         except Exception as e:
             print(_pill("ERROR", f"create failed: {e}"))
-        return
+            return False
     print(f"{D}║  {BTN_G} 1) Create   — write file         {X}")
     if line_count > preview_n:
         print(f"{D}║  {BTN_C} 2) Review   — see all {line_count} lines   {X}")
@@ -4505,7 +4639,7 @@ def confirm_create(filepath, content):
     choice = _safe_input(f"  {BOLD}Choose (1/2/3): {X}", audit_cmd=f"CREATE:{filepath}")
     if choice is None:
         print(f"{R}  🚫 no live terminal — refusing this create. Re-issue from an interactive Sensei pane.{X}")
-        return
+        return False
     _check_kick_escape(choice)
 
     if choice in ('1', '2'):
@@ -4520,7 +4654,7 @@ def confirm_create(filepath, content):
             yn = _safe_input(f"{C}  Create this file? (y/N): {X}", audit_cmd=f"CREATE:{filepath}")
             if yn is None or yn.lower() != 'y':
                 print(f"{Y}  ⏭  Skipped.{X}")
-                return
+                return False
         try:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             Path(filepath).write_text(content)
@@ -4537,10 +4671,14 @@ def confirm_create(filepath, content):
             print(_pill("CREATED", f"{W}{filepath}{X}"))
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE", filepath)
+            _remember_created_file(filepath)
+            return True
         except Exception as e:
             print(_pill("ERROR", f"create failed: {e}"))
+            return False
     else:
         print(_pill("SKIPPED"))
+        return False
 
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
@@ -4553,19 +4691,19 @@ def confirm_edit(filepath, find_text, replace_text):
         print(f"  {D}reason: {why}{X}")
         print(f"  {D}switch to 'mode review' to confirm manually.{X}")
         _audit("EDIT-FENCE-BLOCK", filepath)
-        return
+        return False
     if not os.path.isfile(filepath):
         print(f"{R}  ❌ EDIT: file not found: {filepath}{X}")
-        return
+        return False
     try:
         content = Path(filepath).read_text(errors='replace')
     except Exception as e:
         print(f"{R}  ❌ EDIT: read failed: {e}{X}")
-        return
+        return False
     if find_text not in content:
         print(f"{R}  ❌ EDIT: text not found in {os.path.basename(filepath)}{X}")
         print(f"{D}  looking for: {find_text[:80]!r}{X}")
-        return
+        return False
 
     # Full diff — no 120-char truncation. Line numbers prefixed so Elijah
     # can locate the change. The starting line is derived from the byte
@@ -4590,16 +4728,17 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT-AUTO", filepath)
+            return True
         except Exception as e:
             print(_pill("ERROR", f"edit failed: {e}"))
-        return
+            return False
     print(f"{D}║  {BTN_G} 1) Apply     — make the edit          {X}")
     print(f"{D}║  {BTN_R} 2) No        — skip                   {X}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
     choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=f"EDIT:{filepath}")
     if choice is None:
         print(f"{R}  🚫 no live terminal — refusing this edit. Re-issue from an interactive Sensei pane.{X}")
-        return
+        return False
     _check_kick_escape(choice)
     if choice == '1':
         new_content = content.replace(find_text, replace_text, 1)
@@ -4608,10 +4747,13 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT", filepath)
+            return True
         except Exception as e:
             print(_pill("ERROR", f"edit failed: {e}"))
+            return False
     else:
         print(_pill("SKIPPED"))
+        return False
 
 # ── REPLY PROCESSOR ──────────────────────────────────────────
 def process_reply(reply, history, streamed=False):
@@ -4806,11 +4948,23 @@ def process_reply(reply, history, streamed=False):
     # CREATE: / EDIT: run BEFORE RUN: — so RUN: bash <path> works on a file
     # the same reply just created. Prior order produced exit-127s when the
     # model emitted CREATE: + RUN: together.
+    action_failed = False
+    created_ok_paths = []
     for filepath, content in create_files:
-        confirm_create(filepath, content)
+        if confirm_create(filepath, content):
+            created_ok_paths.append(os.path.expanduser(filepath))
+        else:
+            action_failed = True
 
     for filepath, find_text, replace_text in edit_ops:
-        confirm_edit(filepath, find_text, replace_text)
+        if not confirm_edit(filepath, find_text, replace_text):
+            action_failed = True
+
+    if action_failed:
+        if run_cmds or runterm_cmds:
+            print(_pill("BLOCKED", f"{D}CREATE/EDIT failed or was denied — skipped downstream RUN/RUNTERM for this turn{X}"))
+            log("CHAIN_ABORT: skipped RUN/RUNTERM after failed CREATE/EDIT")
+        return reply
 
     for cmd in run_cmds:
         confirm_run(cmd)
@@ -4819,6 +4973,12 @@ def process_reply(reply, history, streamed=False):
     # "now open the demo" (RUNTERM:), the demo spawns after the build finishes.
     for cmd in runterm_cmds:
         confirm_runterm(cmd)
+
+    if globals().get("MODE", "plan") == "auto":
+        opened = any("xdg-open" in c or "open " in c.lower() for c in (run_cmds + runterm_cmds))
+        html_paths = [p for p in created_ok_paths if str(p).lower().endswith((".html", ".htm"))]
+        if html_paths and not opened:
+            _open_file_preview(html_paths[-1])
 
     return reply
 
@@ -5737,6 +5897,10 @@ def main():
     if _SENSEI_APP is None:
         os.system('clear')
     log("=== MASTER AI STARTED ===")
+    if _clear_runtime_cache("startup"):
+        print(f"  {G}cache cleared for a fresh run{X}")
+    else:
+        print(f"  {D}cache fresh: no old exact-response cache found{X}")
 
     # Permissions wizard — first time only (type 'perms' to replay)
     if not PERMS_FILE.exists():
@@ -5749,6 +5913,12 @@ def main():
     # resize-window -A uses the client's bounds, but we also fetch them
     # explicitly so we can log the mismatch if the pane is still small.
     if os.environ.get("TMUX"):
+        mouse_pref = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+        tmux_mouse = "on" if mouse_pref != "0" else "off"
+        subprocess.run(["tmux", "set-option", "-g", "mouse", tmux_mouse],
+                       check=False, capture_output=True)
+        subprocess.run(["tmux", "set-window-option", "-g", "mouse", tmux_mouse],
+                       check=False, capture_output=True)
         subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
                        check=False, capture_output=True)
         try:
@@ -6220,7 +6390,7 @@ def main():
         # the stoplight sequence honest instead of hiding Auto behind a single
         # undocumented "accept all" shortcut.
         if PENDING_PLAN_TEXT and lo in (
-            "5", "a", "aa", "all", "accept all", "finish", "finish project",
+            "a", "aa", "all", "accept all", "finish", "finish project",
             "run all", "auto finish", "complete project"
         ):
             globals()['MODE'] = "review"
@@ -6318,13 +6488,21 @@ def main():
             save_session(history)
             continue
 
+        if lo in ("log", "show log", "open log"):
+            _show_recent_log()
+            continue
+
+        if lo in ("preview", "open preview", "open latest", "open product"):
+            _open_file_preview()
+            continue
+
         # ── Save the whole chat to a local file + optional clipboard ──
         # Elijah 2026-04-20: "sync it internally, don't rely on RustDesk
         # clipboard passthrough." Primary write is to CHATS_DIR — durable,
         # viewable in file manager or Pupil, accessible via Tailscale. A
         # clipboard copy is the SECONDARY path, best-effort, silent on
         # failure so the internal file is the source of truth.
-        if lo in ("copy chat", "copy session", "copy", "export chat"):
+        if lo in ("copy chat", "copy session", "copy", "export chat", "transcript"):
             try:
                 turns = []
                 for entry in history:
@@ -6657,8 +6835,8 @@ def main():
             print(f"  {G}✅ Approved list cleared.{X}")
             continue
         if lo == "clear cache":
-            CACHE_FILE.unlink(missing_ok=True)
-            print(f"  {G}✅ Cache cleared.{X}")
+            _clear_runtime_cache("user command")
+            print(f"  {G}✅ Cache cleared. Fresh answers on the next turn.{X}")
             continue
 
         # ── Chats list / delete ────────────────────────────────
@@ -7203,8 +7381,9 @@ def main():
                 ).strip()
                 globals()['PENDING_PLAN_TEXT'] = plan_text_clean[:1600]
                 globals()['PENDING_PLAN_REQUEST'] = user_text
-                print(f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_G} A/5){X} finish in Auto  ·  "
-                      f"{BTN_Y} 2){X} edit  ·  {BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking")
+                print(f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_Y} 2){X} edit  ·  "
+                      f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
+                      f"{BTN_G} A){X} finish in Auto")
                 threading.Thread(target=speak, args=("Plan ready.",), daemon=True).start()
             else:
                 # Conversational turn — model is still reasoning or asking.
@@ -7219,6 +7398,7 @@ def main():
             _is_tool_required(user_text.lower())
             or bool(_cache_words & CODE_WORDS)
             or bool(_cache_words & ALTER_WORDS)
+            or globals().get("MODE", "plan") in ("plan", "review", "auto")
         )
         cached = None if _skip_exact_cache else cache_lookup(user_text)
         if cached:
