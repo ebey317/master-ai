@@ -107,6 +107,10 @@ Inside Sensei (menu 4), type these at the prompt:
 | `project <path>` | Sets a filesystem path as project context (injects file tree into AI) |
 | `mode plan` / `mode review` / `mode auto` | Controls execution: plan drafts only, review asks per step, auto runs non-destructive work |
 | `A` / `finish` | From a ready plan, hand off Plan → Review → Auto and finish the project flow |
+| `fast: <message>` | One quick cloud answer through Groq when configured |
+| `deep: <message>` | One reasoning answer through DeepSeek-R1/OpenRouter when configured |
+| `tight: <hard question>` | Best reasoning lane: DeepSeek-R1 if available, local deep reasoning loop otherwise |
+| `think: <hard question>` | Local multi-pass reasoning loop, no cloud and no command execution |
 | `remember: <text>` | Saves a fact to long-term memory |
 | `forget: <text>` | Removes a memory |
 | `task add <text>` | Adds a side-task (not tied to PROJECTS.md boards) |

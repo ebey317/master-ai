@@ -86,6 +86,7 @@ try:
         "mouse remote", "mouse local", "mouse status",
         "projects", "apps", "autotips", "slideshow", "tour",
         "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
+        "commands", "?",
         "tts on", "tts off", "tts",
         "hints", "project", "search ", "dl ", "gdrive ", "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
@@ -3848,6 +3849,8 @@ def show_help():
             ("model",                "open model picker — choose any model"),
             ("model auto",           "back to smart auto-routing"),
             ("search <query>",       "force web search, show results"),
+            ("reason: <question>",   "tighter reasoning — DeepSeek if available, local fallback"),
+            ("tight: <question>",    "same as reason:"),
             ("mode plan",            "brainstorm + draft plans (default — no execution)"),
             ("mode review",          "ask before every command (per-action confirm)"),
             ("mode plan",            "AI shows plan first — type 'go' to run"),
@@ -3987,6 +3990,7 @@ def show_tips():
     row("i ~/photo.jpg",   "analyze any image file")
     row("dl <url>",        "download a file to ~/Downloads")
     row("search <query>",  "force web search and show raw results")
+    row("reason: <ask>",   "tighter reasoning — DeepSeek if available, local fallback")
     blank()
 
     section("AI MODES")
@@ -4079,6 +4083,31 @@ def show_tips():
         input()
     except Exception:
         pass
+
+def show_commands():
+    """Simple first-screen command card for normal users."""
+    rows = [
+        ("Just type", "Ask for anything in plain English"),
+        ("mode plan", "Think first. Nothing runs until you approve"),
+        ("mode review", "Ask before each file edit or command"),
+        ("mode auto", "Work faster. Safe blocks still apply"),
+        ("reason: <question>", "DeepSeek if online; local fallback"),
+        ("fast: <message>", "Quick cloud answer when Groq is configured"),
+        ("project ~/path", "Use a folder as context"),
+        ("remember: <fact>", "Save something to memory"),
+        ("doctor", "Check services, models, URLs, and warnings"),
+        ("copy chat", "Export this conversation"),
+        ("refresh", "Restart the screen/engine in place"),
+        ("kick", "Force restart if stuck"),
+    ]
+    width = 66
+    print(f"\n{BC}  ╔{'═' * width}╗{X}")
+    print(f"{BC}  ║{X}  {BW}What can I type?{X}{' ' * (width - 20)}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * width}╣{X}")
+    for cmd, desc in rows:
+        print(f"{BC}  ║{X}  {Y}{cmd:<19}{X} {C}{desc:<42}{X}{BC}║{X}")
+    print(f"{BC}  ╚{'═' * width}╝{X}")
+    print(f"  {D}Tip: you can ignore commands and just say what you want built.{X}\n")
 
 # ── SAFETY BLOCK ─────────────────────────────────────────────
 BLOCKED_PATTERNS = [
@@ -5715,6 +5744,73 @@ def _try_open_url_intent(user_text):
         return _OPEN_ALIASES[target.lower()]
     return None
 
+def _neutralize_directive_lines(text):
+    """Display-only safety for pure reasoning answers."""
+    return re.sub(
+        r'(?im)^(\s*)(RUN|RUNTERM|READ|CREATE|EDIT|ASK|THINK|DONE):',
+        r'\1# \2:',
+        text or "",
+    )
+
+def _display_reasoning_answer(user_text, answer, history):
+    safe_answer = _neutralize_directive_lines((answer or "").strip())
+    if not safe_answer:
+        return False
+    render_reply(safe_answer, prefix=f"\n{M}  🥋{X} ", suffix="")
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": safe_answer})
+    if TTS_ENABLED:
+        threading.Thread(target=speak, args=(safe_answer,), daemon=True).start()
+    return True
+
+def handle_tight_reasoning(user_text, query, history):
+    """Best available pure-text reasoning lane.
+
+    Cloud path: DeepSeek-R1 through OpenRouter. Fallback: local deep
+    Planner/Solver/Critic/Finalizer loop. Never feeds output to the
+    directive executor.
+    """
+    query = (query or "").strip()
+    if not query:
+        print(f"  {Y}usage: tight: <hard question>{X}")
+        return
+
+    keys_now = load_keys()
+    if (keys_now.get("openrouter") or "").strip():
+        print(f"  {BC}[thinking: tight reasoning → DeepSeek-R1]{X}")
+        system = (
+            "You are Sensei's tight reasoning lane. Answer the user's hard "
+            "question with careful analysis and a clean final answer. Do not "
+            "expose private chain-of-thought; give concise reasoning, key "
+            "assumptions, and the conclusion. This is pure text: never begin "
+            "a line with RUN:, RUNTERM:, READ:, CREATE:, EDIT:, ASK:, THINK:, "
+            "or DONE:."
+        )
+        resp = ask_cloud(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": query},
+            ],
+            provider="deepseek-r1",
+        )
+        if resp and _display_reasoning_answer(user_text, resp, history):
+            return
+        print(f"  {Y}DeepSeek-R1 unavailable — falling back to local deep reasoning loop.{X}")
+
+    try:
+        import sys as _sys
+        if str(Path.home() / "scripts") not in _sys.path:
+            _sys.path.insert(0, str(Path.home() / "scripts"))
+        from sensei_reasoning_loop import run_reasoning_loop
+        out = run_reasoning_loop(query, mode="deep", progress=True)
+        answer = out.get("answer", "").strip()
+        if not _display_reasoning_answer(user_text, answer, history):
+            print(f"  {R}tight reasoning produced no answer.{X}")
+    except KeyboardInterrupt:
+        print(f"\n  {Y}tight reasoning interrupted{X}")
+    except Exception as e:
+        print(f"  {R}tight reasoning error: {e}{X}")
+
 def handle(user_text, history, image_path=None):
     # ── Deterministic "open <url/site>" catch — no model call needed ───
     _open_url = _try_open_url_intent(user_text)
@@ -6524,6 +6620,10 @@ def main():
             continue
 
         # ── Help (slide show — may return a typed message) ────
+        if lo in ("commands", "command", "?"):
+            show_commands()
+            continue
+
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -6650,6 +6750,7 @@ def main():
             print(f"    · If you're online and want cloud speed, borrow it per-message:")
             print(f"        {BC}fast:{X} <your message>  → one reply through Groq (fastest free cloud)")
             print(f"        {BC}deep:{X} <your message>  → one reply through DeepSeek-R1 (reasoning)")
+            print(f"        {BC}tight:{X} <hard question> → DeepSeek-R1, else local deep reasoning loop")
             print()
             continue
         if lo in ("mode connected", "mode online", "mode cloud", "mode peacetime"):
@@ -6662,6 +6763,7 @@ def main():
             print(f"  {W}What this gives you:{X}")
             print(f"    · Groq Llama 3.3 70B for default asks — ~0.3 second replies.")
             print(f"    · DeepSeek-R1 for reasoning — closest free path to top-tier quality.")
+            print(f"    · `tight:` for careful DeepSeek-R1 reasoning with local deep fallback.")
             print(f"    · Gemini 2.0 Flash for vision + web-aware questions.")
             print(f"  {W}The trade:{X}")
             print(f"    · Needs internet. If it drops, Sensei falls back to your local models.")
@@ -7629,6 +7731,18 @@ def main():
             confirm_runterm(cmd)
             continue
 
+        # ── tight: prefix — best available reasoning lane.
+        # Uses DeepSeek-R1 through OpenRouter when configured, with local
+        # deep reasoning-loop fallback. Pure text; never executes directives.
+        if user_text.lower().startswith(("tight:", "tight ", "reason:", "reason ")):
+            if user_text.lower().startswith(("reason:", "reason ")):
+                query = user_text[7:].strip()
+            else:
+                query = user_text[6:].strip()
+            handle_tight_reasoning(user_text, query, history)
+            _request_auto_save(history)
+            continue
+
         # ── Reasoning loop (think: prefix) — Planner/Solver/Critic/Finalizer
         # Pure-text 4-stage pipeline for hard QUESTIONS (not shell tasks).
         # Distinct from loop: — this one doesn't execute commands, just
@@ -7655,25 +7769,7 @@ def main():
                 from sensei_reasoning_loop import run_reasoning_loop
                 out = run_reasoning_loop(query, mode=rl_mode, progress=True)
                 answer = out.get("answer", "").strip()
-                if answer:
-                    # Reasoning-loop output is pure text — it MUST NOT feed
-                    # the RUN:/CREATE:/EDIT: executor. We deliberately call
-                    # render_reply (display only) instead of process_reply
-                    # (which parses + executes directives). As belt-and-
-                    # suspenders, if the finalizer slipped and emitted a
-                    # directive-looking line, neutralize it so a future
-                    # refactor can't accidentally auto-run it either.
-                    safe_answer = re.sub(
-                        r'(?im)^(\s*)(RUN|READ|CREATE|EDIT|THINK|DONE):',
-                        r'\1# \2:',
-                        answer,
-                    )
-                    render_reply(safe_answer, prefix=f"\n{M}  🥋{X} ", suffix="")
-                    history.append({"role": "user", "content": user_text})
-                    history.append({"role": "assistant", "content": safe_answer})
-                    if TTS_ENABLED:
-                        threading.Thread(target=speak, args=(safe_answer,), daemon=True).start()
-                else:
+                if not _display_reasoning_answer(user_text, answer, history):
                     print(f"  {R}reasoning loop produced no answer.{X}")
             except KeyboardInterrupt:
                 print(f"\n  {Y}reasoning loop interrupted{X}")
