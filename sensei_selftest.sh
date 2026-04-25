@@ -553,13 +553,23 @@ CUR_PHASE=10
 phase 10 "vision (llava) round-trip"
 
 if [ "$have_llava" = "1" ]; then
-    # Generate a 2x2 solid-red PNG using python (no Pillow needed — write bytes directly).
+    # Generate a 64x64 solid-red PNG using python (no Pillow needed).
+    # A 2x2 fixture can crash llava's runner on some Ollama builds even
+    # though normal phone/camera-sized images work.
     python3 - "$SANDBOX/input/red.png" <<'PY' 2>/dev/null
-import base64, sys
-# 2x2 red png, pre-baked
-png = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFUlEQVR4nGP8z8DwH4"
-    "gYGRgYGBgAJNQDAQAwsAKDkvC7wAAAAABJRU5ErkJggg=="
+import struct, sys, zlib
+w = h = 64
+raw = b"".join(b"\x00" + bytes([255, 0, 0]) * w for _ in range(h))
+def chunk(kind, data):
+    return (
+        struct.pack(">I", len(data)) + kind + data +
+        struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    )
+png = (
+    b"\x89PNG\r\n\x1a\n" +
+    chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) +
+    chunk(b"IDAT", zlib.compress(raw)) +
+    chunk(b"IEND", b"")
 )
 open(sys.argv[1], "wb").write(png)
 PY
@@ -639,8 +649,11 @@ fi
 CUR_PHASE=12
 phase 12 "tts round-trip"
 
-if curl -sf -m 2 http://localhost:5050/ -o /dev/null 2>/dev/null \
-   || curl -sf -m 2 -X POST http://localhost:5050/speak \
+if curl -sf -m 2 http://localhost:5050/health -o /dev/null 2>/dev/null; then
+    record_pass "tts server health endpoint reachable"
+fi
+
+if curl -sf -m 20 -X POST http://localhost:5050/speak \
         -H 'Content-Type: application/json' \
         -d '{"text":"test"}' -o "$SANDBOX/logs/tts.out" 2>/dev/null; then
     if [ -s "$SANDBOX/logs/tts.out" ]; then

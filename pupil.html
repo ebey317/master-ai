@@ -3,7 +3,15 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="theme-color" content="#2266CC"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-title" content="Pupil"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
 <title>Pupil</title>
+<link rel="manifest" href="/pupil.webmanifest"/>
+<link rel="icon" href="/pupil-icon.svg" type="image/svg+xml"/>
+<link rel="apple-touch-icon" href="/pupil-icon.svg"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
 /* Pupil — martial-arts belt themes. Default = Blue (Sensei-match).
@@ -13,6 +21,9 @@
   --bg:#F0F6FF;--bg2:#E6F1FB;--bg3:#D5E8F7;
   --border:rgba(24,95,165,0.18);--border-mid:rgba(24,95,165,0.32);
   --radius:16px;--radius-sm:10px;--accent:#2266CC;
+  --app-height:100dvh;--safe-top:env(safe-area-inset-top,0px);
+  --safe-right:env(safe-area-inset-right,0px);--safe-bottom:env(safe-area-inset-bottom,0px);
+  --safe-left:env(safe-area-inset-left,0px);
 }
 [data-theme="white"] {--accent:#333333;--bg:#FFFFFF;--bg2:#F7F7F7;--bg3:#ECECEC;--text:#111;--text-mid:#333;--text-soft:#666;--border:rgba(0,0,0,0.10);--border-mid:rgba(0,0,0,0.20)}
 [data-theme="yellow"]{--accent:#D4A017;--bg:#FFFDF0;--bg2:#FFF8E4;--bg3:#FEF0C4;--text:#3A2C03;--text-mid:#6E5712;--text-soft:#A6882E;--border:rgba(212,160,23,0.18);--border-mid:rgba(212,160,23,0.32)}
@@ -56,9 +67,9 @@
 .setup-name{width:100%;padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;margin-bottom:16px}
 .setup-name:focus{outline:none;border-color:var(--accent)}
 html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
-body{display:flex;flex-direction:column;height:100vh}
+body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden}
 
-.header{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.header{display:flex;align-items:center;gap:12px;padding:calc(14px + var(--safe-top)) calc(18px + var(--safe-right)) 14px calc(18px + var(--safe-left));border-bottom:1px solid var(--border);background:var(--bg2);flex:0 0 auto}
 .logo{font-family:'DM Serif Display',serif;font-size:20px;color:var(--text)}
 .logo span{color:var(--accent)}
 .header-meta{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
@@ -76,8 +87,8 @@ body{display:flex;flex-direction:column;height:100vh}
 .theme-dot-black {background:#0A0A0A}
 .theme-dot-hacker{background:linear-gradient(45deg,#0a0e27 50%,#00ff00 50%)}
 
-.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2)}
-.tab{padding:9px 16px;font-size:13px;color:var(--text-soft);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s}
+.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex:0 0 auto}
+.tab{padding:11px 16px;font-size:13px;color:var(--text-soft);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;min-height:44px;display:flex;align-items:center}
 .tab.active{color:var(--text);border-bottom-color:var(--accent)}
 .tab:hover{color:var(--text)}
 
@@ -107,19 +118,19 @@ body{display:flex;flex-direction:column;height:100vh}
 .msg-btn:hover{background:var(--bg3);color:var(--text)}
 .timestamp{font-size:10px;color:var(--text-soft);margin-top:4px;display:block}
 
-.input-row{padding:12px 14px;border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end}
-.input-box{flex:1;min-height:40px;max-height:120px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);padding:10px 12px;font-size:14px;background:var(--bg);color:var(--text);resize:none;font-family:'DM Sans',sans-serif;line-height:1.5}
+.input-row{padding:12px calc(14px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(14px + var(--safe-left));border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end;flex:0 0 auto}
+.input-box{flex:1;min-height:44px;max-height:120px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);padding:10px 12px;font-size:16px;background:var(--bg);color:var(--text);resize:none;font-family:'DM Sans',sans-serif;line-height:1.5}
 .input-box:focus{outline:none;border-color:var(--accent)}
-.send-btn{padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.send-btn{min-height:44px;padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .send-btn:hover{opacity:0.9}
-.mic-btn{padding:10px 12px;background:transparent;color:var(--accent);border:1px solid var(--border-mid);border-radius:var(--radius-sm);font-size:16px;cursor:pointer;white-space:nowrap}
+.mic-btn{min-width:44px;min-height:44px;padding:10px 12px;background:transparent;color:var(--accent);border:1px solid var(--border-mid);border-radius:var(--radius-sm);font-size:16px;cursor:pointer;white-space:nowrap}
 .mic-btn:hover{background:var(--bg3)}
 .mic-btn.listening{background:#E24B4A;color:#fff;border-color:#E24B4A;animation:pulse 1.2s infinite}
 @keyframes pulse{0%{opacity:1}50%{opacity:0.55}100%{opacity:1}}
-.stop-btn{display:none;padding:10px 14px;background:transparent;color:#E24B4A;border:1px solid #E24B4A;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.stop-btn{display:none;min-height:44px;padding:10px 14px;background:transparent;color:#E24B4A;border:1px solid #E24B4A;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .stop-btn:hover{background:#FCEBEB}
 .provider-row{display:flex;gap:6px;padding:6px 14px;background:var(--bg);border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
-.prov-btn{font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:20px;cursor:pointer;background:transparent;color:var(--text-soft);transition:all 0.15s}
+.prov-btn{font-size:11px;padding:7px 10px;min-height:34px;border:1px solid var(--border);border-radius:20px;cursor:pointer;background:transparent;color:var(--text-soft);transition:all 0.15s}
 .prov-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .auto-route{font-size:11px;color:var(--text-soft);margin-left:auto;display:flex;align-items:center;gap:4px}
 .auto-toggle{width:28px;height:16px;border-radius:8px;background:var(--border-mid);border:none;cursor:pointer;position:relative;transition:background 0.15s}
@@ -156,6 +167,46 @@ body{display:flex;flex-direction:column;height:100vh}
 .setting-row select{padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer}
 .save-settings{padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif}
 .tts-status{font-size:12px;color:var(--text-soft);margin-top:6px}
+.install-btn{display:none;min-height:34px;padding:6px 10px;border:1px solid var(--border-mid);border-radius:20px;background:var(--bg);color:var(--text-mid);font-size:11px;font-family:'DM Sans',sans-serif;cursor:pointer}
+.install-btn.visible{display:inline-flex;align-items:center}
+.install-btn:hover{background:var(--bg3)}
+
+@media (max-width: 720px) {
+  #setup{align-items:flex-start;padding:12px}
+  .setup-box{padding:18px;border-radius:12px}
+  .setup-field{flex-direction:column;align-items:stretch}
+  .setup-actions{flex-direction:column}
+  .header{gap:8px;align-items:flex-start;flex-wrap:wrap}
+  .logo{font-size:19px}
+  #machine-name{max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .header-meta{width:100%;margin-left:0;gap:6px}
+  .model-badge,#ram-bar,.counter{font-size:10px!important;min-height:30px}
+  .theme-btn{width:24px;height:24px;flex:0 0 auto}
+  .tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tab{flex:1;justify-content:center;min-width:96px}
+  .template-panel{padding:12px 10px}
+  .template-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .template-card{padding:12px 8px;min-height:88px}
+  .chat-area{margin:0;border-left:0;border-right:0;border-radius:0;padding:10px;gap:10px}
+  .msg{max-width:94%;font-size:15px;line-height:1.55;padding:10px 12px}
+  .msg-actions{opacity:1}
+  .provider-row{padding:8px 10px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .prov-btn{flex:0 0 auto}
+  .auto-route{margin-left:0;flex:0 0 auto}
+  .input-row{gap:6px;align-items:flex-end}
+  .send-btn{padding:10px 14px}
+  .stop-btn{padding:10px 12px}
+  .sessions-wrap{flex-direction:column}
+  .session-list{width:100%;max-height:34%;border-right:0;border-bottom:1px solid var(--border)}
+  .session-viewer{padding:12px}
+  .settings-wrap{padding:14px}
+}
+
+@media (max-width: 430px) {
+  .template-grid{grid-template-columns:1fr}
+  .provider-row{font-size:11px}
+  .mic-btn,.send-btn,.stop-btn{padding-left:11px;padding-right:11px}
+}
 
 </style>
 </head>
@@ -269,7 +320,7 @@ body{display:flex;flex-direction:column;height:100vh}
 </div>
 
 <!-- MAIN APP -->
-<div id="main-app" style="display:none;flex-direction:column;height:100vh">
+<div id="main-app" style="display:none;flex-direction:column;height:var(--app-height);overflow:hidden">
 <div class="header">
   <div class="logo">🥷 <span>Pupil</span></div>
   <div style="font-size:11px;color:var(--text-soft);margin-left:4px" id="machine-name"></div>
@@ -277,6 +328,7 @@ body{display:flex;flex-direction:column;height:100vh}
     <select class="model-badge" id="model-sel" style="cursor:pointer;outline:none;border:1px solid var(--border);background:var(--bg3);color:var(--text-soft);font-size:11px;padding:3px 8px;border-radius:20px;font-family:'DM Sans',sans-serif;" onchange="switchModel(this.value)"></select>
     <span class="counter" id="req-counter"></span>
     <span id="ram-bar" title="System RAM — green OK · yellow close · red swapping" style="font-size:11px;color:var(--text-soft);padding:3px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg3);min-width:82px;text-align:center;cursor:help"></span>
+    <button class="install-btn" id="install-btn" type="button" onclick="installPupil()">install</button>
     <button class="theme-btn theme-dot-white"  onclick="setTheme('white')"  title="White belt"></button>
     <button class="theme-btn theme-dot-yellow" onclick="setTheme('yellow')" title="Yellow belt"></button>
     <button class="theme-btn theme-dot-blue"   onclick="setTheme('blue')"   title="Blue belt — Sensei match"></button>
@@ -543,6 +595,42 @@ CONTEXT:
 <script>
 // router.js stub (auto-route works if ROUTER is defined externally)
 if (typeof ROUTER === 'undefined') { window.ROUTER = { detect: (t, f, a) => ({ provider: a[0], reason: 'default' }) }; }
+
+// Mobile app shell: iOS Safari's visible viewport changes when the URL bar
+// and keyboard move. Keep layout pinned to the actual viewport height so the
+// input row stays reachable on iPhone and Android.
+function setAppHeight() {
+  const h = (window.visualViewport && window.visualViewport.height)
+    ? window.visualViewport.height
+    : window.innerHeight;
+  document.documentElement.style.setProperty('--app-height', h + 'px');
+}
+setAppHeight();
+window.addEventListener('resize', setAppHeight, { passive: true });
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', setAppHeight, { passive: true });
+  window.visualViewport.addEventListener('scroll', setAppHeight, { passive: true });
+}
+
+let _installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _installPrompt = e;
+  const btn = document.getElementById('install-btn');
+  if (btn) btn.classList.add('visible');
+});
+async function installPupil() {
+  if (!_installPrompt) return;
+  _installPrompt.prompt();
+  try { await _installPrompt.userChoice; } catch (e) {}
+  _installPrompt = null;
+  document.getElementById('install-btn')?.classList.remove('visible');
+}
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/pupil-sw.js').catch(() => {});
+  });
+}
 
 // ---- STATE ----
 let history = [];

@@ -3,6 +3,8 @@ import sys, os, json, tempfile, re, gzip, urllib.request
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
+_CLIENT_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
 SCRIPTS    = os.path.expanduser("~/scripts")
 _DEFAULT_CHATS_DIR  = os.path.expanduser("~/.master_ai_chats")
 os.makedirs(_DEFAULT_CHATS_DIR, exist_ok=True)
@@ -52,6 +54,85 @@ class Handler(SimpleHTTPRequestHandler):
         # Returned immediately from cache when fresh (<6h); regenerated when
         # stale or when ?refresh=1. This is the "AI pre-reads your stuff so
         # you don't wait at the door" mechanism.
+        if self.path == '/pupil.webmanifest':
+            try:
+                body = json.dumps({
+                    'name': 'Pupil - Master AI',
+                    'short_name': 'Pupil',
+                    'description': 'Master AI browser UI for iOS, Android, and desktop.',
+                    'start_url': '/pupil.html',
+                    'scope': '/',
+                    'display': 'standalone',
+                    'orientation': 'portrait',
+                    'background_color': '#F0F6FF',
+                    'theme_color': '#2266CC',
+                    'icons': [
+                        {'src': '/pupil-icon.svg', 'sizes': 'any', 'type': 'image/svg+xml', 'purpose': 'any maskable'}
+                    ],
+                }).encode()
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'application/manifest+json')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            except _CLIENT_DISCONNECTS:
+                return
+            return
+
+        if self.path == '/pupil-icon.svg':
+            try:
+                svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="112" fill="#2266CC"/>
+<circle cx="256" cy="206" r="98" fill="#F0F6FF"/>
+<path d="M138 374c20-70 69-108 118-108s98 38 118 108" fill="none" stroke="#F0F6FF" stroke-width="54" stroke-linecap="round"/>
+<path d="M174 190h164" stroke="#042C53" stroke-width="34" stroke-linecap="round"/>
+<circle cx="222" cy="218" r="15" fill="#042C53"/>
+<circle cx="290" cy="218" r="15" fill="#042C53"/>
+</svg>'''.encode()
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'image/svg+xml')
+                self.send_header('Cache-Control', 'public, max-age=86400')
+                self.send_header('Content-Length', len(svg))
+                self.end_headers()
+                self.wfile.write(svg)
+            except _CLIENT_DISCONNECTS:
+                return
+            return
+
+        if self.path == '/pupil-sw.js':
+            try:
+                body = b"""const CACHE = 'pupil-shell-v1';
+const ASSETS = ['/pupil.html', '/pupil.webmanifest', '/pupil-icon.svg'];
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== 'GET' || url.origin !== location.origin) return;
+  event.respondWith(fetch(event.request).then(response => {
+    const copy = response.clone();
+    caches.open(CACHE).then(cache => cache.put(event.request, copy));
+    return response;
+  }).catch(() => caches.match(event.request).then(hit => hit || caches.match('/pupil.html'))));
+});
+"""
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'application/javascript')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            except _CLIENT_DISCONNECTS:
+                return
+            return
+
         if self.path.startswith('/project_summary'):
             try:
                 from urllib.parse import urlparse, parse_qs
@@ -371,7 +452,10 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except Exception as e:
                 self._error(str(e))
         else:
-            super().do_GET()
+            try:
+                super().do_GET()
+            except _CLIENT_DISCONNECTS:
+                return
 
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -676,12 +760,15 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
 
     def _json(self, obj, status=200):
         body = json.dumps(obj).encode()
-        self.send_response(status)
-        self._cors()
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', len(body))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self._cors()
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        except _CLIENT_DISCONNECTS:
+            return
 
     def _error(self, msg):
         self._json({'error': msg}, 500)

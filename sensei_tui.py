@@ -44,6 +44,7 @@ from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
     ConditionalContainer, Float, FloatContainer, HSplit, Window, WindowAlign,
@@ -64,8 +65,9 @@ COMPLETER_WORDS: List[str] = [
     "task", "task add", "task list", "task done", "task clear", "tasks",
     "save session", "load summary", "load session",
     "clear", "clear history", "clear cache", "clear approved", "clear chats", "chats",
-    "refresh", "reload", "restart", "kick",
+    "doctor", "health", "refresh", "reload", "restart", "kick",
     "up", "down", "top", "bottom", "last",
+    "mouse remote", "mouse local", "mouse status",
     "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
     "cache", "perms", "tutorial", "hints on", "hints off",
     "tts on", "tts off", "tts", "hints", "project",
@@ -91,8 +93,10 @@ IDLE_TIPS = [
     "on a pending plan — press 1 or Enter to accept, 4 to keep talking",
     "'copy chat' saves the full session to a markdown file",
     "'clear cache' if Sensei is serving the same cached answer",
+    "'doctor' shows URLs, services, mode, mouse, and current task",
     "'chats' to browse saved sessions",
     "'up' / 'down' scrolls output; 'top' / 'bottom' jumps",
+    "'mouse remote' for phone scrolling; 'mouse local' for drag-copy",
     "'refresh' soft-reloads the engine; 'kick' forces a supervisor respawn",
     "'e' edits this thread's label",
     "'model' switches the active AI model",
@@ -271,6 +275,23 @@ class SenseiApp:
             # drop the arrows. Typed `up`/`down`/`top`/`bottom` still scroll.
             right_margins=[ScrollbarMargin(display_arrows=False)],
         )
+        # Route mouse-wheel events on the chat window into OUR scroll_offset.
+        # Window's default handlers bump self.vertical_scroll, but our
+        # rendering re-anchors to the invisible cursor each frame, so the
+        # wheel would otherwise snap back every repaint. Overriding these
+        # two methods keeps wheel + Ctrl+Up + PageUp on the same offset.
+        def _wheel_up():
+            self._scroll_offset += 5
+            try: self._app.invalidate()
+            except Exception: pass
+
+        def _wheel_down():
+            self._scroll_offset = max(0, self._scroll_offset - 5)
+            try: self._app.invalidate()
+            except Exception: pass
+
+        self._output_window._scroll_up = _wheel_up
+        self._output_window._scroll_down = _wheel_down
         # Framed chat region — wraps the output window in a bordered box so
         # text stays inside the frame on scroll instead of bleeding past the
         # edges. Title is mode-tinted (class:frame picks up the mode accent
@@ -531,6 +552,20 @@ class SenseiApp:
 
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
+            # Multi-line paste fix (2026-04-24): pasted text contains \n
+            # characters that arrive as rapid-fire Enter events. Real
+            # human Enters are always >50ms apart. If this Enter is within
+            # 50ms of the previous one, it's part of a paste — insert as
+            # newline instead of submitting. Without this, pasted prompts
+            # get chopped into per-line submissions and Plan mode never
+            # sees the full request (the slideshow-prompt-fragmented bug).
+            import time as _t
+            _now = _t.monotonic()
+            _last = getattr(self, '_last_enter_time', 0.0)
+            self._last_enter_time = _now
+            if (_now - _last) < 0.05:
+                self._input.buffer.insert_text("\n")
+                return
             text = self._input.text.rstrip("\n")
             self._input.text = ""
             self._scroll_offset = 0
@@ -560,19 +595,48 @@ class SenseiApp:
             else:
                 event.app.exit()
 
+        # Bracketed paste — PROPER fix for multi-line paste-split bug
+        # (2026-04-24). When the terminal sends bracketed-paste sequences
+        # (ESC[200~ ... ESC[201~), prompt_toolkit fires a single
+        # Keys.BracketedPaste event with the full pasted text in
+        # event.data. Insert it directly into the buffer — newlines stay
+        # as text characters, NOT as separate Enter key events. This
+        # supersedes the time-heuristic in _submit which only catches
+        # consecutive newlines but misses the first one in any burst.
+        # The slideshow-prompt-split bug Elijah hit — this is the cure.
+        @kb.add(Keys.BracketedPaste)
+        def _paste(event):
+            event.current_buffer.insert_text(event.data)
+
         # Single scroll binding — Shift+Up / Shift+Down. Elijah's pick
         # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
         # modifier, so terminal key-repeat fires continuous Shift+Up
         # events while held → smooth scroll. Tap = one event = 3 lines.
         # Plain Up/Down stay reserved for input history.
         @kb.add("s-up")
-        def _s_up(event):
-            self._scroll_offset += 3
+        @kb.add("c-up")
+        @kb.add("pageup")
+        def _scroll_up(event):
+            self._scroll_offset += 8
             event.app.invalidate()
 
         @kb.add("s-down")
-        def _s_down(event):
-            self._scroll_offset = max(0, self._scroll_offset - 3)
+        @kb.add("c-down")
+        @kb.add("pagedown")
+        def _scroll_down(event):
+            self._scroll_offset = max(0, self._scroll_offset - 8)
+            event.app.invalidate()
+
+        @kb.add("home")
+        @kb.add("c-home")
+        def _scroll_top(event):
+            self._scroll_offset = 10_000
+            event.app.invalidate()
+
+        @kb.add("end")
+        @kb.add("c-end")
+        def _scroll_bottom(event):
+            self._scroll_offset = 0
             event.app.invalidate()
 
         return kb

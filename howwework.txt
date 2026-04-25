@@ -8,9 +8,11 @@
 #     • Read-only probes + explicit single-action asks skip the menu.
 #     • "Done" = user-facing verification (run it, watch log/UI, show evidence).
 #       Not "syntax OK." Not "edit applied." Call unverified work "staged."
-#     • "Where were we" → open latest ~/Desktop/master_ai_brainstorm_*.md
-#       and present. Canonical phrase; aliases: catch me up / read me in /
-#       what's the story. Don't re-synthesize from scratch.
+#     • "Where were we" → open NEWEST ~/Desktop/AI_CONTEXT/context_*.txt
+#       (auto-saved every 5 min via cron) and present. Canonical phrase;
+#       aliases: catch me up / read me in / what's the story. Don't
+#       re-synthesize. Brainstorm-doc path retired 2026-04-22; residue at
+#       ~/Desktop/master_ai_project_notes.md.
 #     • Consult ~/Desktop/master_ai_phrasebook.md before translating plain-
 #       English phrases. Unknown phrase → ask once, write to phrasebook,
 #       never ask again.
@@ -71,8 +73,33 @@ llava:latest       — EYES  · 4.7 GB · ~5s · image + follow-up chat — scra
 qwen3.5:cloud      — cloud · 397B via Ollama cloud — complex analysis
 kimi-k2.5:cloud    — cloud · 1T via Ollama cloud — best vision online
 
-REMOVED 2026-04-19: master-ai:latest (14B), qwen2.5:14b. Too slow on this CPU (4 min cold).
+REMOVED 2026-04-19: qwen2.5:14b. Too slow on this CPU (4 min cold).
+REBUILT 2026-04-22: master-ai:latest — Ollama model wrapping qwen2.5:7b with the
+Sensei persona/directives system prompt (~/scripts/Modelfile-master-ai). Same
+4.7 GB on disk, same speed profile as the 7b base. This is the model Sensei
+actually calls (MODELS["master"]), not bare qwen2.5:7b.
 Apocalypse plan: pull a bigger local model FRESH when cloud's dying (e.g. llama3.1:8b, qwen3:30b-a3b).
+
+## LOCKED MODEL SET (2026-04-23)
+Locked after benchmarking + research. No new pulls without a named trigger.
+
+Live on disk:
+  master-ai:latest   — qwen2.5:7b + Sensei SYSTEM (brain · coder · general · heavy)
+  qwen2.5:3b         — idle + vision preprocessing ONLY (never user turns)
+  llava:latest       — vision (scrap scanner, apothecary)
+
+Cloud lanes (keys-gated, already configured):
+  Groq · DeepSeek-R1 · qwen3.5:cloud · kimi-k2.5:cloud · Gemini 2.0 Flash
+  hermes-405B · gpt-oss-120B · qwen3-coder · nemotron-120B (OpenRouter)
+
+Parked with named triggers (do NOT pull unless trigger fires):
+  Qwen3:8B            — trigger: Modelfile-rebuild session
+  Qwen3:4B            — trigger: directive-classifier work
+  Falcon3-7B-1.58bit  — trigger: BitNet/speed-experiments phase
+  Qwen3:30b-a3b       — trigger: 32 GB RAM upgrade lands
+
+Full rationale + benchmark data + rejected options:
+  ~/.claude/projects/-home-elijah/memory/project_locked_model_set.md
 
 ## CLOUD PROVIDERS (free tiers, auto-routed)
 Groq:       llama-3.3-70b-versatile   — fastest, most reliable FREE
@@ -107,6 +134,16 @@ Pinned task shows in status bar. Every ~3000 chars a drift check fires:
   🥷 [reminder] still on: <task>
 Type 'done' to flip [ ] → [x] in PROJECTS.md and auto-pin next task.
 Soft-mode (testing): gate can be skipped with 's'. Sealed (~/.dojo_gate_sealed): hard-block.
+
+## DOCTOR CHECK
+Inside Sensei, type:
+  doctor  — live health + productivity card
+  health  — alias
+
+Shows Pupil/Web UI, master-ai-ui.service, Ollama, required models, /thoughts,
+TTS, phone URL, current mode/model/cloud keys, mouse profile, memory count,
+approved-command count, open tasks, pinned project/task, and latest crash line.
+Use this before long work sessions and after "doesn't work" reports.
 
 ## CHUNKER — archived 2026-04-19
 Feature archived. Scripts still on disk (~/scripts/chunker.sh) but NOT wired
@@ -146,6 +183,7 @@ KEYBOARD (when focus is in the input):
   Ctrl+C         — interrupt the current reply + save session
 
 TYPED WORDS (alternative to keys — works on any keyboard, any remote):
+  doctor — live health/productivity check (URLs, services, models, task)
   up     — scroll up one page
   down   — scroll down one page
   top    — jump to the very top of the chat
@@ -155,6 +193,13 @@ TYPED WORDS (alternative to keys — works on any keyboard, any remote):
 
 MOUSE (opt-in):
   wheel   — works when launched with SENSEI_MOUSE=1
+  mouse remote — phone/RustDesk profile: tmux mouse on + SENSEI_MOUSE=1
+  mouse local  — local-copy profile: tmux mouse off + SENSEI_MOUSE=0
+  mouse status — show which profile is saved
+
+Use `refresh` after switching mouse profiles so the TUI relaunches with the
+saved SENSEI_MOUSE value. Remote is best for phone scrolling/taps. Local is
+best when sitting at Madam-Mary and drag-select copy matters most.
 
 "Tap vs hold" is the OS's key-repeat. One press fires once. Hold fires
 ~30/sec for as long as you hold. Useful with Shift+↑/↓.
@@ -319,6 +364,7 @@ RustDesk ID:  1808427068
 Sunkissed:    http://localhost:5173   (npm run dev)
 
 Remote: http://100.101.249.96:8080/pupil.html (from phone via Tailscale)
+Google Chrome bookmarks bar: saved as "Pupil - Master AI" → http://100.101.249.96:8080/pupil.html
 
 ## KEY FILES
 ~/scripts/master_ai.py       — AI engine (routing, STT, TTS, sessions, agent loop)
