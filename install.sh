@@ -366,7 +366,26 @@ case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
         echo -e "  ${BY}⚠ $BIN_DIR is not on PATH in this shell.${X}"
-        echo -e "  ${D}  Add this to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\"${X}"
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+        ADDED_PATH=0
+        for PROFILE in "$HOME/.bashrc" "$HOME/.profile" "$HOME/.zshrc"; do
+            [ -e "$PROFILE" ] || touch "$PROFILE" 2>/dev/null || continue
+            if ! grep -Fq '$HOME/.local/bin' "$PROFILE" 2>/dev/null; then
+                {
+                    echo ""
+                    echo "# Master AI terminal commands"
+                    echo "$PATH_LINE"
+                } >> "$PROFILE" 2>/dev/null && ADDED_PATH=1
+            fi
+        done
+        export PATH="$BIN_DIR:$PATH"
+        if [ "$ADDED_PATH" = "1" ]; then
+            echo -e "  ${BG}✓ added $BIN_DIR to your shell PATH for future terminals${X}"
+            echo -e "  ${D}  Current installer session updated too.${X}"
+        else
+            echo -e "  ${BY}⚠ could not update shell profile automatically.${X}"
+            echo -e "  ${D}  Add this manually: export PATH=\"\$HOME/.local/bin:\$PATH\"${X}"
+        fi
         ;;
 esac
 
