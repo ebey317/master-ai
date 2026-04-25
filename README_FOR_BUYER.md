@@ -99,17 +99,51 @@ Inside Sensei (menu 4), type these at the prompt:
 | `dojo tasks` / `tasks open` | Lists all unchecked tasks for the active project |
 | `done` | Marks the current task complete in `PROJECTS.md`, auto-pins the next one |
 | `project <path>` | Sets a filesystem path as project context (injects file tree into AI) |
-| `mode plan` / `mode review` / `mode auto` | Controls how eagerly Sensei executes commands (plan = draft only; review = ask per step; auto = do) |
+| `mode plan` / `mode review` / `mode auto` | Controls execution: plan drafts only, review asks per step, auto runs non-destructive work |
+| `A` / `finish` | From a ready plan, hand off Plan → Review → Auto and finish the project flow |
 | `remember: <text>` | Saves a fact to long-term memory |
 | `forget: <text>` | Removes a memory |
 | `task add <text>` | Adds a side-task (not tied to PROJECTS.md boards) |
 | `task list` | Shows side-tasks |
 | `save session` | Writes this chat to a named file |
+| `transcript` / `copy chat` | Saves the full transcript |
+| `preview` / `open preview` | Opens the latest product file, preferring browser demos |
+| `log` | Shows recent Sensei engine log lines |
+| `clear cache` | Clears exact-response cache for fresh work |
 | `load summary` | Re-injects the last session summary |
 | `refresh` | Soft restart (preserves session) |
 | `kick` | Hard restart (tmux rebuild) |
 | `hub` / `help` / `tips` | Slideshow walkthroughs |
 | `x` | Clean exit |
+
+---
+
+## Sensei input, copy, and shortcuts
+
+Sensei's input box is pinned at the bottom. Mouse events do not write into it
+or submit it; text changes only from typing, bracketed paste, or Enter.
+
+Default mouse profile is local-copy mode: `SENSEI_MOUSE=0`. That leaves mouse
+selection to the terminal, so normal drag-select copy works without Shift. For
+phone/RustDesk scrolling, type `mouse remote` and then `refresh`. To go back,
+type `mouse local` and `refresh`.
+
+Useful shortcuts:
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+T` | Save/copy transcript |
+| `Ctrl+L` | Show recent log |
+| `Ctrl+O` / `Ctrl+P` | Open product preview |
+| `Ctrl+K` | Clear cache |
+| `Ctrl+B` | Force local-copy mouse profile |
+| `Ctrl+R` | Refresh |
+| `Ctrl+S` | Save session |
+| `Ctrl+Q` | Clean exit |
+
+There is no `Ctrl+M` mouse shortcut. In terminals, `Ctrl+M` overlaps with
+Enter/carriage-return behavior, so mouse mode is changed only by typed
+commands: `mouse local`, `mouse remote`, `mouse status`, or `mouse toggle`.
 
 ---
 
@@ -164,6 +198,8 @@ Now your phone and your desktop share the same Sensei + Pupil instance. Same mem
 |---|---|
 | Pupil says "Ollama offline" | `systemctl start ollama` in a terminal |
 | Sensei won't start | Menu option 7 (Force rebuild) |
+| Drag-copy needs Shift | In Sensei, type `mouse local`, then `refresh` |
+| Preview opens an old note | Type `preview`; it now prefers `.html` / `.htm` product files |
 | Lost the template panel in Pupil | Type `menu` or `back` inside a lesson — panel returns |
 | Keys not syncing between menu 11 and Pupil | Make sure you opened Pupil via `http://localhost:8080/pupil.html`, not `file://` — only the served version syncs |
 | Forgot how a command works | Type `help` inside Sensei, or open this README |

@@ -51,8 +51,8 @@ Name:   Madam-Mary (HP ProDesk)
 OS:     Ubuntu Linux (x86_64)
 User:   Elijah
 Shell:  bash
-Access: No mouse, no keyboard — Elijah uses voice-to-text input only.
-        NEVER suggest mouse clicks or keyboard shortcuts as solutions.
+Access: Voice-to-text first, keyboard shortcuts optional, mouse must never be
+        required for core operation. Do not suggest mouse-only solutions.
 
 ## HOW TO LAUNCH
   bash ~/scripts/launch_master_ai.sh   — attach to persistent tmux session (or start it)
@@ -169,7 +169,9 @@ into Sensei. Do not surface in UI or docs unless explicitly un-archived.
 The input box is a 4-sided Frame pinned to the bottom of the terminal.
 Text wraps cleanly inside the box; cursor always lands in the same spot.
 Output scrolls above the box — typing is never interrupted.
-On RustDesk-from-phone: arrow keys are flaky, prefer typed words.
+Mouse events must not overwrite or submit text in the input box. Input changes
+only from typed keys, bracketed paste, or Enter submit.
+On RustDesk-from-phone: arrow keys can be flaky, prefer typed words.
 
 ### NAVIGATION — HOW TO SCROLL UP/DOWN AND OTHER MOVES
 The input box (🥷) stays pinned at the bottom. These scroll the chat
@@ -180,6 +182,14 @@ KEYBOARD (when focus is in the input):
   ↑ / ↓          — scroll your input HISTORY (what you previously typed)
   Shift+↑        — SCROLL CHAT UP.   Tap = 3 lines. Hold = continuous.
   Shift+↓        — SCROLL CHAT DOWN. Tap = 3 lines. Hold = continuous.
+  Ctrl+T         — save/copy transcript
+  Ctrl+L         — show recent log
+  Ctrl+O / Ctrl+P — open product preview (prefers .html/.htm)
+  Ctrl+K         — clear exact-response cache
+  Ctrl+B         — force local-copy mouse profile
+  Ctrl+R         — refresh Sensei
+  Ctrl+S         — save session
+  Ctrl+Q         — clean exit
   Ctrl+C         — interrupt the current reply + save session
 
 TYPED WORDS (alternative to keys — works on any keyboard, any remote):
@@ -191,11 +201,16 @@ TYPED WORDS (alternative to keys — works on any keyboard, any remote):
   last   — re-print the most recent AI reply inline
   copy   — push last AI reply to X11 clipboard (via xclip)
 
-MOUSE (opt-in):
-  wheel   — works when launched with SENSEI_MOUSE=1
+MOUSE (local-copy default, remote capture opt-in):
+  local default — SENSEI_MOUSE=0; prompt_toolkit mouse capture off; terminal
+                  drag-select copy/paste works normally without Shift.
+  wheel   — app-level wheel works only when launched with SENSEI_MOUSE=1
   mouse remote — phone/RustDesk profile: tmux mouse on + SENSEI_MOUSE=1
   mouse local  — local-copy profile: tmux mouse off + SENSEI_MOUSE=0
   mouse status — show which profile is saved
+  mouse toggle — typed command only. No Ctrl+M shortcut; Ctrl+M collides with
+                 terminal Enter/carriage-return behavior and must not affect
+                 the text box.
 
 Use `refresh` after switching mouse profiles so the TUI relaunches with the
 saved SENSEI_MOUSE value. Remote is best for phone scrolling/taps. Local is
@@ -207,19 +222,21 @@ best when sitting at Madam-Mary and drag-select copy matters most.
 (Locked 2026-04-19 to ONE scroll chord — Shift+arrow — per user preference.)
 
 ### COPY / PASTE IN SENSEI
-Because the TUI captures mouse events for scrolling, plain click-drag does
-NOT select text — the terminal passes the click to the app. Two ways to copy:
+Default local-copy mode (`SENSEI_MOUSE=0`) leaves mouse handling to the
+terminal. Plain click-drag selects text; Ctrl+Shift+C copies; Ctrl+Shift+V
+pastes. The TUI does not use mouse events to write into the input box.
 
-  1. SHIFT + click-drag over the text you want → terminal selects it
-     (Shift overrides the app's mouse capture — this is a gnome-terminal /
-     xterm convention). Then Ctrl+Shift+C to copy to clipboard.
+If `mouse remote` is enabled (`SENSEI_MOUSE=1`), the app captures mouse events
+for phone/RustDesk scrolling. In that profile, use Shift+click-drag when you
+need terminal selection, or switch back with `mouse local` then `refresh`.
 
-  2. Type `copy` (or `clip`) at the Sensei prompt — pushes the LAST AI reply
-     straight into the X11 clipboard via xclip. Fast path for "I want that
-     whole answer."
+Type `copy` (or `clip`) at the Sensei prompt to push the LAST AI reply straight
+into the X11 clipboard via xclip. Type `copy chat` or press Ctrl+T to save the
+full transcript.
 
-To temporarily disable mouse capture (and get back classic click-drag),
-launch with SENSEI_MOUSE=0: `SENSEI_MOUSE=0 bash ~/scripts/launch_master_ai.sh`
+To force classic click-drag permanently:
+  mouse local
+  refresh
 
 ### MODES — three only (plan / review / auto). Color tinted top-to-bottom.
 Type any of these at the 🥷 prompt to switch. Both the top status bar AND
@@ -228,6 +245,19 @@ the bottom legend re-tint together so you always see the current mode.
 mode plan   — DEEP RED — STOP: drafts a plan, NO execution. Default at startup.
 mode review — AMBER    — CAUTION: confirm each RUN/CREATE/EDIT one at a time.
 mode auto   — GREEN    — GO: runs without asking (destructive still pauses).
+
+Plan→finish flow:
+  1) Review step-by-step
+  2) edit
+  3) no
+  4) keep talking
+  A) finish in Auto   — last visible option; switches Plan → Review → Auto
+                        and completes the project flow unless a destructive
+                        pause or failed CREATE/EDIT stops the chain.
+
+New output snaps to the live bottom so handoff prompts and approval choices
+stay visible after mode switches. If a CREATE/EDIT is denied or fails, Sensei
+must not run downstream RUN/RUNTERM from that same model reply.
 
 After toggling, the whole Sensei frame (header text, status line, frame
 borders, legend) shifts to the new accent color. MODE:<CURRENT> shows
@@ -247,6 +277,10 @@ Turning on auto mode means you allow:
   5. No destructive blast-radius actions — rm -rf, drop tables, force-push,
      and package uninstall STILL pause for explicit OK.
   6. No data exfiltration — secrets/keys never sent to external services.
+
+Auto is allowed to continue from an approved plan when the user chooses
+`A`/`finish`, but it still blocks destructive commands and aborts downstream
+commands if a required CREATE/EDIT did not complete.
 
 ### AI FILE ACTIONS (AI uses these — you confirm)
 RUN: <cmd>          — run a shell command
@@ -269,6 +303,9 @@ load summary        — inject last session summary into context
 load session        — inject full last session transcript
 clear history       — wipe conversation context (keeps memory + facts)
 clear cache         — wipe cached responses
+preview / open preview — open the latest product file (prefers HTML demos)
+log                 — show recent ~/scripts/master.log lines
+transcript          — save/copy the full chat transcript
 
 ### TASKS
 task add <text>     — add to persistent task list
