@@ -105,6 +105,19 @@ IDLE_TIPS = [
     "'remember: <fact>' saves a fact across all sessions",
 ]
 
+def _term_size():
+    return shutil.get_terminal_size((80, 24))
+
+def _fit_text(text: str, width: int) -> str:
+    """Clamp one-line chrome text so frame titles/status never spill."""
+    text = str(text or "").replace("\n", " ")
+    width = max(1, int(width or 1))
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[:width - 3].rstrip() + "..."
+
 
 class _TUIStdout:
     """Replacement for sys.stdout that writes to the TUI's output buffer.
@@ -234,10 +247,9 @@ class SenseiApp:
             multiline=True,
             wrap_lines=True,
             scrollbar=False,
-            # Reduced from min=3,preferred=3 to min=2,preferred=2 — Elijah
-            # 2026-04-20 needs max reading space on phone-over-RustDesk.
-            # Input still grows up to max=8 if the user types a long block.
-            height=Dimension(min=2, max=8, preferred=2),
+            # Keep the station compact enough for 70x24 terminals while
+            # still growing for pasted prompts.
+            height=Dimension(min=1, max=5, preferred=2),
             history=FileHistory(HISTORY_FILE),
             completer=WordCompleter(
                 COMPLETER_WORDS, ignore_case=True,
@@ -327,7 +339,7 @@ class SenseiApp:
         # Restored 2026-04-20 per Elijah: "make sure the thoughts for
         # idle and thinking are on" — 1 row cost, real feedback benefit.
         input_stack = HSplit([
-            self._tip_window,
+            ConditionalContainer(self._tip_window, filter=Condition(self._show_tip_row)),
             self._input,
             self._legend_window,
         ])
@@ -338,9 +350,7 @@ class SenseiApp:
         # Persistent "MASTER AI" header — single blue line pinned at the top
         # so the brand is always visible even when chat output scrolls.
         self._header_control = FormattedTextControl(
-            text=lambda: FormattedText([
-                ("class:header", " 🥷  MASTER  AI  —  SENSEI "),
-            ])
+            text=self._render_header,
         )
         self._header_window = Window(
             content=self._header_control, height=1,
@@ -435,6 +445,11 @@ class SenseiApp:
 
     # ── rendering callbacks ────────────────────────────────────
 
+    def _show_tip_row(self):
+        """Hide idle tips on small terminals so chat/input keep usable space."""
+        rows = _term_size().lines
+        return rows >= 28 or self._thinking or self._handoff_active
+
     def _render_output(self):
         """Return the FULL output as ANSI — scroll is handled by positioning
         an invisible cursor that Window tracks (see _get_output_cursor).
@@ -482,10 +497,22 @@ class SenseiApp:
         return Point(x=0, y=y)
 
     def _render_status(self):
-        return FormattedText([("class:status", f" {self._status} ")])
+        width = max(10, _term_size().columns - 2)
+        status = self._status or ""
+        if width < 82:
+            status = status.replace("  │  ", " | ").replace(" │ ", " | ")
+            status = status.replace("MODEL:AUTO+CLOUD", "MODEL:CLOUD")
+        return FormattedText([("class:status", f" {_fit_text(status, width - 2)} ")])
+
+    def _render_header(self):
+        width = max(10, _term_size().columns)
+        title = " MASTER AI - SENSEI " if width < 76 else " 🥷  MASTER  AI  —  SENSEI "
+        return FormattedText([("class:header", _fit_text(title, width))])
 
     def _render_label(self):
+        width = max(10, _term_size().columns - 6)
         lbl = f" ✏ {self._label} " if self._label else " ✏ "
+        lbl = _fit_text(lbl, min(width, 48 if width >= 80 else width))
         return FormattedText([("class:frame.label", lbl)])
 
     def _render_label_with_tip(self):
@@ -511,17 +538,30 @@ class SenseiApp:
         # Elijah 2026-04-19: "don't look at the color look at the
         # words" — match the literal string exactly.
         current_mode = getattr(self, "_mode", "plan").upper()
-        words = []
-        for w in LEGEND_WORDS:
-            if w == "mode plan":
-                words.append(f"MODE:{current_mode}")
-            else:
-                words.append(w)
+        width = _term_size().columns
+        if width < 56:
+            words = [f"MODE:{current_mode}", "P preview", "B copy", "K cache", "x"]
+        elif width < 84:
+            words = [f"MODE:{current_mode}", "Ctrl+P preview", "Ctrl+B copy",
+                     "Ctrl+K cache", "x"]
+        else:
+            words = []
+            for w in LEGEND_WORDS:
+                if w == "mode plan":
+                    words.append(f"MODE:{current_mode}")
+                else:
+                    words.append(w)
         parts = []
+        used = 0
         for i, w in enumerate(words):
+            sep = " · " if i else ""
+            if used + len(sep) + len(w) > max(8, width - 4):
+                break
             if i:
-                parts.append(("class:sep", " · "))
+                parts.append(("class:sep", sep))
+                used += len(sep)
             parts.append(("class:legend", w))
+            used += len(w)
         return FormattedText(parts)
 
     def _render_tip(self):
@@ -538,13 +578,15 @@ class SenseiApp:
             if now - self._thinking_last >= self._thinking_interval:
                 self._thinking_line = next(self._thinking_cycle)
                 self._thinking_last = now
+            line = _fit_text(f"🥷 [thinking] {self._thinking_line}", _term_size().columns - 4)
             return FormattedText([
-                ("class:thinking", f"🥷 [thinking] {self._thinking_line}"),
+                ("class:thinking", line),
             ])
         if now - self._tip_last >= self._tip_interval:
             self._tip = next(self._tip_cycle)
             self._tip_last = now
-        return FormattedText([("class:tip", f"💭 {self._tip}")])
+        line = _fit_text(f"💭 {self._tip}", _term_size().columns - 4)
+        return FormattedText([("class:tip", line)])
 
     # ── key bindings ───────────────────────────────────────────
 

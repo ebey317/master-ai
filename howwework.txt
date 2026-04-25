@@ -171,6 +171,9 @@ Text wraps cleanly inside the box; cursor always lands in the same spot.
 Output scrolls above the box — typing is never interrupted.
 Mouse events must not overwrite or submit text in the input box. Input changes
 only from typed keys, bracketed paste, or Enter submit.
+The TUI is responsive down to 70x24: header/status/legend text compacts, idle
+tips hide to save rows, and the input station can shrink to one row while long
+prompts still wrap upward inside the box.
 On RustDesk-from-phone: arrow keys can be flaky, prefer typed words.
 
 ### NAVIGATION — HOW TO SCROLL UP/DOWN AND OTHER MOVES

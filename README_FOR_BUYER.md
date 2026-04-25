@@ -122,6 +122,9 @@ Inside Sensei (menu 4), type these at the prompt:
 
 Sensei's input box is pinned at the bottom. Mouse events do not write into it
 or submit it; text changes only from typing, bracketed paste, or Enter.
+The layout adapts to small terminals: at 70x24 it compacts the header/status
+line, shortens the shortcut legend, hides idle tips, and keeps chat plus input
+inside framed boxes.
 
 Default mouse profile is local-copy mode: `SENSEI_MOUSE=0`. That leaves mouse
 selection to the terminal, so normal drag-select copy works without Shift. For
