@@ -85,7 +85,7 @@ try:
         "up", "down", "top", "bottom", "last",
         "mouse remote", "mouse local", "mouse status",
         "projects", "apps", "autotips", "slideshow", "tour",
-        "keys", "approved", "cache", "harvest", "perms", "tutorial", "hints on", "hints off",
+        "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
         "tts on", "tts off", "tts",
         "hints", "project", "search ", "dl ", "gdrive ", "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
@@ -677,6 +677,136 @@ TOOL_REQUIRED_PHRASES = (
     "run this", "run the command", "execute this", "execute the",
 )
 
+ROUTER_METRICS_FILE = Path.home() / ".master_ai_router_metrics.jsonl"
+ROUTER_METRICS_MAX_SCAN = 500
+
+def _router_metric(kind, **fields):
+    """Append a compact router/feedback event. Best-effort only."""
+    try:
+        entry = {"ts": int(time.time()), "kind": kind}
+        entry.update(fields)
+        with ROUTER_METRICS_FILE.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN):
+    try:
+        if not ROUTER_METRICS_FILE.exists():
+            return []
+        lines = ROUTER_METRICS_FILE.read_text(errors="replace").splitlines()
+    except Exception:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
+
+def _router_model_stats(model, task_type=None):
+    def scan(match_task):
+        calls = failures = 0
+        total_latency = 0.0
+        for e in _router_recent_events():
+            if e.get("kind") != "model_call" or e.get("model") != model:
+                continue
+            if match_task and e.get("task_type") not in (match_task, "fallback"):
+                continue
+            calls += 1
+            if not e.get("ok"):
+                failures += 1
+            total_latency += float(e.get("latency_s") or 0.0)
+        return calls, failures, total_latency
+
+    calls, failures, total_latency = scan(task_type)
+    if task_type and not calls:
+        calls, failures, total_latency = scan(None)
+    if not calls:
+        return {"calls": 0, "success_rate": None, "avg_latency_s": None}
+    return {
+        "calls": calls,
+        "success_rate": (calls - failures) / calls,
+        "avg_latency_s": total_latency / calls,
+    }
+
+def _router_perf_bonus(model, task_type):
+    """Small score adjustment from observed outcomes.
+
+    Rule fit still dominates. This only nudges close calls and lets repeated
+    failures steer future dispatch away from a weak lane.
+    """
+    stats = _router_model_stats(model, task_type=task_type)
+    if not stats["calls"]:
+        return 0.0
+    rate = stats["success_rate"]
+    latency = stats["avg_latency_s"] or 0.0
+    bonus = (rate - 0.80) * 20.0
+    if latency > 90:
+        bonus -= 8
+    elif latency and latency < 8:
+        bonus += 3
+    return max(-25.0, min(15.0, bonus))
+
+def _rank_route_candidates(candidates):
+    ranked = []
+    for cand in candidates:
+        c = dict(cand)
+        c["perf_bonus"] = round(_router_perf_bonus(c.get("model", ""), c.get("task_type", "")), 2)
+        c["score"] = round(float(c.get("base_score", 0)) + c["perf_bonus"], 2)
+        ranked.append(c)
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return ranked
+
+def _choose_route(candidates, reason_prefix="scored"):
+    ranked = _rank_route_candidates(candidates)
+    picked = ranked[0]
+    decision = {k: picked[k] for k in ("route", "model") if k in picked}
+    decision["reason"] = f"{reason_prefix} → {picked.get('reason', picked.get('model'))} score={picked['score']:.1f}"
+    decision["score"] = picked["score"]
+    decision["candidates"] = [
+        {
+            "route": c.get("route"),
+            "model": c.get("model"),
+            "score": c.get("score"),
+            "reason": c.get("reason"),
+        }
+        for c in ranked
+    ]
+    return decision
+
+def format_router_stats():
+    events = _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN)
+    model_rows = {}
+    exec_ok = exec_total = 0
+    decisions = 0
+    for e in events:
+        if e.get("kind") == "route_decision":
+            decisions += 1
+        elif e.get("kind") == "execution":
+            exec_total += 1
+            exec_ok += 1 if e.get("ok") else 0
+        elif e.get("kind") == "model_call":
+            key = e.get("model") or "?"
+            row = model_rows.setdefault(key, {"calls": 0, "ok": 0, "lat": 0.0})
+            row["calls"] += 1
+            row["ok"] += 1 if e.get("ok") else 0
+            row["lat"] += float(e.get("latency_s") or 0.0)
+    lines = ["Router feedback"]
+    lines.append(f"   file      : {ROUTER_METRICS_FILE}")
+    lines.append(f"   decisions : {decisions}")
+    if model_rows:
+        parts = []
+        for model, row in sorted(model_rows.items(), key=lambda x: -x[1]["calls"])[:8]:
+            rate = (row["ok"] / row["calls"]) * 100 if row["calls"] else 0
+            avg = row["lat"] / row["calls"] if row["calls"] else 0
+            parts.append(f"{model}={row['ok']}/{row['calls']} ok, {avg:.1f}s avg")
+        lines.append("   models    : " + " | ".join(parts))
+    if exec_total:
+        lines.append(f"   execution : {exec_ok}/{exec_total} ok")
+    return "\n".join(lines)
+
 def _scrappy_model_present():
     """Return Ollama tag of the first 'scrappy' model pulled, else ''.
     Cached for 60s like _have_14b so orchestrator calls don't thrash."""
@@ -1195,13 +1325,31 @@ def orchestrate(history, user_text, image_path=None):
                 or (word_set & CODE_WORDS)
                 or (word_set & ALTER_WORDS)):
             if have_or:
-                return {"route": "cloud_deep", "model": "deepseek-r1",
-                        "reason": "peacetime alter/code/deep → DeepSeek-R1"}
-            return {"route": "cloud_deep", "model": MODELS["qwen3"],
-                    "reason": "peacetime alter/code/deep → qwen3.5:cloud"}
+                return _choose_route([
+                    {"route": "cloud_deep", "model": "deepseek-r1",
+                     "task_type": "deep", "base_score": 88,
+                     "reason": "peacetime alter/code/deep → DeepSeek-R1"},
+                    {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
+                     "task_type": "deep", "base_score": 72,
+                     "reason": "local deep fallback"},
+                ], reason_prefix="peacetime scored")
+            return _choose_route([
+                {"route": "cloud_deep", "model": MODELS["qwen3"],
+                 "task_type": "deep", "base_score": 84,
+                 "reason": "peacetime alter/code/deep → qwen3.5:cloud"},
+                {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
+                 "task_type": "deep", "base_score": 72,
+                 "reason": "local deep fallback"},
+            ], reason_prefix="peacetime scored")
         if have_groq:
-            return {"route": "cloud_fast", "model": "groq",
-                    "reason": "peacetime chat → Groq (fast lane)"}
+            return _choose_route([
+                {"route": "cloud_fast", "model": "groq",
+                 "task_type": "chat", "base_score": 88,
+                 "reason": "peacetime chat → Groq (fast lane)"},
+                {"route": "local", "model": MODELS["master"],
+                 "task_type": "chat", "base_score": 60,
+                 "reason": "local chat fallback"},
+            ], reason_prefix="peacetime scored")
         if have_or:
             return {"route": "cloud_deep", "model": "deepseek-r1",
                     "reason": "peacetime default → DeepSeek-R1"}
@@ -1217,8 +1365,14 @@ def orchestrate(history, user_text, image_path=None):
         or any(w in low for w in REASONING_WORDS)
     )
     if is_chat_class and have_groq:
-        return {"route": "cloud_fast", "model": "groq",
-                "reason": "chat → Groq (content-routed)"}
+        return _choose_route([
+            {"route": "cloud_fast", "model": "groq",
+             "task_type": "chat", "base_score": 82,
+             "reason": "chat → Groq (content-routed)"},
+            {"route": "local", "model": MODELS["master"],
+             "task_type": "chat", "base_score": 62,
+             "reason": "chat → local master fallback"},
+        ], reason_prefix="chat scored")
 
     # 6b. SCRAPPY — survival/off-grid specialist takes precedence over generic
     #     local models when the question is clearly on its home turf AND the
@@ -1236,23 +1390,48 @@ def orchestrate(history, user_text, image_path=None):
     # 7. APOCALYPSE PATH — always local. Never depends on an internet connection
     #    that might not exist when you need the machine most.
     if word_set & CODE_WORDS:
-        return {"route": "local", "model": MODELS["coder"],
-                "reason": f"code → {MODELS['coder']} (qwen2.5:7b + Sensei SYSTEM, local)"}
+        candidates = [
+            {"route": "local", "model": MODELS["coder"],
+             "task_type": "code", "base_score": 86,
+             "reason": f"code → {MODELS['coder']} (qwen2.5:7b + Sensei SYSTEM, local)"}
+        ]
+        if _have_14b():
+            candidates.append({"route": "local", "model": "qwen2.5:14b",
+                               "task_type": "code", "base_score": 82,
+                               "reason": "code → qwen2.5:14b local"})
+        return _choose_route(candidates, reason_prefix="apocalypse scored")
     if any(w in low for w in REASONING_WORDS) or (word_set & COMPLEX_WORDS):
-        return {"route": "local",
-                "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
-                "reason": f"deep → {'14b big brain' if _have_14b() else '7b brain'} (local)"}
+        candidates = [
+            {"route": "local", "model": MODELS["master"],
+             "task_type": "deep", "base_score": 78,
+             "reason": "deep → 7b brain (local)"}
+        ]
+        if _have_14b():
+            candidates.insert(0, {"route": "local", "model": "qwen2.5:14b",
+                                  "task_type": "deep", "base_score": 88,
+                                  "reason": "deep → 14b big brain (local)"})
+        return _choose_route(candidates, reason_prefix="apocalypse scored")
     if len(words) > 100:
-        return {"route": "local",
-                "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
-                "reason": f"long ({len(words)} words) → {'14b' if _have_14b() else '7b'} local"}
+        candidates = [
+            {"route": "local", "model": MODELS["master"],
+             "task_type": "long", "base_score": 78,
+             "reason": f"long ({len(words)} words) → 7b local"}
+        ]
+        if _have_14b():
+            candidates.insert(0, {"route": "local", "model": "qwen2.5:14b",
+                                  "task_type": "long", "base_score": 88,
+                                  "reason": f"long ({len(words)} words) → 14b local"})
+        return _choose_route(candidates, reason_prefix="apocalypse scored")
     # 2026-04-21: short-prompt → qwen2.5:3b route REMOVED. Short ≠ simple —
     # "fix the bug" is 3 words but requires senior-engineer reasoning. The 3B
     # mushes directives ("master ai endurance" hallucinated folder from voice-to-
     # text garbage; RUNTERM doc parroted instead of emitted). 3B is now reserved
     # for idle tips and vision preprocessing. All user turns get master-ai.
-    return {"route": "local", "model": MODELS["master"],
-            "reason": "default → master-ai brain (qwen2.5:7b + baked behavior, local)"}
+    return _choose_route([
+        {"route": "local", "model": MODELS["master"],
+         "task_type": "default", "base_score": 80,
+         "reason": "default → master-ai brain (qwen2.5:7b + baked behavior, local)"}
+    ], reason_prefix="apocalypse scored")
 
 
 # Time-sensitive / current-events markers. Frozen local models can't know
@@ -1783,6 +1962,7 @@ def _plan_grounding(user_text):
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
+    _t0 = time.time()
     # num_ctx + timeout matched to ask_local_stream — see that function
     # for reasoning. Keeps non-streaming calls (briefings, memory recall)
     # from blocking the input loop for minutes on CPU.
@@ -1822,9 +2002,17 @@ def ask_local(messages, model=None, image_path=None):
                         harvest.record(last_user, model, response_text, task_type="local")
                 except Exception as e:
                     log(f"HARVEST_RECORD_ERROR: {e}")
+            _router_metric("model_call", model=model, route="local",
+                           task_type="local", ok=bool(response_text),
+                           latency_s=round(time.time() - _t0, 3),
+                           chars=len(response_text or ""))
             return response_text
     except Exception as e:
         log(f"OLLAMA_ERROR: {e}")
+        _router_metric("model_call", model=model, route="local",
+                       task_type="local", ok=False,
+                       latency_s=round(time.time() - _t0, 3),
+                       error=str(e)[:160])
         return None
 
 # ── LOCAL AI STREAMING ───────────────────────────────────────
@@ -1954,6 +2142,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     the 32 GB RAM upgrade lands."""
     model = model or MODELS["master"]
     log(f"LOCAL_STREAM [{model}]")
+    _t0 = time.time()
     payload = {"model": model, "messages": messages, "stream": True,
                "keep_alive": "30m",
                "options": {"num_ctx": 4096}}
@@ -2051,12 +2240,20 @@ def ask_local_stream(messages, model=None, image_path=None):
                     harvest.record(last_user, model, result, task_type="local_stream")
             except Exception as e:
                 log(f"HARVEST_RECORD_ERROR: {e}")
+        _router_metric("model_call", model=model, route="local_stream",
+                       task_type="local_stream", ok=bool(result),
+                       latency_s=round(time.time() - _t0, 3),
+                       chars=len(result or ""))
         return result if result else None
     except Exception as e:
         local_thinking_stop(_anim)
         _anim = None
         print(flush=True)
         log(f"STREAM_ERROR: {e}")
+        _router_metric("model_call", model=model, route="local_stream",
+                       task_type="local_stream", ok=False,
+                       latency_s=round(time.time() - _t0, 3),
+                       error=str(e)[:160])
         return None
     finally:
         local_thinking_stop(_anim)
@@ -2130,12 +2327,29 @@ def local_thinking_stop(handle):
         pass
 
 # ── CLOUD AI ──────────────────────────────────────────────────
+MASTER_AI_IDENTITY_SYSTEM = (
+    "You are Master AI — Elijah's collaborator on Madam-Mary (Linux). "
+    "You run as Sensei (tmux agent) or Pupil (browser UI), with Dojo (project picker), "
+    "Belts (themes), voice servers (stt:5050 / tts), harvest (cache+few-shot), and "
+    "doctor/health command — every surface, every command, every file IS you. "
+    "When the user says 'you' / 'your app' / 'this app' / 'this project,' they mean "
+    "Master AI itself. Read those prompts as self-referential — never advise yourself "
+    "like a generic developer building from scratch."
+)
+
+def _inject_identity(messages):
+    if messages and messages[0].get("role") == "system":
+        merged = MASTER_AI_IDENTITY_SYSTEM + "\n\n" + messages[0].get("content", "")
+        return [{"role": "system", "content": merged}] + list(messages[1:])
+    return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
+
 def ask_cloud_groq(messages):
     if not _cloud_allowed("groq"):
         return None
     key = KEYS.get("groq")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log("CLOUD [groq/llama-3.3-70b]")
     payload = {"model": "llama-3.3-70b-versatile", "messages": messages,
                "max_tokens": 1024, "stream": False}
@@ -2168,6 +2382,7 @@ def ask_cloud_openai(messages):
     key = KEYS.get("openai")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log("CLOUD [openai/gpt-4o]")
     try:
         from openai import OpenAI
@@ -2186,8 +2401,9 @@ def ask_cloud_gemini(messages):
     key = KEYS.get("gemini")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log("CLOUD [gemini/1.5-flash]")
-    text = "\n".join(m["content"] for m in messages if m["role"] != "system")
+    text = "\n".join(m["content"] for m in messages)
     payload = {"contents": [{"parts": [{"text": text}]}]}
     data = json.dumps(payload).encode()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
@@ -2207,6 +2423,7 @@ def ask_cloud_anthropic(messages):
     key = KEYS.get("anthropic")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log("CLOUD [anthropic/claude-sonnet-4-6]")
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user_msgs = [m for m in messages if m["role"] != "system"]
@@ -2231,6 +2448,7 @@ def ask_cloud_deepseek(messages):
     key = KEYS.get("deepseek")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log("CLOUD [deepseek/R1-reasoner]")
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user_msgs = [m for m in messages if m["role"] != "system"]
@@ -2258,6 +2476,7 @@ def _ask_openrouter(messages, model, label, timeout=60):
     key = KEYS.get("openrouter")
     if not key:
         return None
+    messages = _inject_identity(messages)
     log(f"CLOUD [openrouter/{label}]")
     payload = {"model": model, "messages": messages}
     data = json.dumps(payload).encode()
@@ -2345,7 +2564,12 @@ def ask_cloud(messages, provider="groq"):
         except Exception as e:
             log(f"HARVEST_RECORD_ERROR: {e}")
 
+    _t0 = time.time()
     r = None if not _cloud_allowed(provider) else fn_map.get(provider, ask_cloud_groq)(messages)
+    _router_metric("model_call", model=provider, route="cloud",
+                   task_type="cloud", ok=bool(r),
+                   latency_s=round(time.time() - _t0, 3),
+                   chars=len(r or ""))
     if r:
         _record(r, provider)
         return r
@@ -2360,7 +2584,12 @@ def ask_cloud(messages, provider="groq"):
         ("openrouter",  ask_cloud_openrouter),
     ]
     for used_model, fn in fallback_order:
+        _t0 = time.time()
         r = fn(messages)
+        _router_metric("model_call", model=used_model, route="cloud",
+                       task_type="fallback", ok=bool(r),
+                       latency_s=round(time.time() - _t0, 3),
+                       chars=len(r or ""))
         if r:
             _record(r, used_model)
             return r
@@ -4120,6 +4349,7 @@ def _pill(kind, detail=""):
 # ── RUN COMMAND ───────────────────────────────────────────────
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
+    _t0 = time.time()
     try:
         # 300s (5 min) covers git clone, npm install, apt update, slow curls —
         # the 30s cap was killing legitimate long-running utility commands.
@@ -4147,12 +4377,22 @@ def run_command(cmd):
         else:
             print(_pill("ERROR", f"{D}exit {result.returncode} · {shell_cmd[:60]}{X}"))
         log(f"PC_CMD: {shell_cmd}")
+        _router_metric("execution", action="run", ok=(result.returncode == 0),
+                       exit_code=result.returncode,
+                       latency_s=round(time.time() - _t0, 3),
+                       detail=shell_cmd[:240])
         return output
     except subprocess.TimeoutExpired:
         print(_pill("ERROR", f"{D}timeout (5 min) · {cmd[:60]}{X}"))
+        _router_metric("execution", action="run", ok=False, error="timeout",
+                       latency_s=round(time.time() - _t0, 3),
+                       detail=(cmd or "")[:240])
         return "timeout"
     except Exception as e:
         print(_pill("ERROR", f"{D}{e}{X}"))
+        _router_metric("execution", action="run", ok=False, error=str(e)[:160],
+                       latency_s=round(time.time() - _t0, 3),
+                       detail=(cmd or "")[:240])
         return str(e)
 
 def _settings_set(key, value):
@@ -4800,6 +5040,19 @@ def process_reply(reply, history, streamed=False):
         # the dispatch loop never spawns a terminal that runs nothing.
         return "" if _is_noop_cmd(s) else s
 
+    # NAME: must appear OUTSIDE any backtick span on the line. Backtick-
+    # wrapped occurrences are prose (the model describing its own directives
+    # by name) and must not fire. Count of backticks before the match is
+    # even → outside; odd → inside an open backtick span.
+    # 2026-04-25 regression: "files via `READ:`" fired READ on the rest of
+    # the sentence. Parity check closes that without losing the 04-20 case
+    # ("PLAN ONLY: RUN: cmd") since that line has zero backticks.
+    def _real_directive(line, name):
+        for m in re.finditer(rf'\b{name}:', line, re.IGNORECASE):
+            if line[:m.start()].count('`') % 2 == 0:
+                return True
+        return False
+
     # Use re.search with a word boundary — catches "RUN:" anywhere on the
     # line, not just at the start. This handles the 2026-04-20 case where
     # the local model echoed "PLAN ONLY: RUN: cmd" and the prior `re.match`
@@ -4808,11 +5061,11 @@ def process_reply(reply, history, streamed=False):
     # in "RUNTERM:", not ":", so the regex skips it. RUNTERM: has its own
     # extraction below.
     read_paths   = [p for p in (_extract_directive(l, "READ")
-                    for l in lines if re.search(r'\bREAD:', l, re.IGNORECASE)) if p]
+                    for l in lines if _real_directive(l, "READ")) if p]
     run_cmds     = [c for c in (_extract_directive(l, "RUN")
-                    for l in lines if re.search(r'\bRUN:', l, re.IGNORECASE)) if c]
+                    for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
-                    for l in lines if re.search(r'\bRUNTERM:', l, re.IGNORECASE)) if c]
+                    for l in lines if _real_directive(l, "RUNTERM")) if c]
 
     # Parse CREATE: ... <<<CONTENT ... >>>CONTENT blocks
     create_files = []
@@ -4928,12 +5181,18 @@ def process_reply(reply, history, streamed=False):
 
     has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops)
 
-    # Print non-directive narrative text
-    directive_line = re.compile(r'\b(?:run|runterm|read|create|edit):', re.IGNORECASE)
+    # Print non-directive narrative text. Backtick-wrapped directive names
+    # (e.g. "use `RUN:` for shell commands") are prose and must stay in the
+    # narrative — same backtick-parity check as the directive parser above.
+    def _line_is_directive(l):
+        for m in re.finditer(r'\b(?:run|runterm|read|create|edit):', l, re.IGNORECASE):
+            if l[:m.start()].count('`') % 2 == 0:
+                return True
+        return False
     skip_prefixes = ('<<<content', '>>>content', '<<<find', '>>>find', '<<<replace', '>>>replace')
     narrative = '\n'.join(
         l for l in lines
-        if not directive_line.search(l)
+        if not _line_is_directive(l)
         and not any(l.strip().lower().startswith(p) for p in skip_prefixes)
     ).strip()
 
@@ -5417,6 +5676,14 @@ def handle(user_text, history, image_path=None):
     # ── Smart orchestrator: short-circuit special routes before model dispatch ─
     decision = orchestrate(history, user_text, image_path=image_path)
     log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason','')}")
+    _router_metric("route_decision",
+                   route=decision.get("route"),
+                   model=decision.get("model"),
+                   reason=decision.get("reason", "")[:240],
+                   score=decision.get("score"),
+                   candidates=decision.get("candidates", []),
+                   has_image=bool(image_path),
+                   prompt_chars=len(user_text or ""))
     # Stash route + model for the Review-mode confirm prompt's `who` line.
     # Any RUN:/EDIT:/CREATE: directive that fires during this handle() call
     # traces back to this orchestrator decision.
@@ -6999,6 +7266,13 @@ def main():
                     print(f"\n  {C}{harvest.format_stats()}{X}\n")
                 except Exception as e:
                     print(f"  {W}Harvest stats error: {e}{X}\n")
+            continue
+
+        if lo in ("router", "router stats"):
+            try:
+                print(f"\n  {C}{format_router_stats()}{X}\n")
+            except Exception as e:
+                print(f"  {W}Router stats error: {e}{X}\n")
             continue
 
         # ── Project ───────────────────────────────────────────

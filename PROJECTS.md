@@ -184,3 +184,7 @@
 ### POC (auto-logged 2026-04-24 20:11)
 - **Ask:** create app
 - **Status:** brainstorming — scope-check fired
+
+### POC (auto-logged 2026-04-25 11:42)
+- **Ask:** so how does apps like Kodak Claude code get produced and sold?
+- **Status:** brainstorming — scope-check fired
