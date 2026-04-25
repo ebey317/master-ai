@@ -120,9 +120,28 @@ echo -e "  ${BC}━━━ 3/6  copying scripts (exclusions applied) ━━━${X
 EXCLUDES=(
     "--exclude=sessions"
     "--exclude=.git"
+    "--exclude=__pycache__"
+    "--exclude=*.pyc"
     "--exclude=*.log"
     "--exclude=master.crash.log"
     "--exclude=.claude"
+    "--exclude=CLAUDE.md"
+    "--exclude=archive"
+    "--exclude=resources"
+    "--exclude=memory"
+    "--exclude=AUDIT_*"
+    "--exclude=APOCALYPSE_MECHANISM_OPTIONS.md"
+    "--exclude=howwework.txt"
+    "--exclude=master_ai_developer_description.md"
+    "--exclude=sync_hard_limits.py"
+    "--exclude=inject_memory.sh"
+    "--exclude=approval_queue.py"
+    "--exclude=PENDING_SUDO.md"
+    "--exclude=SENSEI_REASONING_LOOP.prompt.md"
+    "--exclude=competitor_benchmark.sh"
+    "--exclude=benchmark_sensei.sh"
+    "--exclude=pack_for_sale.sh"
+    "--exclude=pre_upgrade_backup.sh"
     "--exclude=save_context.sh"
     "--exclude=check_key_expiry.sh"
     "--exclude=cleanup.sh"
@@ -157,6 +176,34 @@ if new != src:
 else:
     print("  · no Sunkissed block to strip in master_ai.py")
 PY
+
+# Broad customer scrub. Source files can carry Elijah's working notes; the
+# buyer bundle cannot. Keep this post-copy so the working repo remains intact.
+if command -v rg >/dev/null 2>&1; then
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        case "$f" in
+            *.onnx|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.zip|*.gz|*.tar|*.bundle) continue ;;
+        esac
+        perl -0pi -e '
+            s/Elijah\x27s/the user\x27s/g;
+            s/Elijah/the user/g;
+            s/Madam-Mary/this machine/g;
+            s#/home/elijah#~#g;
+            s/ebey317\@gmail\.com/support email/g;
+            s/github\.com\/ebey317/github.com/g;
+            s/ebey317/your-github-handle/g;
+            s/Sunkissed Soul/Flagship App/g;
+            s/Sunkissed/Flagship/g;
+            s/\bSKS\b/Flagship/g;
+        ' "$f" 2>/dev/null || true
+    done < <(rg -l 'Elijah|Madam-Mary|/home/elijah|ebey317|Sunkissed|SKS' "$OUTDIR" || true)
+fi
+
+# systemd unit paths need %h rather than a literal user home.
+find "$OUTDIR/systemd" -type f \( -name '*.service' -o -name '*.timer' \) 2>/dev/null | while read -r unit; do
+    sed -i 's#~/scripts#%h/scripts#g' "$unit" 2>/dev/null || true
+done
 
 echo -e "  ${BG}✓ scrubbed${X}"
 
@@ -195,7 +242,6 @@ EOF
 echo -e "  ${BG}✓ PROJECTS.md replaced with starter board${X}"
 
 # Empty the memory / history / keys / chats — buyer starts fresh
-: > "$OUTDIR/master.log" 2>/dev/null || true
 rm -rf "$OUTDIR/.master_ai_chats" 2>/dev/null
 rm -f  "$OUTDIR/.master_ai_keys"  2>/dev/null
 rm -f  "$OUTDIR/.master_ai_memory" 2>/dev/null
@@ -206,7 +252,32 @@ rm -f  "$OUTDIR/.master_ai_creator" 2>/dev/null     # creator marker NEVER ships
 rm -f  "$OUTDIR/.dojo_gate_sealed" 2>/dev/null      # Sensei opens directly
 rm -f  "$OUTDIR/.dojo_entered" 2>/dev/null
 rm -rf "$OUTDIR/appforge" 2>/dev/null  # personal scaffold — don't ship
+find "$OUTDIR" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null || true
+find "$OUTDIR" -type f \( -name '*.log' -o -name '*.pyc' \) -delete 2>/dev/null || true
 echo -e "  ${BG}✓ personal dotfiles + caches removed${X}"
+
+cat > "$OUTDIR/INSTALL_FIRST.txt" <<'EOF'
+MASTER AI — INSTALL FIRST
+
+This is a local-first app, not a hosted cloud account.
+
+Start here:
+
+  bash install.sh
+
+After install:
+
+  master   # opens the main portal/menu
+  sensei   # opens the terminal agent directly
+
+Cloud keys are optional and belong to you. If you want cloud fallback,
+the installer and Pupil setup screen will ask you to paste your own API
+keys for providers such as Groq, OpenRouter, Gemini, or Firecrawl.
+
+There is no seller login server in this package. The app runs on your
+machine, uses your local Ollama models by default, and only uses cloud
+providers when you configure your own keys.
+EOF
 
 # ── 6. Write manifest ────────────────────────────────────────────────
 echo ""
