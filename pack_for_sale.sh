@@ -193,6 +193,8 @@ if command -v rg >/dev/null 2>&1; then
             s/ebey317\@gmail\.com/support email/g;
             s/github\.com\/ebey317/github.com/g;
             s/ebey317/your-github-handle/g;
+            s/CLAUDE\.md \/ //g;
+            s/CLAUDE\.md/project notes/g;
             s/Sunkissed Soul/Flagship App/g;
             s/Sunkissed/Flagship/g;
             s/\bSKS\b/Flagship/g;
