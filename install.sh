@@ -348,21 +348,44 @@ rm -f "$HOME/.dojo_gate_sealed" 2>/dev/null || true
 echo ""
 echo -e "  ${BG}✓ Sensei opens directly — Dojo is optional from Projects.${X}"
 
-# ── 9. Self-scan — what can this box run? ────────────────────
+# ── 9. Command launchers ─────────────────────────────────────
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR" 2>/dev/null || true
+cat > "$BIN_DIR/master" <<EOF
+#!/bin/bash
+exec bash "$TARGET/master.sh" "\$@"
+EOF
+cat > "$BIN_DIR/sensei" <<EOF
+#!/bin/bash
+exec bash "$TARGET/launch_master_ai.sh" "\$@"
+EOF
+chmod +x "$BIN_DIR/master" "$BIN_DIR/sensei" 2>/dev/null || true
+echo ""
+echo -e "  ${BG}✓ terminal commands installed:${X} ${BW}master${X} and ${BW}sensei${X}"
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        echo -e "  ${BY}⚠ $BIN_DIR is not on PATH in this shell.${X}"
+        echo -e "  ${D}  Add this to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\"${X}"
+        ;;
+esac
+
+# ── 10. Self-scan — what can this box run? ───────────────────
 if [ -x "$TARGET/selfscan.sh" ]; then
     echo ""
     echo -e "  ${BC}━━━ running self-scan (reads your machine) ━━━${X}"
     bash "$TARGET/selfscan.sh" --post-install || true
 fi
 
-# ── 10. Done — auto-launch ───────────────────────────────────
+# ── 11. Done — auto-launch ───────────────────────────────────
 echo ""
 echo -e "  ${BC}╔══════════════════════════════════════════════════════╗${X}"
 echo -e "  ${BC}║${X}  ${BG}🥷  INSTALL COMPLETE${X}                              ${BC}║${X}"
 echo -e "  ${BC}╚══════════════════════════════════════════════════════╝${X}"
 echo ""
 echo -e "  ${BW}Next:${X}"
-echo -e "    ${BG}·${X} Menu:        ${BW}bash $TARGET/master.sh${X}"
+echo -e "    ${BG}·${X} Menu:        ${BW}master${X}  (or bash $TARGET/master.sh)"
+echo -e "    ${BG}·${X} Sensei:      ${BW}sensei${X}  (direct terminal agent)"
 echo -e "    ${BG}·${X} Tour:        open ${BW}$TARGET/slideshow.html${X}"
 echo -e "    ${BG}·${X} Manual:      ${BW}$TARGET/README_FOR_BUYER.md${X}"
 echo -e "    ${BG}·${X} Re-scan box: ${BW}bash $TARGET/selfscan.sh${X}  (or menu 19)"

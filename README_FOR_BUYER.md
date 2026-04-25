@@ -37,6 +37,18 @@ Store/support docs are included in the bundle:
 ## 5-minute quickstart
 
 ```bash
+master
+```
+
+You can also open the terminal agent directly:
+
+```bash
+sensei
+```
+
+Fallback if your shell PATH is not refreshed yet:
+
+```bash
 bash ~/scripts/master.sh
 ```
 
