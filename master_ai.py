@@ -282,6 +282,10 @@ ACTIVE_PROJECT_FILE = Path.home() / ".master_ai_active_project"
 ACTIVE_TASK_FILE    = Path.home() / ".master_ai_active_task"
 ACTIVE_MODEL_FILE   = Path.home() / ".master_ai_active_model"
 ACTIVE_TASK         = ""
+# Per-chain counter: bumped in _sudo_handoff on Enter ack. End-of-chain
+# checks it to decide whether the turn earned an auto mark-done on the
+# pinned ACTIVE_TASK. Reset at the top of process_reply().
+_CHAIN_SUDO_ACKS    = 0
 PROJECTS_MD_FILE    = Path.home() / "scripts" / "PROJECTS.md"
 
 def _load_active_from_gate():
@@ -2075,6 +2079,30 @@ _RE_DIRECTIVE = _re_classify.compile(r'^\s*(RUN|RUNTERM|READ|CREATE|EDIT|THINK|D
 _RE_SCRATCH   = _re_classify.compile(r'^\s*\[scratchpad:', _re_classify.IGNORECASE)
 _RE_URL       = _re_classify.compile(r'https?://\S+')
 
+# Per-line typewriter pause between rendered chat lines. Cloud lanes
+# (Groq, OpenRouter) push full replies in <100ms; without a pause the
+# user sees a splash and has to scroll up to read from the top.
+# Set SENSEI_REPLY_LINE_DELAY=0 to disable; raise for a slower typewriter
+# feel. SENSEI_STREAM_DELAY remains supported for older launch scripts.
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+SENSEI_REPLY_LINE_DELAY = _env_float(
+    "SENSEI_REPLY_LINE_DELAY",
+    os.environ.get("SENSEI_STREAM_DELAY", "0.05"),
+)
+SENSEI_REPLY_WRAP = max(30, _env_int("SENSEI_REPLY_WRAP", "70"))
+SENSEI_STREAM_DELAY = SENSEI_REPLY_LINE_DELAY
+
 def _paint_line(line: str) -> str:
     """Classify a complete line and return it wrapped in the right ANSI
     color escape. Uses Master AI brand colors (BC/BG/BY/BO/DIMB).
@@ -2113,7 +2141,9 @@ def _paint_line(line: str) -> str:
 
 def _stream_with_color(token_iter):
     """Wrap a token generator: buffer until newline, paint line, yield.
-    Final partial line (no trailing \\n) gets painted and yielded at end."""
+    Final partial line (no trailing \\n) gets painted and yielded at end.
+    Adds SENSEI_STREAM_DELAY between yielded lines so cloud-fast replies
+    don't splash all at once and force the user to scroll up to read."""
     buf = []
     for token in token_iter:
         if not token:
@@ -2123,6 +2153,7 @@ def _stream_with_color(token_iter):
         while "\n" in joined:
             line, _, rest = joined.partition("\n")
             yield _paint_line(line + "\n")
+            if SENSEI_STREAM_DELAY > 0: time.sleep(SENSEI_STREAM_DELAY)
             joined = rest
         buf = [joined] if joined else []
     # Flush final partial line, if any
@@ -2130,6 +2161,7 @@ def _stream_with_color(token_iter):
         tail = "".join(buf)
         if tail:
             yield _paint_line(tail + "\n")
+            if SENSEI_STREAM_DELAY > 0: time.sleep(SENSEI_STREAM_DELAY)
 
 
 def ask_local_stream(messages, model=None, image_path=None):
@@ -2183,13 +2215,16 @@ def ask_local_stream(messages, model=None, image_path=None):
                     break_pos = SOFT_WRAP
                 line, joined = joined[:break_pos], joined[break_pos:].lstrip()
                 print(_paint_line(line + "\n"), end="", flush=True)
+                if SENSEI_STREAM_DELAY > 0: time.sleep(SENSEI_STREAM_DELAY)
             while "\n" in joined:
                 line, _, rest = joined.partition("\n")
                 print(_paint_line(line + "\n"), end="", flush=True)
+                if SENSEI_STREAM_DELAY > 0: time.sleep(SENSEI_STREAM_DELAY)
                 joined = rest
             if final and joined:
                 # Stream ended mid-line — paint what we have
                 print(_paint_line(joined + "\n"), end="", flush=True)
+                if SENSEI_STREAM_DELAY > 0: time.sleep(SENSEI_STREAM_DELAY)
             elif joined:
                 # Partial line still forming; hold until newline or next soft-wrap
                 line_buf.append(joined)
@@ -2837,19 +2872,39 @@ def render_reply(text, prefix=None, suffix=None):
     shim that means AI replies never reach the scrollable output region.
     We construct a fresh Console each call so it picks up whatever stdout
     is live right now (shim or original).
+
+    Cloud lanes (Groq/OpenRouter/Gemini) return the full reply as one string
+    and would splash to screen all at once — forcing the user to scroll up
+    to read from the top. We render via rich into a capture buffer, then
+    trickle the result line-by-line at SENSEI_REPLY_LINE_DELAY pace. The
+    capture width is capped by SENSEI_REPLY_WRAP so long single-line replies
+    still arrive top-down instead of as one terminal-wide splash.
     """
     if prefix:
         print(prefix, end="", flush=True)
+
+    rendered = text or ""
     if _RICH_OK:
         try:
-            # Fresh console → always writes to CURRENT sys.stdout.
-            _RichConsole(soft_wrap=True, file=sys.stdout).print(
-                _RichMarkdown(text or "", code_theme="monokai")
-            )
+            cons = _RichConsole(width=SENSEI_REPLY_WRAP, file=sys.stdout)
+            with cons.capture() as cap:
+                cons.print(_RichMarkdown(rendered, code_theme="monokai"))
+            rendered = cap.get()
         except Exception:
-            print(text or "")
+            pass
+
+    if SENSEI_REPLY_LINE_DELAY > 0 and "\n" in rendered:
+        lines = rendered.split("\n")
+        last = len(lines) - 1
+        for i, line in enumerate(lines):
+            if i < last:
+                print(line.rstrip(), flush=True)  # implicit newline
+                time.sleep(SENSEI_REPLY_LINE_DELAY)
+            else:
+                print(line.rstrip(), end="", flush=True)
     else:
-        print(text or "")
+        print(rendered, end="", flush=True)
+
     if suffix:
         print(suffix)
 
@@ -4279,6 +4334,31 @@ def _is_sudo_cmd(cmd):
             c == "sudo" or c == "su")
 
 
+def _is_informational_cmd(cmd):
+    """True for commands whose nonzero exits are diagnostic answers, not
+    failures. `systemctl status` returns 3 when a service is inactive —
+    that's the right answer to 'is this running?', not a fatal error.
+    Plans like 'check status, then start service' need the chain to
+    advance past the status step instead of aborting at it.
+
+    Conservative today: only systemctl inspection commands. Widen later
+    if grep/test/which surface the same chain-abort symptom."""
+    if not cmd:
+        return False
+    s = cmd.strip().lstrip()
+    # Strip leading env-var assignments (FOO=bar systemctl ...)
+    while s and "=" in s.split(None, 1)[0]:
+        parts = s.split(None, 1)
+        if len(parts) < 2:
+            break
+        s = parts[1].lstrip()
+    for prefix in ("systemctl status", "systemctl is-active",
+                   "systemctl is-enabled", "systemctl is-failed"):
+        if s == prefix or s.startswith(prefix + " ") or s.startswith(prefix + "\t"):
+            return True
+    return False
+
+
 _NOOP_TOKENS = {"", ":", "true", "false", "exit", "exit 0"}
 
 def _is_noop_cmd(cmd):
@@ -4302,9 +4382,13 @@ def _sudo_handoff(cmd):
     in a separate terminal that the user controls end-to-end. This is a
     hard product rule — see `feedback_passwords_other_terminal.md`.
 
-    Sensei's job here: print the command clearly, confirm the rule out
-    loud, wait for the user to acknowledge, then move on without running.
-    Accept-every-time — Sensei asks again on the NEXT sudo line."""
+    Returns RunResult(ok=True) on user ack so the directive chain treats
+    the step as user-handled-externally and advances to the next step.
+    Returns None only on explicit skip ('no'/'skip'/'cancel') so the
+    existing chain-abort path still fires when the user bails.
+
+    Reads via _safe_input (TUI-aware) — bare input() races the @_awaiting_confirm
+    stdin router and gets eaten by _CONFIRM_IQ."""
     print(f"\n{Y}  🔒  sudo command — NOT running here. Run it in a SEPARATE terminal.{X}")
     print(f"  {BOLD}{cmd}{X}")
     print(f"  {D}──────────────────────────────────────────────────────────{X}")
@@ -4313,11 +4397,14 @@ def _sudo_handoff(cmd):
     print(f"  {D}  your password there. Come back here when it's done.{X}")
     print(f"  {D}──────────────────────────────────────────────────────────{X}")
     _audit("RUN-SUDO-HANDOFF", cmd)
-    try:
-        input(f"  {C}[press Enter when you've handled it — or just to skip]{X} ")
-    except Exception:
-        pass
-    return None
+    ack = _safe_input(f"  {C}[Enter or 'ok' when done · 'skip' to bail]{X} ", audit_cmd=cmd)
+    if ack is None:
+        return None
+    if ack.lower() in ("no", "skip", "cancel", "n", "stop", "abort"):
+        _audit("RUN-SUDO-SKIP", cmd)
+        return None
+    _audit("RUN-SUDO-RESUME", cmd)
+    return RunResult(output="[sudo handed off to user terminal]", ok=True, exit_code=0, command=cmd)
 
 def _cwd_fence_ok(filepath):
     """Return (ok, reason) — is this path under a writable allowlist?
@@ -5332,6 +5419,12 @@ def process_reply(reply, history, streamed=False):
     for cmd in run_cmds:
         result = confirm_run(cmd)
         if not _action_ok(result):
+            # Informational commands (systemctl status etc.) return nonzero
+            # exits as diagnostic answers, not failures. Let the chain
+            # advance so a follow-up `systemctl start` can fire.
+            if isinstance(result, RunResult) and _is_informational_cmd(cmd):
+                log(f"CHAIN_CONTINUE: informational nonzero exit on {cmd}")
+                continue
             print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
             return reply
