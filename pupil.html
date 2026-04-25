@@ -830,9 +830,9 @@ function detectKeyService(key) {
   if (k.startsWith('BSA'))          return { service: 'brave',       label: 'Brave Search',      field: 'braveKey' };
   if (k.startsWith('fc-'))          return { service: 'firecrawl',   label: 'Firecrawl',         field: 'firecrawlKey' };
   if (k.startsWith('ya29.') || k.startsWith('1//')) return { service: 'google', label: 'Google Cloud', field: 'googleKey' };
-  if (k.length >= 30 && k.length <= 50 && /^[a-zA-Z0-9_-]+$/.test(k)) {
-    return { service: 'gumroad', label: 'Gumroad', field: 'gumroadKey' };
-  }
+  // Do not guess Gumroad from a generic 30-50 char token. Brave, Serper,
+  // Gumroad, and raw hex tokens can all look alike. Unknown keys should fall
+  // through so the user picks the provider explicitly.
   return null;
 }
 
@@ -909,7 +909,7 @@ function registerAnyKey() {
     if (inp && placement === 'primary') inp.value = val;
   }
 
-  status.innerHTML = `🟢 <b>${hit.label}</b> — filed as <b>${placement}</b> (<code>${field}</code>) · synced to menu 11`;
+  status.innerHTML = `🟢 <b>${hit.label}</b> — filed as <b>${placement}</b> · synced to menu 11 as <code>${hit.service}</code>`;
   status.style.color = '#2a8a4a';
   card.classList.add('verified');
   document.getElementById('setup-anykey').value = '';
