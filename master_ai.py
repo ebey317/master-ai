@@ -7385,7 +7385,7 @@ def main():
                        f"  idle thoughts, RAM bar, belt themes, any-key finder.\n"
                        f"  Role: apprentice/workshop — intake for ideas before they hit Sensei.",
             "dojo":    f"{C}🥷 The dojo = Sensei (this terminal agent).{X}\n"
-                       f"  Gated by dojo_gate.sh at menu 4: pick a project + task before entering.\n"
+                       f"  Optional project picker/task pinner. Sensei opens directly from menu 4.\n"
                        f"  Commands: 'dojo tasks' (open list), 'done' (mark + pin next),\n"
                        f"  'project <path>' (scope a directory), 'refresh' (soft reload).",
             "sensei":  f"{C}🥷 Sensei IS this thing — the tmux terminal AI you're talking to.{X}\n"
@@ -7414,7 +7414,7 @@ def main():
             if ACTIVE_PROJECT:
                 print(f"  {C}🥷 Project:{X} {W}{ACTIVE_PROJECT}{X}")
             else:
-                print(f"  {W}🥷 No project pinned (gate was skipped).{X}")
+                print(f"  {W}🥷 No project pinned. Use Projects/Dojo when you want focus.{X}")
             if ACTIVE_TASK:
                 print(f"  {C}🥷 Task:{X}    {W}{ACTIVE_TASK}{X}")
             else:

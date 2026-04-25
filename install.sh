@@ -343,12 +343,10 @@ PY
     read -rp "  Paste another, or Enter to finish: " key
 done
 
-# ── 8. Seal dojo gate if SEAL_ON_INSTALL marker is present ──
-if [ -f "$TARGET/.SEAL_ON_INSTALL" ] || [ -f "$SCRIPT_SRC/.SEAL_ON_INSTALL" ]; then
-    touch "$HOME/.dojo_gate_sealed"
-    echo ""
-    echo -e "  ${BC}🔒 dojo gate sealed — hard mode on (sealed build)${X}"
-fi
+# ── 8. Entry mode ────────────────────────────────────────────
+rm -f "$HOME/.dojo_gate_sealed" 2>/dev/null || true
+echo ""
+echo -e "  ${BG}✓ Sensei opens directly — Dojo is optional from Projects.${X}"
 
 # ── 9. Self-scan — what can this box run? ────────────────────
 if [ -x "$TARGET/selfscan.sh" ]; then

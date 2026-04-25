@@ -57,7 +57,7 @@ If you're comfortable in a terminal, hit **4** instead — that's Sensei, the ag
 | **1** | Full startup (all services) | Starts Ollama + Sensei + Pupil + Remote UI in one shot | First boot of the day, or after a reboot |
 | **2** | Check Ollama | Verifies the local model runtime is responding | If AI feels offline / unresponsive |
 | **3** | Check RustDesk | Verifies remote-desktop access is up | If remoting in from another device |
-| **4** | Sensei (local) | The terminal AI agent. Gated — you must pick a project + task to enter | When you want to *build* something |
+| **4** | Sensei (local) | The terminal AI agent. Opens immediately; project/task pinning is optional | When you want to *build* something |
 | **5** | Pupil (local) | The browser AI UI. Open for brainstorm, learn, chat | When you want to *think* or *learn* something |
 | **6** | Remote (connect to another node) | Prints your IPs + ports + URLs a second device would use | When setting up phone / second computer |
 | **7** | Restart Sensei (force rebuild) | Kills and restarts the tmux session | If Sensei gets stuck |
@@ -85,13 +85,13 @@ If a response is taking forever, check that Ollama is running (menu 2). If it is
 
 ---
 
-## The dojo philosophy (why Sensei gates entry)
+## The dojo philosophy (optional project focus)
 
-Sensei is not a casual chat. It's an **execution dojo** — you enter to *build*. Before entering, you "turn in" a project: pick one from your board, pick a task. That pinned task is shown in the status bar and referenced every ~3000 characters of chat as a drift check: *"still on: X?"*
+Sensei is not a casual chat. It's an **execution dojo** — you enter to *build*. Sensei now opens directly from menu 4. When you want tighter focus, open Projects, pick a project, and pin a task. That pinned task is shown in the status bar and referenced every ~3000 characters of chat as a drift check: *"still on: X?"*
 
-This is intentional. It stops conversations from wandering. It keeps the AI anchored to what you came for. It treats coding time like training time — focused, purposeful, earned.
+This is intentional, but optional. Direct entry keeps the flow fast. Pinning a project keeps longer work anchored to what you came for.
 
-The gate has **soft mode** (skip allowed — for testing) and **hard mode** (no project, no entry). Sealed builds ship in hard mode by default.
+Dojo remains available as a project picker and task pinner. It is no longer a hard gate.
 
 ---
 

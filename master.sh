@@ -50,7 +50,7 @@ check_rustdesk() {
 }
 
 launch_master_ai_terminal() {
-    log "--- Launching Master AI (via dojo gate) ---"
+    log "--- Launching Sensei directly ---"
     if ! pgrep -f "stt_server.py" > /dev/null; then
         bash "$HOME/scripts/serve_ui.sh" > /tmp/ui_server.log 2>&1 &
         sleep 1
@@ -60,10 +60,9 @@ launch_master_ai_terminal() {
     # here — respects the menu contract and doesn't steal focus from
     # users who deliberately pick one door.
     cd "$HOME/scripts"
-    # Route through dojo_gate.sh — it handles project/task selection
-    # then exec's launch_master_ai.sh. In testing mode the gate is soft;
-    # once sealed (~/.dojo_gate_sealed exists) it hard-blocks entry.
-    bash "$HOME/scripts/dojo_gate.sh"
+    # Sensei opens immediately. Dojo remains available from Projects when
+    # the user wants to pin a project/task, but it no longer blocks entry.
+    bash "$HOME/scripts/launch_master_ai.sh"
 }
 
 open_firefox_tabs() {
@@ -206,7 +205,7 @@ view_projects() {
     # Read-only by default: see goals, tasks, model, last pickup point.
     # From here the user can:
     #   - open the detail view of one project
-    #   - launch it into Sensei via the dojo gate (which pins project + task)
+    #   - pin it as Sensei context and launch Sensei directly
     local pfile="$HOME/scripts/PROJECTS.md"
     [ ! -f "$pfile" ] && { echo -e "${R}  ❌ PROJECTS.md not found at $pfile${X}"; return 1; }
 
@@ -257,7 +256,7 @@ view_projects() {
             i=$((i + 1))
         done
         echo ""
-        echo -e "  ${BC}g)${X} launch dojo gate (same as menu 4)"
+        echo -e "  ${BC}g)${X} open Dojo project picker"
         echo -e "  ${BC}x)${X} back to menu"
         echo ""
         read -rp "  pick: " choice
@@ -297,7 +296,7 @@ _view_project_detail() {
         ' "$pfile"
 
         echo ""
-        echo -e "  ${BC}s)${X} send to Sensei (launch dojo gate — pins this project)"
+        echo -e "  ${BC}s)${X} pin this project and open Sensei"
         echo -e "  ${BC}e)${X} edit PROJECTS.md in \$EDITOR"
         echo -e "  ${BC}x)${X} back to project list"
         echo ""
@@ -305,12 +304,12 @@ _view_project_detail() {
         case "$c" in
             x|X|'') return ;;
             s|S)
-                # Pre-select this project so the dojo gate skips the picker
+                # Pin this project as Sensei context, then launch directly.
                 echo "$name" > "$HOME/.master_ai_active_project"
                 : > "$HOME/.master_ai_active_task"
-                echo -e "  ${G}✅ $name pre-selected — launching dojo gate${X}"
+                echo -e "  ${G}✅ $name pinned — opening Sensei${X}"
                 sleep 1
-                bash "$HOME/scripts/dojo_gate.sh"
+                bash "$HOME/scripts/launch_master_ai.sh"
                 return
                 ;;
             e|E)

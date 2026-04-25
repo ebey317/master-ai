@@ -5,7 +5,7 @@
 # Run when Elijah says the phrase "pack it up for sale."
 # Creates a CLEAN buyer-bound copy of ~/scripts in a target dir,
 # scrubs Sunkissed/SKS references, strips personal data, generates
-# docs (README + slideshow), seals the dojo gate, tags a version.
+# docs (README + slideshow), writes a manifest, tags a version.
 #
 # Elijah's personal ~/scripts is NEVER mutated. The buyer bundle
 # is a separate directory so he can keep working as usual.
@@ -169,7 +169,7 @@ cat > "$OUTDIR/PROJECTS.md" <<'EOF'
 # Your Projects
 
 > Edit this file (or use menu option 9) to add new projects.
-> Each project becomes something you can "turn in" to Sensei (menu 4).
+> Each project can be pinned before opening Sensei, but Sensei also opens directly.
 
 ---
 
@@ -178,13 +178,13 @@ cat > "$OUTDIR/PROJECTS.md" <<'EOF'
 ### Starter Project
 - **Type:** master-bound
 - **Role:** example — delete or rename when you make your own
-- **Gate:** gated
+- **Entry:** optional Dojo pinning
 - **Model:** auto
 - **Goal:** explore Master AI — learn what Sensei can do, get comfortable with the menu
 - **Tasks:**
   - [ ] take the slideshow tour (`open ~/scripts/slideshow.html`)
   - [ ] finish Linux Class 1 in Pupil (menu 5 → Projects ▾ → Linux/Bash)
-  - [ ] try the dojo gate with this project (menu 4)
+  - [ ] pin this project from Projects, then open Sensei
   - [ ] log your first real idea via menu 9
 
 ---
@@ -203,21 +203,14 @@ rm -f  "$OUTDIR/.master_ai_tasks" 2>/dev/null
 rm -f  "$OUTDIR/.master_ai_history" 2>/dev/null
 rm -f  "$OUTDIR/.master_ai_cache.json" 2>/dev/null
 rm -f  "$OUTDIR/.master_ai_creator" 2>/dev/null     # creator marker NEVER ships
-rm -f  "$OUTDIR/.dojo_gate_sealed" 2>/dev/null      # buyer seals their own gate
-rm -f  "$OUTDIR/.dojo_entered" 2>/dev/null          # buyer does the first-time ritual
+rm -f  "$OUTDIR/.dojo_gate_sealed" 2>/dev/null      # Sensei opens directly
+rm -f  "$OUTDIR/.dojo_entered" 2>/dev/null
 rm -rf "$OUTDIR/appforge" 2>/dev/null  # personal scaffold — don't ship
 echo -e "  ${BG}✓ personal dotfiles + caches removed${X}"
 
-# ── 6. Seal the dojo gate + tag ──────────────────────────────────────
+# ── 6. Write manifest ────────────────────────────────────────────────
 echo ""
-echo -e "  ${BC}━━━ 6/6  sealing gate + writing manifest ━━━${X}"
-
-# Leave a signal file the installer uses to create the gate seal.
-# (The actual seal file goes in the buyer's $HOME on install, not in the bundle.)
-cat > "$OUTDIR/.SEAL_ON_INSTALL" <<EOF
-Master AI — sealed build ($NEXT_VERSION, packed $(date -Iseconds))
-When install.sh finishes, create ~/.dojo_gate_sealed so the gate is HARD by default.
-EOF
+echo -e "  ${BC}━━━ 6/6  writing manifest ━━━${X}"
 
 # Write a manifest the buyer can verify
 cat > "$OUTDIR/MANIFEST.txt" <<EOF
@@ -230,7 +223,7 @@ Contents:
   master.sh              — main menu (the front door)
   master_ai.py           — Sensei (terminal AI agent)
   pupil.html             — Pupil (browser UI)
-  dojo_gate.sh           — project/task picker before entering Sensei
+  dojo_gate.sh           — optional project/task picker for pinning context
   learn.sh               — lessons (Linux/bash → Python)
   install.sh             — installer (run this first)
   README_FOR_BUYER.md    — the full manual
@@ -244,7 +237,7 @@ What to do first:
   2. Open:  master.sh  (then option 5 for Pupil, or 4 for Sensei)
   3. Read:  README_FOR_BUYER.md — or open slideshow.html for the voiced tour
 EOF
-echo -e "  ${BG}✓ manifest + seal marker written${X}"
+echo -e "  ${BG}✓ manifest written${X}"
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo ""

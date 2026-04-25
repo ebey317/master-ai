@@ -10,7 +10,7 @@ Master AI is a local-first, multi-model AI system that routes user requests to t
 
 - **Sensei** — tmux terminal agent (`master_ai.py`, launched via `launch_master_ai.sh`).
 - **Pupil** — browser UI (`pupil.html`, served at localhost:8080/pupil.html and at Tailscale 100.101.249.96:8080).
-- **Dojo** — project picker / launch gate.
+- **Dojo** — optional project picker / task pinner.
 - **Belts** — Pupil color themes.
 - **Voice servers** — stt_server.py + tts_server.py (TTS:5050) for speech in/out, both with `/health` GET endpoints.
 
