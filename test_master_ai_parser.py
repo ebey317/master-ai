@@ -22,6 +22,7 @@ class DirectiveParserTests(unittest.TestCase):
         self._orig_create = master_ai.confirm_create
         self._orig_edit = master_ai.confirm_edit
         self._orig_render = master_ai.render_reply
+        self._orig_metric = master_ai._router_metric
         def _run(cmd):
             self.calls.append(("run", cmd))
             return True
@@ -39,6 +40,7 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai.confirm_create = _create
         master_ai.confirm_edit = _edit
         master_ai.render_reply = lambda *args, **kwargs: None
+        master_ai._router_metric = lambda *args, **kwargs: None
 
     def tearDown(self):
         master_ai.confirm_run = self._orig_run
@@ -46,6 +48,7 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai.confirm_create = self._orig_create
         master_ai.confirm_edit = self._orig_edit
         master_ai.render_reply = self._orig_render
+        master_ai._router_metric = self._orig_metric
 
     def test_run_directive_is_case_insensitive(self):
         master_ai.process_reply("run: echo hi", [], streamed=False)
@@ -99,6 +102,28 @@ class DirectiveParserTests(unittest.TestCase):
             streamed=False,
         )
         self.assertEqual(self.calls, [("create-denied", "/tmp/master-ai-parser-test.txt", "hello")])
+
+    def test_failed_run_aborts_downstream_runterm(self):
+        def _fail_run(cmd):
+            self.calls.append(("run-failed", cmd))
+            return master_ai.RunResult("boom", ok=False, exit_code=1, command=cmd)
+        master_ai.confirm_run = _fail_run
+        master_ai.process_reply(
+            "RUN: bash -c 'exit 9'\n"
+            "RUN: echo should-not-run\n"
+            "RUNTERM: htop",
+            [],
+            streamed=False,
+        )
+        self.assertEqual(self.calls, [("run-failed", "bash -c 'exit 9'")])
+
+    def test_pipefail_marks_pipeline_failure(self):
+        result = master_ai.run_command("printf 'yes\\n' | grep no")
+        self.assertFalse(result.ok)
+        self.assertNotEqual(result.exit_code, 0)
+
+    def test_interactive_run_is_blocked(self):
+        self.assertTrue(master_ai._looks_interactive_run("grep -ri foo ~/Mail | less"))
 
 
 if __name__ == "__main__":

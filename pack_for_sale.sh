@@ -14,7 +14,7 @@
 #         bash ~/scripts/pack_for_sale.sh <outdir>
 # ============================================================
 
-set -u
+set -euo pipefail
 source ~/scripts/brand.sh 2>/dev/null || true
 : "${BC:=$(tput bold 2>/dev/null; tput setaf 4 2>/dev/null)}"
 : "${BG:=$(tput bold 2>/dev/null; tput setaf 2 2>/dev/null)}"
@@ -51,6 +51,9 @@ ok()   { echo -e "  ${BG}✓ $1${X}"; }
 [ -f "$SRC/learn.sh" ]            && ok "learn.sh present"           || warn "learn.sh MISSING"
 [ -f "$SRC/install.sh" ]          && ok "install.sh present"         || warn "install.sh MISSING"
 [ -f "$SRC/README_FOR_BUYER.md" ] && ok "README_FOR_BUYER.md present" || warn "README_FOR_BUYER.md MISSING"
+[ -f "$SRC/PRIVACY.md" ]          && ok "PRIVACY.md present"          || warn "PRIVACY.md MISSING (store privacy disclosure)"
+[ -f "$SRC/SUPPORT.md" ]          && ok "SUPPORT.md present"          || warn "SUPPORT.md MISSING (buyer support path)"
+[ -f "$SRC/STORE_READINESS.md" ]  && ok "STORE_READINESS.md present"  || warn "STORE_READINESS.md MISSING (release checklist)"
 [ -f "$SRC/slideshow.html" ]      && ok "slideshow.html present"     || warn "slideshow.html MISSING"
 [ -d "$SRC/systemd" ]             && ok "systemd/ unit files present" || warn "systemd/ MISSING (auto-start won't wire on Linux)"
 [ -f "$SRC/sensei_selftest.sh" ]  && ok "sensei_selftest.sh present"  || warn "sensei_selftest.sh MISSING (acceptance gate)"
@@ -62,6 +65,23 @@ ok()   { echo -e "  ${BG}✓ $1${X}"; }
 if [ "$READY" != "1" ]; then
     echo ""
     echo -e "  ${BR}❌ Ship-readiness failed — generate the missing pieces before packing.${X}"
+    exit 1
+fi
+
+if [ -d "$SRC/.git" ]; then
+    if ! git -C "$SRC" diff --quiet || ! git -C "$SRC" diff --cached --quiet || [ -n "$(git -C "$SRC" ls-files --others --exclude-standard)" ]; then
+        echo ""
+        echo -e "  ${BR}❌ Git worktree is dirty. Commit, stash, or remove loose files before packing.${X}"
+        git -C "$SRC" status --short | sed 's/^/  /'
+        exit 1
+    fi
+    ok "git worktree clean"
+fi
+
+if find "$SRC" -maxdepth 1 -type f \( -name '*spam*.sh' -o -name '*unsubscribe*.sh' \) | grep -q .; then
+    echo ""
+    echo -e "  ${BR}❌ Found generated mail/spam automation script in source root. Refusing to pack.${X}"
+    find "$SRC" -maxdepth 1 -type f \( -name '*spam*.sh' -o -name '*unsubscribe*.sh' \) | sed 's/^/  /'
     exit 1
 fi
 

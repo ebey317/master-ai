@@ -4137,37 +4137,38 @@ def _hallucination_warn(cmd):
     catch subcommand hallucinations (the parent binary DOES exist), but
     we can catch the common case — a fully fabricated top-level command.
 
-    Pure warning, non-blocking. Elijah still owns the decision at the
-    5-button confirm prompt. Prints only when we're confident the binary
-    is missing — absolute paths, shell builtins, and PATH lookups all
-    get a pass.
+    Returns False when the first executable is missing. Review mode can
+    still let Elijah override after seeing the warning; Auto mode blocks
+    the command because there is no reason to execute a known-missing
+    binary in a buyer-facing build.
     """
     import shlex, shutil as _shutil
     try:
         tokens = shlex.split(cmd, posix=True)
     except ValueError:
-        return  # malformed quoting — skip check
+        return True  # malformed quoting — skip check
     # Skip env-var assignments (FOO=bar ... cmd)
     i = 0
     while i < len(tokens) and "=" in tokens[i] and not tokens[i].startswith(("/", "./", "../")):
         i += 1
     if i >= len(tokens):
-        return
+        return True
     first = tokens[i]
     # Absolute / relative path → let the shell resolve it
     if first.startswith(("/", "./", "../", "~")):
-        return
+        return True
     # Shell builtins and common control words — shutil.which won't find
     # these but they're valid. Subset focused on what models actually emit.
     BUILTINS = {"cd", "echo", "export", "set", "unset", "source", ".", "exec",
                 "if", "then", "else", "fi", "for", "while", "do", "done",
                 "true", "false", ":", "test", "[", "alias", "eval"}
     if first in BUILTINS:
-        return
+        return True
     if _shutil.which(first):
-        return
+        return True
     print(f"{R}  ⚠ '{first}' not found on PATH — may be a hallucinated command.{X}")
     print(f"  {D}  (on Linux: try `ip addr` instead of `ipconfig`, etc.){X}")
+    return False
 
 def _is_destructive(cmd):
     """True if `cmd` matches a destructive pattern. Case-insensitive
@@ -4346,6 +4347,40 @@ def _pill(kind, detail=""):
     tag = badges.get(kind, f"[{kind}]")
     return f"  {tag}  {detail}" if detail else f"  {tag}"
 
+class RunResult(str):
+    """String-compatible shell result with reliable status metadata."""
+    def __new__(cls, output="", ok=False, exit_code=None, command="", error=""):
+        obj = str.__new__(cls, output or "")
+        obj.ok = bool(ok)
+        obj.exit_code = exit_code
+        obj.command = command
+        obj.error = error
+        return obj
+
+def _action_ok(result):
+    if isinstance(result, bool):
+        return result
+    if hasattr(result, "ok"):
+        return bool(result.ok)
+    return result is not None
+
+_INTERACTIVE_RUN_WORDS = {
+    "less", "more", "man", "nano", "vim", "vi", "emacs", "top", "htop",
+    "btop", "watch", "tail -f", "ssh", "mysql", "psql", "sqlite3",
+}
+
+def _looks_interactive_run(cmd):
+    low = (cmd or "").strip().lower()
+    if not low:
+        return False
+    if any(f"| {w}" in low or f"|{w}" in low for w in ("less", "more", "tail -f")):
+        return True
+    try:
+        first = shlex.split(cmd)[0].lower()
+    except Exception:
+        first = low.split()[0] if low.split() else ""
+    return first in _INTERACTIVE_RUN_WORDS or low.startswith("tail -f ")
+
 # ── RUN COMMAND ───────────────────────────────────────────────
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
@@ -4366,8 +4401,13 @@ def run_command(cmd):
         if parts and len(parts) >= 1 and parts[0].endswith(".sh") and os.path.exists(parts[0]):
             run_argv = ["bash", parts[0], *parts[1:]]
             shell_cmd = " ".join(shlex.quote(p) for p in run_argv)
-        result = subprocess.run(run_argv if run_argv else shell_cmd,
-                                shell=run_argv is None,
+        # Use bash + pipefail for model-authored shell strings. Plain
+        # /bin/sh hides failures in pipelines (`grep missing | less` can
+        # report success because `less` exited 0). Store-grade execution
+        # must classify the whole command, not only the final process.
+        exec_cmd = run_argv if run_argv else ["bash", "-o", "pipefail", "-c", shell_cmd]
+        result = subprocess.run(exec_cmd,
+                                shell=False,
                                 capture_output=True, text=True, timeout=300)
         output = (result.stdout + result.stderr).strip()
         if output:
@@ -4381,19 +4421,22 @@ def run_command(cmd):
                        exit_code=result.returncode,
                        latency_s=round(time.time() - _t0, 3),
                        detail=shell_cmd[:240])
-        return output
+        return RunResult(output, ok=(result.returncode == 0),
+                         exit_code=result.returncode, command=shell_cmd)
     except subprocess.TimeoutExpired:
         print(_pill("ERROR", f"{D}timeout (5 min) · {cmd[:60]}{X}"))
         _router_metric("execution", action="run", ok=False, error="timeout",
                        latency_s=round(time.time() - _t0, 3),
                        detail=(cmd or "")[:240])
-        return "timeout"
+        return RunResult("timeout", ok=False, exit_code=124,
+                         command=cmd, error="timeout")
     except Exception as e:
         print(_pill("ERROR", f"{D}{e}{X}"))
         _router_metric("execution", action="run", ok=False, error=str(e)[:160],
                        latency_s=round(time.time() - _t0, 3),
                        detail=(cmd or "")[:240])
-        return str(e)
+        return RunResult(str(e), ok=False, exit_code=1,
+                         command=cmd, error=str(e))
 
 def _settings_set(key, value):
     """Set one KEY=value line in ~/.master_ai_settings without disturbing others."""
@@ -4659,6 +4702,12 @@ def confirm_run(cmd):
         _audit("RUN-EMPTY", cmd)
         return None
 
+    if _looks_interactive_run(cmd):
+        print(_pill("BLOCKED", f"{D}interactive command belongs in RUNTERM, not RUN: {cmd[:60]}{X}"))
+        log(f"BLOCKED-INTERACTIVE-RUN: {cmd}")
+        _audit("RUN-BLOCK-INTERACTIVE", cmd)
+        return None
+
     if is_blocked(cmd):
         print(_pill("BLOCKED", f"{D}dangerous command refused: {cmd[:60]}{X}"))
         log(f"BLOCKED: {cmd}")
@@ -4675,9 +4724,15 @@ def confirm_run(cmd):
     # Hallucination guard — the local model sometimes emits binaries that
     # don't exist on this OS (e.g. `ipconfig` on Linux, `tailscale config`
     # which is not a real subcommand). Check the first real token against
-    # PATH before running. Pure warning — doesn't block, but gives Elijah
-    # a chance to cancel before a 127 / unknown-subcommand error.
-    _hallucination_warn(cmd)
+    # PATH before running. Review mode warns so Elijah can override; Auto
+    # mode blocks because buyer-facing auto-flow should not execute known
+    # hallucinated binaries.
+    top_level_exists = _hallucination_warn(cmd)
+    if globals().get("MODE", "plan") == "auto" and not top_level_exists:
+        print(_pill("BLOCKED", f"{D}auto-flow refused missing command: {cmd[:60]}{X}"))
+        log(f"BLOCKED-MISSING-CMD-AUTO: {cmd}")
+        _audit("RUN-BLOCK-MISSING", cmd)
+        return None
 
     if cmd in load_approved():
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
@@ -5246,7 +5301,11 @@ def process_reply(reply, history, streamed=False):
         return reply
 
     for cmd in run_cmds:
-        confirm_run(cmd)
+        result = confirm_run(cmd)
+        if not _action_ok(result):
+            print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
+            log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
+            return reply
 
     # RUNTERM: runs after RUN: — if the model pairs "build output" (RUN:) with
     # "now open the demo" (RUNTERM:), the demo spawns after the build finishes.

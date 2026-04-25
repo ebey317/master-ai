@@ -26,6 +26,12 @@ Same brain. Same memory. Same keys. Two surfaces so you can work how you work.
 - **Multi-user profiles** — up to 4 people per box, each with their own memory.
 - **Curriculum** (included, not required) — 12 belt-graded lessons for Linux + Python.
 
+Store/support docs are included in the bundle:
+
+- `PRIVACY.md` — what stays local, when cloud is used, what is never collected.
+- `SUPPORT.md` — first checks, common fixes, and what to include in a support request.
+- `STORE_READINESS.md` — the release gate used before a buyer bundle is packed.
+
 ---
 
 ## 5-minute quickstart
@@ -226,6 +232,8 @@ Your AI runs as **you** — your user account, your permissions. Not root. Not a
 - Phone home to anyone — there is no "us" on the other end
 
 **Before anything destructive** (`rm -rf`, `git reset --hard`, `systemctl stop`, force-push, `drop table`), Sensei pauses, shows you the exact command, and waits for your "yes." That gate is in `master_ai.py`'s `confirm_run()` and it runs in every mode including auto.
+
+Auto mode also stops a generated command chain after the first failed or refused `RUN:`. Pipelines are executed with `bash -o pipefail`, so a failing command in the middle of a pipeline does not get hidden by a successful final command. Interactive viewers such as `less`, `vim`, `top`, and `htop` are blocked from `RUN:` and must use `RUNTERM:`.
 
 **Every action is logged** to `~/.master_ai_audit.log` in plain text. You can `cat` it, `grep` it, back it up, hand it to an auditor. There is no hidden history, no encrypted journal, no "trust us" layer. What happened is on disk.
 
