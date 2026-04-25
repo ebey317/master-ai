@@ -4404,6 +4404,7 @@ def _sudo_handoff(cmd):
         _audit("RUN-SUDO-SKIP", cmd)
         return None
     _audit("RUN-SUDO-RESUME", cmd)
+    globals()["_CHAIN_SUDO_ACKS"] = globals().get("_CHAIN_SUDO_ACKS", 0) + 1
     return RunResult(output="[sudo handed off to user terminal]", ok=True, exit_code=0, command=cmd)
 
 def _cwd_fence_ok(filepath):
@@ -4455,6 +4456,7 @@ def _pill(kind, detail=""):
         "RAN":     f"{BTN_G} RAN     {X}",
         "CREATED": f"{BTN_G} CREATED {X}",
         "EDITED":  f"{BTN_G} EDITED  {X}",
+        "DONE":    f"{BTN_G} DONE    {X}",
         "BLOCKED": f"{BTN_R} BLOCKED {X}",
         "SKIPPED": f"{BTN_Y} SKIPPED {X}",
         "ERROR":   f"{BTN_R} ERROR   {X}",
@@ -5189,6 +5191,7 @@ def confirm_edit(filepath, find_text, replace_text):
 # ── REPLY PROCESSOR ──────────────────────────────────────────
 def process_reply(reply, history, streamed=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
+    globals()["_CHAIN_SUDO_ACKS"] = 0
     lines = reply.splitlines()
 
     # Strip surrounding backticks/quotes from extracted commands — local
@@ -5439,6 +5442,23 @@ def process_reply(reply, history, streamed=False):
         html_paths = [p for p in created_ok_paths if str(p).lower().endswith((".html", ".htm"))]
         if html_paths and not opened:
             _open_file_preview(html_paths[-1])
+
+    # Chain reached the end with no BLOCKED. If the user stepped out to a
+    # second terminal for a sudo handoff, the work happened and they came
+    # back with 'ok' — that ack IS the verify. Auto-mark the pinned task
+    # done so the chain doesn't leave a stale "in progress" hanging.
+    if globals().get("_CHAIN_SUDO_ACKS", 0) > 0 and ACTIVE_TASK:
+        proj = globals().get("ACTIVE_PROJECT", "")
+        task = ACTIVE_TASK
+        flipped = _dojo_mark_done(proj, task) if proj else False
+        try:
+            ACTIVE_TASK_FILE.write_text("")
+        except Exception:
+            pass
+        globals()["ACTIVE_TASK"] = ""
+        suffix = f" (PROJECTS.md updated)" if flipped else ""
+        print(_pill("DONE", f"{BG}{task}{X}{D}{suffix}{X}"))
+        log(f"AUTO-MARK-DONE: project={proj!r} task={task!r} flipped={flipped}")
 
     return reply
 
