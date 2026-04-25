@@ -81,6 +81,12 @@ As of commit `ffb5475`, the older "WHERE WE WERE" snapshot that stops at
   - This is for Elijah's own stable-point archive, not for buyers.
   - It contains the tracked repo state plus `master-ai-ffb5475-history.bundle`.
 
+- Customer install zip exists at `~/Desktop/Master-AI-v1.8-Customer-Install.zip`.
+  - This is the buyer-facing package.
+  - It includes `INSTALL_FIRST.txt`.
+  - It is local-first/BYOK, not a hosted cloud-login SaaS.
+  - It is scrubbed of creator-specific handoff files, personal archives, `.git`, sessions, logs, keys, and internal Claude sync state.
+
 - Latest terminal UX state:
   - `master` opens the main portal/menu.
   - `sensei` opens the terminal agent directly.
