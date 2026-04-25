@@ -538,9 +538,22 @@ def _remember_created_file(filepath):
         log(f"LAST_CREATED_WRITE_ERROR: {e}")
 
 def _latest_created_file():
+    def _preview_rank(p):
+        name = p.name.lower()
+        if name.startswith(("carryover_", "copy-", "session-")) or "summary" in name:
+            return -1
+        suffix = p.suffix.lower()
+        if suffix in {".html", ".htm"}:
+            return 40
+        if suffix in {".sh", ".py", ".js"}:
+            return 30
+        if suffix in {".css", ".txt", ".md"}:
+            return 10
+        return 0
+
     try:
         p = Path(LAST_CREATED_FILE.read_text().strip()).expanduser()
-        if p.exists():
+        if p.exists() and _preview_rank(p) > 0:
             return p
     except Exception:
         pass
@@ -549,11 +562,13 @@ def _latest_created_file():
         try:
             candidates.extend(
                 p for p in root.glob("*")
-                if p.is_file() and p.suffix.lower() in {".html", ".htm", ".sh", ".py", ".js", ".css", ".txt", ".md"}
+                if p.is_file() and _preview_rank(p) > 0
             )
         except Exception:
             pass
-    return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (_preview_rank(p), p.stat().st_mtime))
 
 def _open_file_preview(path=None):
     p = Path(os.path.expanduser(str(path))) if path else _latest_created_file()
