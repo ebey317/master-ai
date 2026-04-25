@@ -41,19 +41,32 @@ Use this wording when describing it:
   - Sale bundle no longer creates `.SEAL_ON_INSTALL`.
   - Dojo remains optional project/task pinning.
 
-## Current In-Progress Changes
-
-These may be uncommitted when you read this:
-
-- Added `tight:` / `reason:` as user-friendly tighter reasoning prefixes.
+- `757f891 Sync Claude handoff and command UX`
+  - Added `CLAUDE.md` as the cross-agent handoff file.
+  - Added `commands`, `command`, and `?` as simple first-screen command help.
+  - Added `tight:` / `reason:` as user-friendly tighter reasoning prefixes.
   - Uses DeepSeek-R1 through OpenRouter when configured.
   - Falls back to local `think deep:` reasoning loop.
   - Output is display-only; directive-looking lines are neutralized before display.
+  - README documents `fast:`, `deep:`, `tight:`, and `think:`.
 
-- Added `commands`, `command`, and `?` as simple first-screen command help.
-  - This is meant to be friendlier than the full paginated `help`.
+- `a2a8587 Fix Any Key provider placement`
+  - Pupil Any Key no longer guesses Gumroad from generic 30-50 char tokens.
+  - Unknown ambiguous keys require explicit provider dropdown selection.
+  - Success message now reports the actual server key slot saved to `~/.master_ai_keys`.
 
-- README now documents `fast:`, `deep:`, `tight:`, and `think:`.
+- `7745c4c Install terminal launch commands`
+  - Installer creates `~/.local/bin/master` and `~/.local/bin/sensei`.
+  - `master` opens the main one-command portal/menu.
+  - `sensei` opens the Sensei terminal agent directly.
+
+- `261bc22 Auto-configure terminal command PATH`
+  - Installer adds `~/.local/bin` to `.bashrc`, `.profile`, and `.zshrc` when missing.
+  - Installer exports the updated PATH during the current install session too.
+
+## Current In-Progress Changes
+
+No known in-progress changes at this handoff. Worktree should be clean.
 
 ## Important Existing Architecture
 
@@ -70,6 +83,11 @@ These may be uncommitted when you read this:
 
 - Do not treat cloud lanes as agents.
   - They are router destinations.
+
+- Keep terminal entry behavior simple:
+  - `master` = one-command portal/menu.
+  - `sensei` = direct local Claude Code-style terminal agent.
+  - Buyer installer should set this up automatically.
 
 ## Tests / Gates
 
@@ -90,4 +108,3 @@ Expected pack result in this Codex sandbox: YELLOW self-test can pass if warning
 - Main menu labels should stay plain-language, not internal architecture names.
 - A clean-machine install test is still the final proof for store readiness.
 - Store upload assets still need screenshots, listing copy, price/support/refund setup.
-
