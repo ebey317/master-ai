@@ -774,11 +774,14 @@ class SenseiApp:
     def write(self, text: str) -> None:
         if not text:
             return
-        # Chat-app behavior: new assistant/tool output follows the live bottom
-        # so handoff prompts and approval choices do not land off-screen after
-        # the user previously scrolled up.
-        self._scroll_offset = 0
+        text = str(text)
+        # Chat-app behavior: follow the bottom only when the user is already
+        # there. If they've scrolled up to read older output, preserve that
+        # viewport by moving the scroll offset forward with the new lines.
+        add_lines = max(1, text.count("\n"))
         with self._output_lock:
+            if self._scroll_offset > 0:
+                self._scroll_offset += add_lines
             self._output_chunks.append(str(text))
         try: self._app.invalidate()
         except Exception: pass
@@ -786,6 +789,7 @@ class SenseiApp:
     def clear_output(self) -> None:
         with self._output_lock:
             self._output_chunks.clear()
+            self._scroll_offset = 0
         try: self._app.invalidate()
         except Exception: pass
 
