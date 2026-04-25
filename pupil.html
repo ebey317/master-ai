@@ -461,6 +461,13 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
       </div>
     </div>
   </div>
+  <div class="template-panel hidden" id="radar-panel" style="padding:0">
+    <div class="template-panel-title" style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px 4px">
+      <span>Rain Radar — RainViewer</span>
+      <button onclick="closeRadarPanel()" style="background:transparent;border:none;color:var(--text-soft);cursor:pointer;font-size:18px;line-height:1">×</button>
+    </div>
+    <iframe id="radar-frame" src="about:blank" style="width:100%;height:60vh;border:0;display:block"></iframe>
+  </div>
   <div class="chat-area" id="chat-area"></div>
   <div class="provider-row">
     <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Master AI (local)</button>
@@ -2398,6 +2405,7 @@ const _TIME_PHRASES = [
   'who is the president','who is the ceo of',
   'stock price of','current stock','stock market today',
   'weather in',"what's the weather",'whats the weather',
+  'rain radar','weather radar','is it raining','rain near me','rain coming','show radar',
   'news today',"today's news",'todays news','latest news',
   'breaking news','headlines today',
   'playoff games','playoff game tonight','games tonight','games today',
@@ -2409,6 +2417,35 @@ function looksTimeSensitive(text) {
   for (const w of words) if (_TIME_WORDS.has(w)) return true;
   for (const p of _TIME_PHRASES) if (low.indexOf(p) !== -1) return true;
   return false;
+}
+
+const _RAIN_PHRASES = ['rain radar','weather radar','is it raining','rain near me','rain coming','show radar'];
+function looksRainQuery(text) {
+  const low = (text || '').toLowerCase();
+  return _RAIN_PHRASES.some(p => low.indexOf(p) !== -1);
+}
+async function openRadarPanel() {
+  const panel = document.getElementById('radar-panel');
+  const frame = document.getElementById('radar-frame');
+  if (!panel || !frame) return;
+  let lat = 39.7684, lng = -86.1581, city = 'Indianapolis';
+  try {
+    const r = await fetch('https://ipapi.co/json/');
+    if (r.ok) {
+      const j = await r.json();
+      if (j.latitude) lat = j.latitude;
+      if (j.longitude) lng = j.longitude;
+      if (j.city) city = j.city;
+    }
+  } catch (e) { /* keep defaults */ }
+  frame.src = `https://www.rainviewer.com/map.html?lat=${lat}&lng=${lng}&zoom=8&loc=${encodeURIComponent(city)}`;
+  panel.classList.remove('hidden');
+}
+function closeRadarPanel() {
+  const panel = document.getElementById('radar-panel');
+  const frame = document.getElementById('radar-frame');
+  if (panel) panel.classList.add('hidden');
+  if (frame) frame.src = 'about:blank';
 }
 // Friendly names used for both the progress checklist and the final
 // "engines that answered" badge. Keep in sync with the server's
@@ -2757,6 +2794,9 @@ async function sendMsg() {
   }
 
   const explicitPrefix = userText.match(/^\s*(fast|deep|local|private|search)[:\s]/i);
+  if (!explicitPrefix && looksRainQuery(userText)) {
+    openRadarPanel().catch(() => {});
+  }
   if (!explicitPrefix && (currentProvider === 'web' || looksTimeSensitive(userText))) {
     await runWebSearch(userText);
     return;

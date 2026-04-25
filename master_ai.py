@@ -1458,6 +1458,7 @@ _TIME_PHRASES = (
     "who is the president", "who is the ceo of",
     "stock price of", "current stock", "stock market today",
     "weather in", "what's the weather", "whats the weather",
+    "rain radar", "weather radar", "is it raining", "rain near me", "rain coming", "show radar",
     "news today", "today's news", "todays news", "latest news",
     "breaking news", "headlines today",
     "playoff games", "playoff game tonight", "games tonight", "games today",
