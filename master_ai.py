@@ -6220,6 +6220,9 @@ def main():
         if lo in ("mouse local", "local mouse", "copy mouse", "mouse copy"):
             set_mouse_profile("local")
             continue
+        if lo in ("mouse toggle", "toggle mouse", "mouse switch"):
+            set_mouse_profile("toggle")
+            continue
         if lo in ("mouse status", "mouse", "mouse mode"):
             set_mouse_profile("status")
             continue
