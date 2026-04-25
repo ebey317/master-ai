@@ -262,11 +262,13 @@ GLOBAL_HISTORY      = []          # shared reference for signal handlers
 CHARS_SINCE_SAVE    = 0           # chars accumulated since last auto-save
 CHARS_SINCE_REMIND  = 0           # chars accumulated since last drift reminder
 AUTO_SAVE_THRESHOLD = 10000       # update session file every ~10000 chars (was 3000)
+AUTO_SAVE_EVERY_TURN = True
 # Drift-reminder: if the user rolls past this many chars without touching the
 # active project label, Sensei injects a gentle 'hey, you were on X' reminder.
 DRIFT_REMINDER_CHARS = 3000
 SESSION_TS          = int(time.time())  # fixed for entire session — overwrites same file
 _SAVE_LOCK          = threading.Lock()
+_AUTOSAVE_LOCK      = threading.Lock()
 
 # ── ORCHESTRATOR STATE ────────────────────────────────────────
 CONTEXT_WATERMARK   = 120000                     # total history chars → save-and-refresh (doubled 2026-04-19 — was auto-restarting every few min with 60k)
@@ -5836,6 +5838,17 @@ def _auto_save_background(history):
     except Exception:
         pass
 
+def _request_auto_save(history):
+    """Save the current session shortly after a turn completes."""
+    if not history:
+        return
+    if AUTO_SAVE_EVERY_TURN:
+        threading.Thread(target=_auto_save_background, args=(list(history),), daemon=True).start()
+        return
+    global CHARS_SINCE_SAVE
+    if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
+        threading.Thread(target=_auto_save_background, args=(list(history),), daemon=True).start()
+
 def _query_worker(history_ref):
     """Serial worker: pop queued queries, run handle(), handle reply+cache+tts+autosave.
     Runs forever as a daemon thread. history_ref is the main loop's live history list."""
@@ -5854,8 +5867,7 @@ def _query_worker(history_ref):
             if TTS_ENABLED:
                 threading.Thread(target=speak, args=(reply,), daemon=True).start()
             globals()['CHARS_SINCE_SAVE'] = CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
-            if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
-                threading.Thread(target=_auto_save_background, args=(list(history_ref),), daemon=True).start()
+            _request_auto_save(history_ref)
             remaining = _QUERY_QUEUE.qsize()
             if remaining > 0:
                 print(f"  {D}— next in queue ({remaining} left) —{X}")
@@ -6571,6 +6583,7 @@ def main():
                     history.append({"role": "assistant", "content": "Got it — I have your last session's unfinished items and next steps. What would you like to continue?"})
                     print(f"  {G}✅ Last session context loaded (unfinished + next).{X}")
                     print(f"  {D}{trimmed[:300]}{X}")
+                    _request_auto_save(history)
             except Exception as e:
                 print(f"  {R}❌ {e}{X}")
             continue
@@ -6585,6 +6598,7 @@ def main():
                     history.append({"role": "user", "content": f"[Full last session transcript]\n{content}"})
                     history.append({"role": "assistant", "content": "Full session loaded. I have the complete context from last time."})
                     print(f"  {G}✅ Last full session loaded.{X}")
+                    _request_auto_save(history)
             except Exception as e:
                 print(f"  {R}❌ {e}{X}")
             continue
@@ -6751,6 +6765,7 @@ def main():
         if lo in ("clear", "clear history"):
             history = [h for h in history if h.get("role") == "system"]
             print(f"  {G}✅ Conversation cleared.{X}")
+            _request_auto_save(history)
             continue
 
         # ── Quick label edit: 'e', 'edit', or the pencil glyph ───────
@@ -7256,6 +7271,7 @@ def main():
                 continue
             try:
                 handle_loop_task(task, history)
+                _request_auto_save(history)
             except KeyboardInterrupt:
                 print(f"\n  {Y}loop interrupted by user{X}")
             continue
@@ -7438,8 +7454,7 @@ def main():
             if TTS_ENABLED:
                 threading.Thread(target=speak, args=(reply,), daemon=True).start()
             globals()['CHARS_SINCE_SAVE'] = CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
-            if CHARS_SINCE_SAVE >= AUTO_SAVE_THRESHOLD:
-                threading.Thread(target=_auto_save_background, args=(list(history),), daemon=True).start()
+            _request_auto_save(history)
             # ── Drift reminder: keyword-based. After ~3000 chars of activity,
             #    only fire if the recent user messages DO NOT touch the
             #    project keywords (thread label tokens + active task words).
