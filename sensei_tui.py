@@ -635,10 +635,6 @@ class SenseiApp:
         def _shortcut_refresh(event):
             _dispatch_command("refresh", "Ctrl+R refresh")
 
-        @kb.add("c-m")
-        def _shortcut_mouse(event):
-            _dispatch_command("mouse toggle", "Ctrl+M mouse toggle")
-
         @kb.add("c-b")
         def _shortcut_keyboard(event):
             _dispatch_command("mouse local", "Ctrl+B keyboard/copy")
