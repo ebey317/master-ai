@@ -36,44 +36,48 @@
 *{box-sizing:border-box;margin:0;padding:0}
 
 /* SETUP WIZARD */
-#setup{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;overflow-y:auto;padding:20px}
+#setup{position:fixed;inset:0;background:#EEF5FB;z-index:500;display:flex;align-items:flex-start;justify-content:center;overflow-y:auto;padding:28px 20px}
 #setup.hidden{display:none}
-.setup-box{max-width:520px;width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:32px}
-.setup-box h1{font-family:'DM Serif Display',serif;font-size:26px;color:var(--text);margin-bottom:4px}
+.setup-box{max-width:620px;width:100%;background:#F8FBFF;border:1px solid rgba(24,95,165,0.22);border-radius:14px;padding:30px;box-shadow:0 18px 45px rgba(4,44,83,0.10)}
+.setup-box h1{font-family:'DM Serif Display',serif;font-size:30px;line-height:1;color:var(--text);margin-bottom:6px}
 .setup-box h1 span{color:var(--accent)}
-.setup-sub{font-size:13px;color:var(--text-soft);margin-bottom:24px}
-.setup-card{border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;margin-bottom:12px;background:var(--bg);position:relative}
+.setup-sub{font-size:14px;color:var(--text-mid);margin-bottom:18px}
+.setup-card{border:1px solid rgba(24,95,165,0.18);border-radius:10px;padding:16px;margin-bottom:12px;background:#FFFFFF;position:relative;box-shadow:0 1px 2px rgba(4,44,83,0.04)}
 .setup-card.verified{border-color:#2a8a4a}
 .setup-card-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .setup-card-icon{font-size:22px}
-.setup-card-title{font-size:14px;font-weight:600;color:var(--text)}
+.setup-card-title{font-size:15px;font-weight:700;color:var(--text)}
 .setup-card-tag{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em}
 .tag-local{background:#EAF3DE;color:#3B6D11}
 .tag-cloud{background:#E6F1FB;color:#185FA5}
 .tag-required{background:#FCEBEB;color:#c03030}
-.setup-card-desc{font-size:12px;color:var(--text-soft);margin-bottom:10px}
+.setup-card-desc{font-size:13px;color:var(--text-mid);margin-bottom:10px;line-height:1.45}
 .setup-field{display:flex;gap:8px;align-items:center}
-.setup-field input{flex:1;padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif}
+.setup-field input,.setup-field select{flex:1;padding:9px 10px;border:1px solid var(--border-mid);border-radius:8px;background:#F8FBFF;color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;min-width:0}
 .setup-field input:focus{outline:none;border-color:var(--accent)}
-.setup-verify{padding:8px 14px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:transparent;color:var(--text-mid);cursor:pointer;font-size:12px;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.setup-verify{padding:9px 14px;border:1px solid var(--border-mid);border-radius:8px;background:#FFFFFF;color:var(--text-mid);cursor:pointer;font-size:12px;font-weight:600;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .setup-verify:hover{background:var(--bg3)}
 .setup-status{font-size:12px;margin-top:8px;min-height:18px}
 .setup-actions{display:flex;gap:10px;margin-top:20px}
-.setup-launch{flex:1;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif}
+.setup-launch{flex:1;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif}
 .setup-launch:disabled{opacity:0.35;cursor:not-allowed}
 .setup-launch:not(:disabled):hover{opacity:0.9}
-.setup-download{padding:12px 18px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:transparent;color:var(--text-mid);cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif}
+.setup-download{padding:12px 18px;border:1px solid var(--border-mid);border-radius:8px;background:#FFFFFF;color:var(--text-mid);cursor:pointer;font-size:13px;font-family:'DM Sans',sans-serif}
 .setup-download:hover{background:var(--bg3)}
-.setup-name{width:100%;padding:8px 10px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font-size:13px;font-family:'DM Sans',sans-serif;margin-bottom:16px}
+.setup-name{width:100%;padding:10px 12px;border:1px solid var(--border-mid);border-radius:8px;background:#FFFFFF;color:var(--text);font-size:14px;font-family:'DM Sans',sans-serif;margin-bottom:16px}
 .setup-name:focus{outline:none;border-color:var(--accent)}
 html,body{height:100%;font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text)}
 body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden}
 
-.header{display:flex;align-items:center;gap:12px;padding:calc(14px + var(--safe-top)) calc(18px + var(--safe-right)) 14px calc(18px + var(--safe-left));border-bottom:1px solid var(--border);background:var(--bg2);flex:0 0 auto}
-.logo{font-family:'DM Serif Display',serif;font-size:20px;color:var(--text)}
+.header{display:flex;align-items:center;gap:14px;padding:calc(14px + var(--safe-top)) calc(18px + var(--safe-right)) 14px calc(18px + var(--safe-left));border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--bg2),var(--bg));flex:0 0 auto;box-shadow:0 1px 0 rgba(255,255,255,0.55) inset}
+.brand-block{display:flex;align-items:center;gap:10px;min-width:170px}
+.brand-mark{width:36px;height:36px;display:grid;place-items:center;border:1px solid var(--border-mid);border-radius:10px;background:var(--bg3);box-shadow:0 1px 0 rgba(255,255,255,0.45) inset}
+.brand-copy{display:flex;flex-direction:column;gap:1px}
+.logo{font-family:'DM Serif Display',serif;font-size:22px;line-height:1;color:var(--text)}
 .logo span{color:var(--accent)}
+.machine-line{font-size:11px;color:var(--text-soft);line-height:1.2}
 .header-meta{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
-.model-badge{font-size:11px;padding:3px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:20px;color:var(--text-soft)}
+.model-badge{font-size:11px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;color:var(--text-soft)}
 .counter{font-size:11px;color:var(--text-soft)}
 .theme-btn{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:border 0.15s}
 .theme-btn:hover{border-color:var(--accent)}
@@ -87,7 +91,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 .theme-dot-black {background:#0A0A0A}
 .theme-dot-hacker{background:linear-gradient(45deg,#0a0e27 50%,#00ff00 50%)}
 
-.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg2);flex:0 0 auto}
+.tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg);flex:0 0 auto;padding:0 calc(10px + var(--safe-right)) 0 calc(10px + var(--safe-left));gap:4px}
 .tab{padding:11px 16px;font-size:13px;color:var(--text-soft);cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;min-height:44px;display:flex;align-items:center}
 .tab.active{color:var(--text);border-bottom-color:var(--accent)}
 .tab:hover{color:var(--text)}
@@ -96,18 +100,18 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 .pane.active{display:flex}
 
 /* CHAT PANE */
-.chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;border:1px solid var(--border-mid);border-radius:var(--radius);margin:8px;background:var(--bg)}
+.chat-area{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--border);background:var(--bg)}
 .template-panel{padding:18px 14px;background:var(--bg2);border-bottom:1px solid var(--border)}
 .template-panel.hidden{display:none}
-.template-panel-title{font-family:'DM Serif Display',serif;font-size:15px;color:var(--text-mid);margin-bottom:12px;text-align:center}
+.template-panel-title{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-soft);margin-bottom:12px;text-align:center}
 .template-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:720px;margin:0 auto}
 .template-grid.sub{margin-top:12px}
-.template-card{padding:14px 10px;background:var(--bg);border:1px solid var(--border-mid);border-radius:var(--radius-sm);cursor:pointer;text-align:center;transition:all 0.15s;font-family:'DM Sans',sans-serif}
+.template-card{padding:13px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;cursor:pointer;text-align:left;transition:all 0.15s;font-family:'DM Sans',sans-serif;box-shadow:0 1px 0 rgba(255,255,255,0.45) inset}
 .template-card:hover{border-color:var(--accent);background:var(--bg3);transform:translateY(-1px)}
-.template-card-icon{font-size:22px;margin-bottom:4px}
+.template-card-icon{font-size:20px;margin-bottom:6px}
 .template-card-title{font-weight:500;color:var(--text);margin-bottom:3px;font-size:13px}
 .template-card-desc{font-size:11px;color:var(--text-soft);line-height:1.3}
-.msg{max-width:82%;padding:11px 14px;border-radius:var(--radius);font-size:14px;line-height:1.65;position:relative}
+.msg{max-width:82%;padding:11px 14px;border-radius:12px;font-size:14px;line-height:1.65;position:relative;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
 .msg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
 .msg.ai{align-self:flex-start;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:4px}
 .msg.thinking{opacity:0.6;font-style:italic}
@@ -118,18 +122,26 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 .msg-btn:hover{background:var(--bg3);color:var(--text)}
 .timestamp{font-size:10px;color:var(--text-soft);margin-top:4px;display:block}
 
-.input-row{padding:12px calc(14px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(14px + var(--safe-left));border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end;flex:0 0 auto}
-.input-box{flex:1;min-height:44px;max-height:120px;border:1px solid var(--border-mid);border-radius:var(--radius-sm);padding:10px 12px;font-size:16px;background:var(--bg);color:var(--text);resize:none;font-family:'DM Sans',sans-serif;line-height:1.5}
+.upload-strip{display:none;gap:6px;flex-wrap:wrap;padding:8px calc(14px + var(--safe-right)) 0 calc(14px + var(--safe-left));background:var(--bg2);border-top:1px solid var(--border)}
+.upload-strip.visible{display:flex}
+.upload-chip{display:flex;align-items:center;gap:6px;max-width:260px;padding:5px 8px;border:1px solid var(--border-mid);border-radius:14px;background:var(--bg);color:var(--text-mid);font-size:11px;line-height:1.2}
+.upload-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upload-chip button{border:0;background:transparent;color:var(--text-soft);cursor:pointer;font-size:13px;line-height:1;padding:0}
+.upload-chip button:hover{color:var(--text)}
+.input-row{padding:12px calc(14px + var(--safe-right)) calc(12px + var(--safe-bottom)) calc(14px + var(--safe-left));border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end;flex:0 0 auto;box-shadow:0 -1px 0 rgba(255,255,255,0.55) inset}
+.input-box{flex:1;min-height:44px;max-height:120px;border:1px solid var(--border-mid);border-radius:8px;padding:10px 12px;font-size:16px;background:var(--bg);color:var(--text);resize:none;font-family:'DM Sans',sans-serif;line-height:1.5}
 .input-box:focus{outline:none;border-color:var(--accent)}
-.send-btn{min-height:44px;padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.send-btn{min-height:44px;padding:10px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .send-btn:hover{opacity:0.9}
-.mic-btn{min-width:44px;min-height:44px;padding:10px 12px;background:transparent;color:var(--accent);border:1px solid var(--border-mid);border-radius:var(--radius-sm);font-size:16px;cursor:pointer;white-space:nowrap}
+.attach-btn{min-width:44px;min-height:44px;padding:10px 12px;background:var(--bg);color:var(--accent);border:1px solid var(--border-mid);border-radius:8px;font-size:16px;cursor:pointer;white-space:nowrap}
+.attach-btn:hover{background:var(--bg3)}
+.mic-btn{min-width:44px;min-height:44px;padding:10px 12px;background:var(--bg);color:var(--accent);border:1px solid var(--border-mid);border-radius:8px;font-size:16px;cursor:pointer;white-space:nowrap}
 .mic-btn:hover{background:var(--bg3)}
 .mic-btn.listening{background:#E24B4A;color:#fff;border-color:#E24B4A;animation:pulse 1.2s infinite}
 @keyframes pulse{0%{opacity:1}50%{opacity:0.55}100%{opacity:1}}
-.stop-btn{display:none;min-height:44px;padding:10px 14px;background:transparent;color:#E24B4A;border:1px solid #E24B4A;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
+.stop-btn{display:none;min-height:44px;padding:10px 14px;background:var(--bg);color:#E24B4A;border:1px solid #E24B4A;border-radius:8px;font-size:13px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap}
 .stop-btn:hover{background:#FCEBEB}
-.provider-row{display:flex;gap:6px;padding:6px 14px;background:var(--bg);border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.provider-row{display:flex;gap:6px;padding:8px 14px;background:var(--bg);border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
 .prov-btn{font-size:11px;padding:7px 10px;min-height:34px;border:1px solid var(--border);border-radius:20px;cursor:pointer;background:transparent;color:var(--text-soft);transition:all 0.15s}
 .prov-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .auto-route{font-size:11px;color:var(--text-soft);margin-left:auto;display:flex;align-items:center;gap:4px}
@@ -177,7 +189,9 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
   .setup-field{flex-direction:column;align-items:stretch}
   .setup-actions{flex-direction:column}
   .header{gap:8px;align-items:flex-start;flex-wrap:wrap}
-  .logo{font-size:19px}
+  .brand-block{min-width:0}
+  .brand-mark{width:32px;height:32px}
+  .logo{font-size:20px}
   #machine-name{max-width:48vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .header-meta{width:100%;margin-left:0;gap:6px}
   .model-badge,#ram-bar,.counter{font-size:10px!important;min-height:30px}
@@ -187,7 +201,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
   .template-panel{padding:12px 10px}
   .template-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .template-card{padding:12px 8px;min-height:88px}
-  .chat-area{margin:0;border-left:0;border-right:0;border-radius:0;padding:10px;gap:10px}
+  .chat-area{padding:10px;gap:10px}
   .msg{max-width:94%;font-size:15px;line-height:1.55;padding:10px 12px}
   .msg-actions{opacity:1}
   .provider-row{padding:8px 10px;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
@@ -215,7 +229,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 <div id="setup">
   <div class="setup-box">
     <h1>🥷 <span>Pupil</span></h1>
-    <div class="setup-sub">Connect your AI providers — at least one local provider is required</div>
+    <div class="setup-sub">Set the machine name, confirm Ollama, then add optional cloud keys.</div>
     <input class="setup-name" id="setup-name" placeholder="Your machine name (e.g. Madam-Mary)" value=""/>
 
     <!-- WHERE TO GET FREE KEYS -->
@@ -225,7 +239,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <div class="setup-card-title">Don't have a key? Get a free one.</div>
         <span class="setup-card-tag tag-cloud">links</span>
       </div>
-      <div class="setup-card-desc">Click any link, sign up (free), copy your key, paste into the 🔑 Any Key card below.</div>
+      <div class="setup-card-desc">Use one key card for setup. Open a provider, copy the key, then paste it into Any Key.</div>
       <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
         <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>Groq</b> <span style="color:var(--text-soft)">· fastest free cloud</span></a>
         <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent);text-decoration:none">→ <b>OpenRouter</b> <span style="color:var(--text-soft)">· many models, one key</span></a>
@@ -242,10 +256,10 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <div class="setup-card-title">Any Key</div>
         <span class="setup-card-tag tag-cloud">optional · auto-detect</span>
       </div>
-      <div class="setup-card-desc">Paste <b>any</b> API key — Pupil figures out which provider it's for (Groq, OpenRouter, OpenAI, Anthropic, DeepSeek, Gemini, xAI, HuggingFace, Brave, Firecrawl, Serper, Gumroad) and files it. If auto-detect guesses wrong, use the dropdown to override.</div>
+      <div class="setup-card-desc">Paste a provider key here. Pupil detects the service and saves it. Use the menu only if detection needs help.</div>
       <div class="setup-field">
         <input id="setup-anykey" type="password" placeholder="paste any key here — gsk_... / sk-ant-... / fc-... / BSA... / etc." oninput="onAnyKeyInput()"/>
-        <select id="setup-anykey-service" title="override which service this key belongs to" style="padding:6px;border-radius:6px;border:1px solid var(--border-soft,#ccc);font-size:13px">
+        <select id="setup-anykey-service" title="override which service this key belongs to">
           <option value="">auto-detect</option>
           <option value="groq">Groq</option>
           <option value="openrouter">OpenRouter</option>
@@ -261,7 +275,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
           <option value="google">Google Cloud</option>
           <option value="gumroad">Gumroad</option>
         </select>
-        <button class="setup-verify" onclick="registerAnyKey()">detect</button>
+        <button class="setup-verify" onclick="registerAnyKey()">Detect</button>
       </div>
       <div class="setup-status" id="setup-anykey-status"></div>
     </div>
@@ -274,10 +288,10 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <span class="setup-card-tag tag-local">local</span>
         <span class="setup-card-tag tag-required">required</span>
       </div>
-      <div class="setup-card-desc"><b style="color:#c03030">REQUIRED — not optional.</b> This is the whole point of Master AI: your intelligence runs on hardware you own. Cloud keys are extras, the local server is the foundation. Run <code>ollama serve</code> first.</div>
+      <div class="setup-card-desc"><b style="color:#c03030">Required.</b> Master AI starts with local intelligence on your own hardware. Cloud keys are extras.</div>
       <div class="setup-field">
         <input id="setup-ollama-host" value="http://localhost:11434" placeholder="http://localhost:11434"/>
-        <button class="setup-verify" onclick="setupVerify('ollama')">scan</button>
+        <button class="setup-verify" onclick="setupVerify('ollama')">Scan</button>
       </div>
       <div class="setup-status" id="setup-ollama-status"></div>
     </div>
@@ -292,7 +306,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
       <div class="setup-card-desc">Ultra-fast cloud inference. <a href="https://console.groq.com/keys" target="_blank" style="color:var(--accent)">Get free key →</a></div>
       <div class="setup-field">
         <input id="setup-groq-key" type="password" placeholder="gsk_..."/>
-        <button class="setup-verify" onclick="setupVerify('groq')">verify</button>
+        <button class="setup-verify" onclick="setupVerify('groq')">Verify</button>
       </div>
       <div class="setup-status" id="setup-groq-status"></div>
     </div>
@@ -307,7 +321,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
       <div class="setup-card-desc">Access many models through one key. <a href="https://openrouter.ai/keys" target="_blank" style="color:var(--accent)">Get free key →</a></div>
       <div class="setup-field">
         <input id="setup-or-key" type="password" placeholder="sk-or-v1-..."/>
-        <button class="setup-verify" onclick="setupVerify('openrouter')">verify</button>
+        <button class="setup-verify" onclick="setupVerify('openrouter')">Verify</button>
       </div>
       <div class="setup-status" id="setup-or-status"></div>
     </div>
@@ -322,13 +336,18 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 <!-- MAIN APP -->
 <div id="main-app" style="display:none;flex-direction:column;height:var(--app-height);overflow:hidden">
 <div class="header">
-  <div class="logo">🥷 <span>Pupil</span></div>
-  <div style="font-size:11px;color:var(--text-soft);margin-left:4px" id="machine-name"></div>
+  <div class="brand-block">
+    <div class="brand-mark">🥷</div>
+    <div class="brand-copy">
+      <div class="logo"><span>Pupil</span></div>
+      <div class="machine-line" id="machine-name"></div>
+    </div>
+  </div>
   <div class="header-meta">
-    <select class="model-badge" id="model-sel" style="cursor:pointer;outline:none;border:1px solid var(--border);background:var(--bg3);color:var(--text-soft);font-size:11px;padding:3px 8px;border-radius:20px;font-family:'DM Sans',sans-serif;" onchange="switchModel(this.value)"></select>
+    <select class="model-badge" id="model-sel" onchange="switchModel(this.value)"></select>
     <span class="counter" id="req-counter"></span>
     <span id="ram-bar" title="System RAM — green OK · yellow close · red swapping" style="font-size:11px;color:var(--text-soft);padding:3px 8px;border:1px solid var(--border);border-radius:20px;background:var(--bg3);min-width:82px;text-align:center;cursor:help"></span>
-    <button class="install-btn" id="install-btn" type="button" onclick="installPupil()">install</button>
+    <button class="install-btn" id="install-btn" type="button" onclick="installPupil()">Install</button>
     <button class="theme-btn theme-dot-white"  onclick="setTheme('white')"  title="White belt"></button>
     <button class="theme-btn theme-dot-yellow" onclick="setTheme('yellow')" title="Yellow belt"></button>
     <button class="theme-btn theme-dot-blue"   onclick="setTheme('blue')"   title="Blue belt — Sensei match"></button>
@@ -454,11 +473,15 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
       <button class="auto-toggle" id="auto-toggle" onclick="toggleAuto()"></button>
     </div>
   </div>
+  <div class="upload-strip" id="upload-strip"></div>
   <div class="input-row">
+    <input id="file-input" type="file" multiple style="display:none" onchange="queueFiles(this.files); this.value=''"/>
+    <button class="attach-btn" title="Attach small file reference" onclick="pickFiles()">📎</button>
+    <button class="attach-btn" title="Attach link" onclick="attachLink()">🔗</button>
     <textarea class="input-box" id="user-input" placeholder="ask anything — x to pause, (name) to save session" rows="1" onkeydown="inputKey(event)"></textarea>
     <button class="mic-btn" id="mic-btn" title="Speak to type (Web Speech API)" onclick="toggleMic()">🎙</button>
-    <button class="stop-btn" id="stop-btn" onclick="stopStream()">■ stop</button>
-    <button class="send-btn" id="send-btn" onclick="sendMsg()">send</button>
+    <button class="stop-btn" id="stop-btn" onclick="stopStream()">■ Stop</button>
+    <button class="send-btn" id="send-btn" onclick="sendMsg()">Send</button>
   </div>
 </div>
 
@@ -640,6 +663,7 @@ let currentProvider = 'ollama';
 let autoRoute = false;
 let reqCount = { groq: 0, openrouter: 0 };
 const FREE_LIMITS = { groq: 14400, openrouter: 200 };
+let pendingUploads = [];
 // ── PROFILE NAMESPACE ──
 // Pupil fetches /profile from stt_server on load. If there's an active
 // profile (e.g. "alice"), all localStorage keys get prefixed with
@@ -1293,6 +1317,88 @@ function addMsg(role, text, id) {
   return div;
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
+function extractUrls(text) {
+  const found = [];
+  const seen = new Set();
+  String(text || '').replace(/https?:\/\/[^\s<>"'`]+/g, raw => {
+    const url = raw.replace(/[.,;!?)\]]+$/, '');
+    if (!seen.has(url)) { seen.add(url); found.push(url); }
+    return raw;
+  });
+  return found;
+}
+
+function pickFiles() {
+  document.getElementById('file-input')?.click();
+}
+
+function attachLink() {
+  const raw = prompt('Paste one or more links');
+  if (!raw) return;
+  const urls = extractUrls(raw);
+  if (!urls.length) {
+    alert('No http:// or https:// link found.');
+    return;
+  }
+  urls.forEach(url => pendingUploads.push({
+    id: window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now() + Math.random()),
+    kind: 'link',
+    url,
+  }));
+  renderUploadStrip();
+}
+
+function queueFiles(files) {
+  Array.from(files || []).slice(0, 12).forEach(file => {
+    pendingUploads.push({
+      id: window.crypto?.randomUUID ? window.crypto.randomUUID() : String(Date.now() + Math.random()),
+      kind: 'file',
+      name: file.name,
+      type: file.type || 'unknown',
+      size: file.size || 0,
+    });
+  });
+  renderUploadStrip();
+}
+
+function removeUpload(id) {
+  pendingUploads = pendingUploads.filter(u => u.id !== id);
+  renderUploadStrip();
+}
+
+function renderUploadStrip() {
+  const strip = document.getElementById('upload-strip');
+  if (!strip) return;
+  strip.classList.toggle('visible', pendingUploads.length > 0);
+  strip.innerHTML = pendingUploads.map(u => {
+    const label = u.kind === 'link' ? u.url : `${u.name} (${formatBytes(u.size)})`;
+    return `<div class="upload-chip" title="${escHtml(label)}"><span>${u.kind === 'link' ? '🔗' : '📎'} ${escHtml(label)}</span><button onclick="removeUpload('${u.id}')" title="Remove">×</button></div>`;
+  }).join('');
+}
+
+function compactUploadLines(text) {
+  const uploads = [...pendingUploads];
+  const attachedUrls = new Set(uploads.filter(u => u.kind === 'link').map(u => u.url));
+  extractUrls(text).forEach(url => {
+    if (!attachedUrls.has(url)) uploads.push({ kind: 'link', url });
+  });
+  if (!uploads.length) return '';
+  const lines = uploads.map(u => {
+    if (u.kind === 'link') return `- Link: ${u.url}`;
+    return `- Attachment: ${u.name} (${u.type || 'unknown'}, ${formatBytes(u.size)})`;
+  });
+  return `\n\nUploads (compact references only; do not assume file contents were extracted):\n${lines.join('\n')}`;
+}
+
 function escHtml(t) {
   return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
 }
@@ -1319,11 +1425,11 @@ function linkify(t) {
 const TEMPLATES = {
   brainstorm: {
     prompt: "You are Pupil in BRAINSTORM mode. Help the user narrow a vague idea before anything gets built. Ask 2-3 clarifying questions covering: (1) who the end user is, (2) what 'finished' looks like, (3) the smallest first version. DO NOT write code, scripts, or detailed solutions. Wait for the user to say a build trigger ('build it', 'code it', 'make it', 'ship it', 'ok go') before transitioning to solutions. Keep each reply tight.",
-    greet: "🧠 Brainstorm mode. What are we scoping? (Tell me the rough idea — I'll ask the right questions to narrow it.)"
+    greet: "🧠 Brainstorm mode. What are we scoping?"
   },
   debug: {
     prompt: "You are Pupil in DEBUG mode. Before suggesting any fix, ask diagnostic questions: (1) exact symptom or error message, (2) last known working state, (3) what the user already tried, (4) relevant environment (OS, versions, commands run). Only propose a fix after you understand the problem. Never guess blindly.",
-    greet: "🔧 Debug mode. What's broken? Paste the error or describe the symptom."
+    greet: "🔧 Debug mode. What's broken?"
   },
   chat: {
     prompt: "",  // uses the default Pupil system prompt
@@ -1335,27 +1441,28 @@ const TEMPLATES = {
   },
   plan_budget: {
     prompt: "You are Pupil in BUDGET PLANNING mode. Ask about: monthly income, fixed expenses, variable expenses, savings goals, timeframe. Build a realistic month-by-month budget. Call out tradeoffs honestly.",
-    greet: "💰 Budget planning. What's your monthly income and what are you saving toward?"
+    greet: "💰 Budget planning. What's your monthly income?"
   },
   plan_diet: {
     prompt: "You are Pupil in DIET PLANNING mode. Ask about: goal (lose / build / maintain), current weight & target, dietary restrictions, activity level, cooking time available, food preferences. Build a weekly meal plan that fits their real life.",
-    greet: "🥗 Diet planning. What's your goal, and are there foods you can't or won't eat?"
+    greet: "🥗 Diet planning. What's your goal?"
   },
   plan_project: {
     prompt: "You are Pupil in PROJECT PLANNING mode. Ask about: scope, deadline, resources available, success criteria, known risks. Deliver a step-by-step plan with milestones and check-in points.",
-    greet: "🚀 Project planning. What's the project, and when does it need to be done?"
+    greet: "🚀 Project planning. What's the project?"
   },
   plan_travel: {
     prompt: "You are Pupil in TRAVEL PLANNING mode. Ask about: destination, dates, budget, party size, preferences (adventure / relax / culture / food), constraints. Build a day-by-day itinerary.",
-    greet: "✈️ Travel planning. Where to, when, and how long?"
+    greet: "✈️ Travel planning. Where are you going?"
   },
   plan_custom: {
     prompt: "You are Pupil in CUSTOM PLANNING mode. Ask the user what kind of plan they need, then ask the right questions to build it, then deliver a structured plan.",
-    greet: "✨ Custom plan. What are we planning — and what kind of plan is it (financial / life / learning / something else)?"
+    greet: "✨ Custom plan. What are we planning?"
   }
 };
 
 let activeTemplate = null;  // current session's template key
+const ONE_QUESTION_RULE = "3Q intake rule: ask only ONE question per assistant message. Do not put question 2 in chat until the user has answered question 1. Continue one question at a time until the needed intake is complete.";
 
 function selectTemplate(key) {
   const t = TEMPLATES[key];
@@ -1367,7 +1474,7 @@ function selectTemplate(key) {
   // Override system prompt for THIS session (doesn't persist to settings).
   // We keep the user's saved sys-prompt in the textarea untouched; override
   // via a per-session var that streamResponse reads.
-  window._sessionPrompt = t.prompt || '';
+  window._sessionPrompt = [ONE_QUESTION_RULE, t.prompt || ''].filter(Boolean).join('\n\n');
   // Seed the chat with the mode's greeting.
   addMsg('ai', t.greet);
   // Focus the input so user can start typing right away.
@@ -2607,21 +2714,29 @@ async function runResearch(query) {
 async function sendMsg() {
   const input = document.getElementById('user-input');
   const text = input.value.trim();
-  if (!text || isStreaming) return;
+  if ((!text && pendingUploads.length === 0) || isStreaming) return;
 
   // session save shortcut
   const saveMatch = text.match(/^\((.+)\)$/);
-  if (saveMatch) { saveSession(saveMatch[1]); input.value = ''; return; }
-  if (text === 'x') { stopStream(); input.value = ''; return; }
+  if (saveMatch && pendingUploads.length === 0) { saveSession(saveMatch[1]); input.value = ''; return; }
+  if (text === 'x' && pendingUploads.length === 0) { stopStream(); input.value = ''; return; }
 
   input.value = '';
+  const uploadLines = compactUploadLines(text);
+  const userText = text || 'Uploaded references.';
+  const contentText = userText + uploadLines;
+  const displayText = uploadLines
+    ? userText + uploadLines.replace('Uploads (compact references only; do not assume file contents were extracted):', 'Uploads:')
+    : userText;
+  pendingUploads = [];
+  renderUploadStrip();
   // First message of a fresh session — hide the template picker.
   hideTemplatePanel();
-  addMsg('user', text);
-  history.push({ role: 'user', content: text });
+  addMsg('user', displayText);
+  history.push({ role: 'user', content: contentText });
 
   // Lesson mode intercepts — answer the quiz locally; don't hit the model.
-  if (_lessonState) { handleLessonInput(text); return; }
+  if (_lessonState) { handleLessonInput(userText); return; }
 
   // Time-sensitive intercept — when the user asks about recent/current
   // events, the local brain (and even cloud models) will confidently
@@ -2634,16 +2749,16 @@ async function sendMsg() {
   // Research intercept — search + synthesize. Fires on the `research:`
   // prefix OR when the 🔬 Research button is active. Beats Web/time-
   // sensitive because research subsumes both (search + direct answer).
-  const researchMatch = text.match(/^\s*research:?\s+(.+)$/i);
+  const researchMatch = userText.match(/^\s*research:?\s+(.+)$/i);
   if (researchMatch || currentProvider === 'research') {
-    const q = researchMatch ? researchMatch[1] : text;
+    const q = researchMatch ? researchMatch[1] : userText;
     await runResearch(q);
     return;
   }
 
-  const explicitPrefix = text.match(/^\s*(fast|deep|local|private|search)[:\s]/i);
-  if (!explicitPrefix && (currentProvider === 'web' || looksTimeSensitive(text))) {
-    await runWebSearch(text);
+  const explicitPrefix = userText.match(/^\s*(fast|deep|local|private|search)[:\s]/i);
+  if (!explicitPrefix && (currentProvider === 'web' || looksTimeSensitive(userText))) {
+    await runWebSearch(userText);
     return;
   }
 
@@ -2651,7 +2766,7 @@ async function sendMsg() {
   // fetches the full page markdown via Firecrawl through /fetch_url.
   // Different from search: gets ONE page's full content, not a list of
   // snippets. Needs a Firecrawl key paired in settings/keys.
-  const readMatch = text.match(/^\s*read:?\s+(https?:\/\/\S+)\s*$/i);
+  const readMatch = userText.match(/^\s*read:?\s+(https?:\/\/\S+)\s*$/i);
   if (readMatch) {
     await runFetchUrl(readMatch[1]);
     return;
@@ -2661,7 +2776,7 @@ async function sendMsg() {
   // 'menu'/'back') stay local. Everything else falls through to the AI
   // so the user can chat about the project.
   if (activeTemplate === 'projects') {
-    const low = text.toLowerCase().trim();
+    const low = userText.toLowerCase().trim();
     if (low === 'menu' || low === 'back' || low === 'home' || low === 'exit') {
       activeTemplate = null;
       const panel = document.getElementById('template-panel');
@@ -2684,7 +2799,7 @@ async function sendMsg() {
   let prov = currentProvider;
   if (autoRoute && typeof ROUTER !== 'undefined') {
     const available = getAvailableProviders();
-    const route = ROUTER.detect(text, false, available);
+    const route = ROUTER.detect(contentText, false, available);
     if (route.provider !== prov) {
       prov = route.provider;
       const rm = document.createElement('div');
@@ -2694,7 +2809,7 @@ async function sendMsg() {
     }
   }
 
-  await streamResponse(text, prov);
+  await streamResponse(contentText, prov);
 }
 
 function getAvailableProviders() {
@@ -2729,7 +2844,7 @@ async function streamResponse(userText, prov) {
     const tPrompt = window._sessionPrompt || '';
     const sysPrompt = tPrompt
       ? tPrompt + '\n\n---\n\n' + baseSysPrompt
-      : baseSysPrompt;
+      : ONE_QUESTION_RULE + '\n\n---\n\n' + baseSysPrompt;
     // Drop ephemeral turns (web-search blobs, fetched-page dumps) before
     // handing context to the model — they stay visible on screen and in
     // saved sessions, but they don't count as chat history. Otherwise a

@@ -468,6 +468,24 @@ launch_pupil() {
         systemctl start ollama 2>/dev/null || true
         sleep 2
     fi
+    # Local-first gate: Pupil requires Ollama reachable + ≥1 local model.
+    # Without local, the value prop falls apart — a cloud-only user is
+    # better served by ChatGPT or Gemini directly. Refuse here.
+    if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1 \
+       || ! ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q .; then
+        echo ""
+        echo -e "${R}  ❌ Pupil requires local Ollama + at least one model.${X}"
+        echo -e "${Y}     Either Ollama isn't running, or no models are pulled.${X}"
+        echo ""
+        echo -e "  Pupil is for local-first runs. Without local, ChatGPT or"
+        echo -e "  Gemini will serve you better."
+        echo ""
+        echo -e "  ${BW}Set up local AI:${X}"
+        echo -e "    ${BG}·${X} ${BW}ollama pull qwen2.5:7b${X}  (the daily-driver brain)"
+        echo -e "    ${BG}·${X} Or run option 19 (self-scan) for what your box can handle"
+        echo ""
+        return 1
+    fi
     if ! pgrep -f "tts_server.py" > /dev/null; then
         echo -e "${C}  Starting TTS server (for Pupil voice)...${X}"
         python3 "$HOME/scripts/tts_server.py" > /tmp/tts_server.log 2>&1 &
@@ -619,26 +637,26 @@ main_menu() {
     }
     section() { echo -e "\n  ${BC}── $1 ──${X}"; }
 
-    section "LAUNCH  (local apps shown by port)"
-    row  "1" "Full startup (all services)"    "4" "Sensei (local)"
-    row  "5" "Pupil (local)"                  "6" "Remote (connect to another node)"
+    section "START"
+    row  "1" "Start everything"               "4" "Open Sensei terminal"
+    row  "5" "Open Pupil browser"             "6" "Connect remote node"
 
-    section "CHECKS"
-    row  "2" "Check Ollama"                   "3" "Check RustDesk"
+    section "HEALTH"
+    row  "2" "Ollama health check"            "3" "RustDesk health check"
 
-    section "RECOVER"
-    row  "7" "Restart Sensei (force rebuild)" ""   ""
+    section "RECOVERY"
+    row  "7" "Restart Sensei cleanly"         ""   ""
 
     section "WORK"
-    row  "8" "View chat sessions"             "9" "Log a new idea / POC"
+    row  "8" "Review chat sessions"           "9" "Capture idea or POC"
 
-    section "SYSTEM"
-    row "10" "How we work"                   "11" "Update API keys"
-    row "12" "PC Clean + tune-up"            "13" "Learn Python + Build AI"
-    row "14" "Uninstall"                     "15" "Add User (multi-user profile)"
-    row "16" "Projects (view · pick one for Sensei)"  "17" "Switch User (multi-user profile)"
-    row "18" "Mesh (peer nodes + federated routing)"  "19" "Self-scan (what your box can run)"
-    row "20" "Download links (Ollama, models, keys, remote)"  "21" "Benchmark Sensei (local vs cloud, hours)"
+    section "SETUP"
+    row "10" "Working agreement"             "11" "API keys"
+    row "12" "Clean and tune this PC"        "13" "Learn Python and AI"
+    row "14" "Uninstall Master AI"           "15" "Add user profile"
+    row "16" "Projects and pinned tasks"     "17" "Switch user profile"
+    row "18" "Mesh and peer routing"         "19" "Self-scan this machine"
+    row "20" "Download links"                "21" "Benchmark local vs cloud"
 
     echo ""
     echo -e "  ${Y}x)${W} Exit${X}"
@@ -705,4 +723,145 @@ main_menu() {
     main_menu
 }
 
+# ── First-launch walkthrough — runs ONCE after install ────────
+# Sentinel: ~/.master_ai_first_run_done (touched at end).
+# install.sh hands off to master.sh; on the very first run this fires
+# the API-key + local-AI walkthrough. Every subsequent `master` skips it.
+first_launch_walkthrough() {
+    local sentinel="$HOME/.master_ai_first_run_done"
+    [ -f "$sentinel" ] && return 0
+
+    clear
+    echo ""
+    echo -e "  ${BC}╔══════════════════════════════════════════════════════╗${X}"
+    echo -e "  ${BC}║${X}  ${BW}🥷  WELCOME TO MASTER AI${X}                          ${BC}║${X}"
+    echo -e "  ${BC}╚══════════════════════════════════════════════════════╝${X}"
+    echo ""
+    echo -e "  ${BW}Master AI is a local-first AI workspace.${X}"
+    echo -e "  It runs on your machine. No hosted login, no account."
+    echo ""
+    echo -e "  Add free cloud API keys for faster answers and stronger"
+    echo -e "  reasoning, or skip and run fully local."
+    echo ""
+    read -rp "  [press Enter to continue] " _
+
+    clear
+    echo ""
+    echo -e "  ${BC}━━━ API keys (recommended, not required) ━━━${X}"
+    echo ""
+    echo -e "  ${BW}Best starter key — OpenRouter${X}"
+    echo -e "    one signup, multiple free cloud models"
+    echo -e "    ${C}https://openrouter.ai/keys${X}"
+    echo ""
+    echo -e "  ${D}Any key works — we auto-detect the provider${X}"
+    echo -e "  ${D}(Groq, Gemini, OpenRouter, OpenAI, HuggingFace, …)${X}"
+    echo ""
+    read -rp "  Paste a key now (or Enter to skip): " key
+    while [ -n "$key" ]; do
+        python3 - "$key" <<'PY'
+import json, os, sys
+key = sys.argv[1]
+field = None
+if   key.startswith("sk-or-v1-"): field = "openrouter"
+elif key.startswith("gsk_"):      field = "groq"
+elif key.startswith("AIzaSy"):    field = "gemini"
+elif key.startswith("sk-proj-"):  field = "openai"
+elif key.startswith("sk-ant-"):   field = "anthropic"
+elif key.startswith("sk-"):       field = "deepseek"
+elif key.startswith("hf_"):       field = "huggingface"
+elif key.startswith("xai-"):      field = "xai"
+if not field:
+    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
+path = os.path.expanduser("~/.master_ai_keys")
+try: d = json.load(open(path))
+except Exception: d = {}
+if field in d and d[field] and d[field] != key:
+    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
+else:
+    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
+with open(path, "w") as f: json.dump(d, f, indent=2)
+os.chmod(path, 0o600)
+PY
+        echo ""
+        read -rp "  Paste another, or Enter to finish: " key
+    done
+
+    echo ""
+    echo -e "  ${BC}━━━ Local AI setup ━━━${X}"
+    echo ""
+    echo -e "  ${BW}Pupil${X} (the browser UI) is for local-first runs."
+    echo -e "  Without local, ChatGPT or Gemini will serve you better."
+    echo ""
+    echo -e "  Type ${BG}go${X} and we'll pull the local AI models, start"
+    echo -e "  the services, and walk you through Tailscale."
+    echo ""
+    read -rp "  Type 'go' to set up local now (or Enter for menu): " choice
+    case "$choice" in
+        go|GO|Go) walkthrough_go_setup ;;
+    esac
+
+    touch "$sentinel"
+    echo ""
+    echo -e "  ${BG}✓ Walkthrough done.${X} Add keys later from menu 11."
+    echo -e "  Type ${BW}master${X} for this menu, ${BW}sensei${X} for the terminal agent."
+    echo ""
+    read -rp "  [press Enter to continue to menu] " _
+}
+
+# Run by `go` inside the walkthrough — no sudo from here, ever.
+walkthrough_go_setup() {
+    echo ""
+    echo -e "  ${BC}━━━ go: setting up local AI ━━━${X}"
+    echo ""
+
+    if ! curl -s --max-time 3 "$OLLAMA_URL" >/dev/null 2>&1; then
+        echo -e "  ${Y}⚠ Ollama daemon not responding — starting it...${X}"
+        systemctl start ollama 2>/dev/null || (nohup ollama serve >/tmp/ollama.log 2>&1 &)
+        sleep 2
+    fi
+    if curl -s --max-time 3 "$OLLAMA_URL" >/dev/null 2>&1; then
+        echo -e "  ${G}✓ Ollama running${X}"
+    else
+        echo -e "  ${R}❌ Ollama not reachable — check 'systemctl status ollama'${X}"
+        return 1
+    fi
+
+    if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q '^qwen2.5:7b$'; then
+        echo -e "  ${G}✓ qwen2.5:7b already pulled${X}"
+    else
+        echo -e "  ${C}  pulling qwen2.5:7b (the daily-driver brain, ~4.7 GB)...${X}"
+        ollama pull qwen2.5:7b
+    fi
+
+    if pgrep -f stt_server.py >/dev/null 2>&1; then
+        echo -e "  ${G}✓ stt_server already running${X}"
+    elif [ -f "$HOME/scripts/serve_ui.sh" ]; then
+        bash "$HOME/scripts/serve_ui.sh" > /tmp/ui_server.log 2>&1 &
+        sleep 1
+        echo -e "  ${G}✓ stt_server started${X}"
+    else
+        echo -e "  ${Y}⚠ serve_ui.sh missing — Pupil may not be reachable on :8080${X}"
+    fi
+
+    if command -v tailscale >/dev/null 2>&1; then
+        local tsip
+        tsip=$(tailscale ip -4 2>/dev/null | head -1)
+        if [ -n "$tsip" ]; then
+            echo -e "  ${G}✓ Tailscale active — IP: $tsip${X}"
+        else
+            echo -e "  ${Y}⚠ Tailscale installed but not logged in. Run in another terminal:${X}"
+            echo -e "    ${BW}sudo tailscale up${X}"
+        fi
+    else
+        echo -e "  ${Y}⚠ Tailscale not installed. To enable Pupil from any network,${X}"
+        echo -e "  ${Y}  run this in another terminal (it needs sudo):${X}"
+        echo -e "    ${BW}curl -fsSL https://tailscale.com/install.sh | sh${X}"
+        echo -e "  ${D}  Then: sudo tailscale up${X}"
+    fi
+
+    echo ""
+    echo -e "  ${G}✓ go: done.${X}"
+}
+
+first_launch_walkthrough
 main_menu
