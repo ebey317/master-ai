@@ -4165,6 +4165,9 @@ def set_mouse_profile(profile):
             terminal drag-select reaches X11 CLIPBOARD cleanly.
     """
     profile = (profile or "").strip().lower()
+    if profile == "toggle":
+        current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+        profile = "local" if current != "0" else "remote"
     if profile not in {"remote", "local"}:
         profile = "status"
     current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))

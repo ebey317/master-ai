@@ -552,6 +552,11 @@ class SenseiApp:
         kb = KeyBindings()
 
         def _dispatch_command(text: str, echo: str = "") -> None:
+            now = time.monotonic()
+            last_text, last_ts = getattr(self, "_last_shortcut_dispatch", ("", 0.0))
+            if text == last_text and (now - last_ts) < 0.75:
+                return
+            self._last_shortcut_dispatch = (text, now)
             if echo:
                 self.write(f"\n\033[2m[{echo}]\033[0m\n")
             if self._on_submit:
@@ -632,7 +637,7 @@ class SenseiApp:
 
         @kb.add("c-m")
         def _shortcut_mouse(event):
-            _dispatch_command("mouse status", "Ctrl+M mouse")
+            _dispatch_command("mouse toggle", "Ctrl+M mouse toggle")
 
         @kb.add("c-b")
         def _shortcut_keyboard(event):
