@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys, os, json, tempfile, re, gzip, urllib.request
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
 _CLIENT_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
@@ -786,4 +786,4 @@ if __name__ == '__main__':
     _prof = _active_profile()
     _prof_tag = f"  |  Profile: {_prof}" if _prof else ""
     print(f"🚀 Master AI server on :{port}  |  STT: Whisper  |  Sessions: {_chats_dir()}{_prof_tag}")
-    HTTPServer(('0.0.0.0', port), Handler).serve_forever()
+    ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
