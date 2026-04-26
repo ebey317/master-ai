@@ -51,6 +51,14 @@ time_ms() {
     return $rc
 }
 
+ollama_unload_model() {
+    local model="$1"
+    curl -sf -m 10 http://localhost:11434/api/generate \
+        -H 'Content-Type: application/json' \
+        -d "{\"model\":\"$model\",\"keep_alive\":0}" \
+        >/dev/null 2>&1 || true
+}
+
 banner() {
     echo ""
     echo -e "${BC:-}╔════════════════════════════════════════════════════╗${X:-}"
@@ -501,6 +509,16 @@ if [ -s "$SANDBOX/logs/ollama_tags.json" ]; then
     [ "$have_3b"    = "1" ] && record_pass "trifecta: qwen2.5:3b present" || record_warn "qwen2.5:3b not pulled (spark missing)"
     [ "$have_7b"    = "1" ] && record_pass "trifecta: qwen2.5:7b present" || record_warn "qwen2.5:7b not pulled (brain missing)"
     [ "$have_llava" = "1" ] && record_pass "trifecta: llava present"      || record_warn "llava not pulled (eyes missing)"
+fi
+
+# The machine keeps OLLAMA_MAX_LOADED_MODELS=1 to protect RAM. A stale
+# long-running model can block this gate even when the target models are
+# healthy, so reset the model slot before timing inference.
+if [ "$have_3b" = "1" ] || [ "$have_llava" = "1" ]; then
+    ollama_unload_model "master-ai:latest"
+    ollama_unload_model "qwen2.5:3b"
+    ollama_unload_model "llava:latest"
+    record_info "ollama model slot reset before inference checks"
 fi
 
 # Inference round-trip — ask 3b a tiny deterministic question.

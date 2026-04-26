@@ -223,12 +223,12 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                             'model': 'qwen2.5:3b',
                             'prompt': prompt,
                             'stream': False,
-                            'keep_alive': '30m',
-                            'options': {'num_predict': 220, 'temperature': 0.3},
+                            'keep_alive': 0,
+                            'options': {'num_predict': 140, 'temperature': 0.3},
                         }).encode(),
                         headers={'Content-Type': 'application/json'},
                     )
-                    with urllib.request.urlopen(req, timeout=240) as resp:
+                    with urllib.request.urlopen(req, timeout=45) as resp:
                         data = json.loads(resp.read().decode())
                         summary_text = data.get('response', '').strip()
                 except Exception as _e:
