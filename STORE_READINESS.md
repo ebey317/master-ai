@@ -29,12 +29,12 @@ This file defines the minimum bar before a buyer bundle is uploaded or sold.
 
 ## Runtime Safety Gates
 
-- [ ] Auto mode stops after the first failed `RUN:`.
-- [ ] Pipelines fail correctly through `bash -o pipefail`.
-- [ ] Interactive commands such as `less`, `vim`, `top`, and `htop` are blocked from `RUN:` and must use `RUNTERM:`.
-- [ ] Missing top-level commands are blocked in Auto mode.
-- [ ] `sudo` and passwords are print-only handoffs.
-- [ ] Generated mail/spam automation scripts are not present in the bundle.
+- [x] Auto mode stops after the first failed `RUN:`. Verified on disk 2026-04-27.
+- [x] Pipelines fail correctly through `bash -o pipefail`. Verified on disk 2026-04-27.
+- [x] Interactive commands such as `less`, `vim`, `top`, and `htop` are blocked from `RUN:` and must use `RUNTERM:`. Verified on disk 2026-04-27.
+- [x] Missing top-level commands are blocked in Auto mode. Verified on disk 2026-04-27.
+- [x] `sudo` and passwords are print-only handoffs. Verified on disk 2026-04-27.
+- [x] Generated mail/spam automation scripts are not present in the bundle. Verified on disk 2026-04-27.
 
 ## Not Ready If
 
@@ -42,4 +42,3 @@ This file defines the minimum bar before a buyer bundle is uploaded or sold.
 - Any test only passes inside Elijah's current machine state.
 - A demo requires private keys, personal memory, or local-only paths.
 - The model can continue a command chain after a failed setup command.
-

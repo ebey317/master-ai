@@ -14,6 +14,11 @@ voices/
 # Package output
 master-ai-v*.tar.gz
 
+# Image engine build/model/output churn
+image_engine/models/
+image_engine/stable-diffusion.cpp/
+image_engine/out/
+
 # Secrets (these actually live in $HOME, but defensive)
 .master_ai_keys
 *.key

@@ -24,7 +24,7 @@
   - [ ] chunker / `chunked:` Sensei command — **ARCHIVED 2026-04-19** (home problem: UX wasn't settled, kept being surfaced at wrong level; scripts stay on disk for un-archive later)
   - [ ] build $100 A+ version: agentic local coding (Claude Code parity), real curriculum (10+ classes per track), installer, multi-user, remote mesh
   - [ ] lock the "pack it up for sale" ritual (version tag + commit + memory update)
-  - [ ] fix stdin race in confirm prompts — Q2 typed while Q1's RUN/CREATE/EDIT/RUNTERM confirm is open gets swallowed as the 1/2/3/4 keystroke instead of queuing. Patch: two-channel stdin in master_ai.py (`_CONFIRM_IQ` + `_AWAITING_CONFIRM` flag; wrap the four confirm_ funcs; route in `_on_submit` + `_tui_input`). ~20 lines, no sensei_tui.py changes. **Do NOT re-enable the v1.7.11-reverted worker queue** — fix is stdin routing only. Confirmed by Elijah 2026-04-21 remote. Defer until S05 has several more clean workdays.
+  - [x] fix stdin race in confirm prompts — Q2 typed while Q1's RUN/CREATE/EDIT/RUNTERM confirm is open gets swallowed as the 1/2/3/4 keystroke instead of queuing. Patch: two-channel stdin in master_ai.py (`_CONFIRM_IQ` + `_AWAITING_CONFIRM` flag; wrap the four confirm_ funcs; route in `_on_submit` + `_tui_input`). ~20 lines, no sensei_tui.py changes. **Do NOT re-enable the v1.7.11-reverted worker queue** — fix is stdin routing only. Confirmed by Elijah 2026-04-21 remote. Verified on disk 2026-04-27.
   - [x] investigate routing falling off master-ai — FIXED 2026-04-21 afternoon. Root cause: orchestrate() line 992-994 routed all prompts ≤20 words to qwen2.5:3b (the spark). Short ≠ simple — "fix the bug" is 3 words but needs senior-engineer reasoning. Branch deleted; short prompts now fall through to master-ai default. 3B reserved for idle tips + vision preprocessing only. Lives behind `refresh`.
   - [x] tmux mouse-mode toggle — DONE 2026-04-25: Sensei now has `mouse remote`, `mouse local`, and `mouse status`. `mouse remote` saves `SENSEI_MOUSE=1` and flips tmux mouse on for phone/RustDesk scrolling + taps. `mouse local` saves `SENSEI_MOUSE=0` and flips tmux mouse off so terminal drag-select copy works cleanly at Madam-Mary. `launch_master_ai.sh` now reads `~/.master_ai_settings` instead of forcing `SENSEI_MOUSE=1` every launch. Use `refresh` after switching so the TUI relaunches with the saved app-level mouse setting.
   - [x] one-command health/productivity check — DONE 2026-04-25: Sensei now has `doctor` / `health`. It prints Pupil/Web UI, master-ai-ui.service, Ollama, required models, `/thoughts`, TTS, phone URL, mode/model/cloud keys, mouse profile, memory/approved counts, open tasks, pinned project/task, and latest crash line. This is the first stop after "doesn't work" and before long work sessions.
@@ -38,11 +38,11 @@
 - **Last:** 2026-04-18 — `dojo_gate.sh` built + wired into `master.sh` option 4. `master_ai.py` now loads ACTIVE_PROJECT + ACTIVE_TASK from gate, shows PROJ/TASK in status bar, supports `dojo` / `dojo tasks` / `done` commands. Drift reminder (every 3000 chars) names the pinned task directly. Gate is soft in testing; hard once `~/.dojo_gate_sealed` exists. **Next pickup:** test flow end-to-end via RustDesk.
 - **Goal:** stay the focused master-level execution layer; no distractions, pinned task, drift reminders
 - **Tasks:**
-  - [ ] implement dojo_gate.sh (project picker + task generator)
-  - [ ] read active project/task from ~/.master_ai_active_project on startup
-  - [ ] show current task in status bar (SENSEI │ PROJ:... │ TASK:...)
-  - [ ] "done" command flips [ ] → [x] in PROJECTS.md and pulls next task
-  - [ ] tie 3000-char drift reminder to the pinned task
+  - [x] implement dojo_gate.sh (project picker + task generator) — verified on disk 2026-04-27.
+  - [x] read active project/task from ~/.master_ai_active_project on startup — verified on disk 2026-04-27.
+  - [x] show current task in status bar (SENSEI │ PROJ:... │ TASK:...) — verified on disk 2026-04-27.
+  - [x] "done" command flips [ ] → [x] in PROJECTS.md and pulls next task — verified on disk 2026-04-27.
+  - [x] tie 3000-char drift reminder to the pinned task — verified on disk 2026-04-27.
   - [ ] **smaller streaming-output viewer box inside the chat frame** — Elijah 2026-04-21: *"I'm thinking like internet TV — full size 1080p is gonna be rough, but 4:3 720p runs smooth and looks good."* Currently model output streams full-width into the chat frame, which on slow CPU + remote iPhone feels like a flood when chunks arrive. Proposal: render the streaming reply into a SMALLER child box (e.g. ~60% width, fixed height ~15 lines, auto-scroll) that sits inside the chat frame. When the stream completes, the content can stay as a bounded block or expand. sensei_tui.py (prompt_toolkit) layer — new Window with its own scroll behavior nested under the Frame. Visual trade: smaller viewport = smoother stream perception (human eye tracks less area), same info density.
 
 ### Pupil
@@ -187,4 +187,8 @@
 
 ### POC (auto-logged 2026-04-25 11:42)
 - **Ask:** so how does apps like Kodak Claude code get produced and sold?
+- **Status:** brainstorming — scope-check fired
+
+### POC (auto-logged 2026-04-26 17:43)
+- **Ask:** approvals is not Claude Code’s approval system. which approvals && approvals
 - **Status:** brainstorming — scope-check fired

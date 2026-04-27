@@ -23,7 +23,7 @@
 #       click is the bar; polish is cheap by comparison.
 #
 # [2026-04-19] post-v1.7 in-testing — The Trifecta (fast/brain/eyes), dojo gate,
-#              chunker, portable cache, Apocalypse Mode, multi-user plumbing
+#              chunker, portable cache, local-first routing, multi-user plumbing
 #
 # [2026-04-19 evening additions, still in-testing]
 #   • AUTO MODE actually flows — was prompting on everything, now only destructive
@@ -176,23 +176,21 @@ tips hide to save rows, and the input station can shrink to one row while long
 prompts still wrap upward inside the box.
 On RustDesk-from-phone: arrow keys can be flaky, prefer typed words.
 
+Punctuation command menu:
+  , ; . /        — press to discover the buckets
+Arrow keys move through the pop-up; Enter fires the selected command. Type a
+few letters after the punctuation to narrow the list if you already know the
+shape of what you want.
+
 ### NAVIGATION — HOW TO SCROLL UP/DOWN AND OTHER MOVES
 The input box (🥷) stays pinned at the bottom. These scroll the chat
 output region ABOVE it without moving your cursor.
 
 KEYBOARD (when focus is in the input):
-  Tab            — auto-complete any command from the 60+ word list
+  Tab            — auto-complete any command; punctuation buckets narrow the list faster
   ↑ / ↓          — scroll your input HISTORY (what you previously typed)
   Shift+↑        — SCROLL CHAT UP.   Tap = 3 lines. Hold = continuous.
   Shift+↓        — SCROLL CHAT DOWN. Tap = 3 lines. Hold = continuous.
-  Ctrl+T         — save/copy transcript
-  Ctrl+L         — show recent log
-  Ctrl+O / Ctrl+P — open product preview (prefers .html/.htm)
-  Ctrl+K         — clear exact-response cache
-  Ctrl+B         — force local-copy mouse profile
-  Ctrl+R         — refresh Sensei
-  Ctrl+S         — save session
-  Ctrl+Q         — clean exit
   Ctrl+C         — interrupt the current reply + save session
 
 TYPED WORDS (alternative to keys — works on any keyboard, any remote):
@@ -211,9 +209,7 @@ MOUSE (local-copy default, remote capture opt-in):
   mouse remote — phone/RustDesk profile: tmux mouse on + SENSEI_MOUSE=1
   mouse local  — local-copy profile: tmux mouse off + SENSEI_MOUSE=0
   mouse status — show which profile is saved
-  mouse toggle — typed command only. No Ctrl+M shortcut; Ctrl+M collides with
-                 terminal Enter/carriage-return behavior and must not affect
-                 the text box.
+  mouse toggle — typed command only; there is no mouse shortcut chord.
 
 Use `refresh` after switching mouse profiles so the TUI relaunches with the
 saved SENSEI_MOUSE value. Remote is best for phone scrolling/taps. Local is
@@ -226,16 +222,15 @@ best when sitting at Madam-Mary and drag-select copy matters most.
 
 ### COPY / PASTE IN SENSEI
 Default local-copy mode (`SENSEI_MOUSE=0`) leaves mouse handling to the
-terminal. Plain click-drag selects text; Ctrl+Shift+C copies; Ctrl+Shift+V
-pastes. The TUI does not use mouse events to write into the input box.
+terminal. Plain click-drag selects text; the terminal's copy/paste shortcuts
+still work. The TUI does not use mouse events to write into the input box.
 
 If `mouse remote` is enabled (`SENSEI_MOUSE=1`), the app captures mouse events
 for phone/RustDesk scrolling. In that profile, use Shift+click-drag when you
 need terminal selection, or switch back with `mouse local` then `refresh`.
 
 Type `copy` (or `clip`) at the Sensei prompt to push the LAST AI reply straight
-into the X11 clipboard via xclip. Type `copy chat` or press Ctrl+T to save the
-full transcript.
+into the X11 clipboard via xclip. Type `copy chat` to save the full transcript.
 
 To force classic click-drag permanently:
   mouse local
@@ -268,8 +263,8 @@ identical at top AND bottom of the window. Remapped 2026-04-21 — plan's
 red is #cc0000 (the "true red" Elijah locked 2026-04-20).
 
 Companion toggles (orthogonal — these are NOT modes, they're routing):
-  mode local / mode apocalypse   — force all asks to local (no cloud)
-  mode connected / mode peacetime — allow cloud-first (needs keys)
+mode local      — force all asks to local (no cloud)
+mode connected  — allow cloud-first (needs keys)
 
 ### AUTO MODE DISCLAIMER (shown when you type 'mode auto')
 Turning on auto mode means you allow:
@@ -327,7 +322,9 @@ git <any>           — any git command (with confirm)
 
 ### INFO & HELP
 help                — full command reference card
+help buckets        — punctuation teaser
 tips                — full tips screen (all commands, routing, power tips)
+`, ; . /`           — command buckets from the input prompt
 keys                — show which API keys are loaded
 approved            — show auto-approved command list
 clear approved      — wipe approved commands (AI will ask again)

@@ -1,6 +1,6 @@
 # Claude Code Handoff — Master AI
 
-Last updated: 2026-04-25
+Last updated: 2026-04-26
 
 This repo is Elijah's local-first AI agent stack. Treat it as a local Claude Code / Codex-style computer agent, not a generic chatbot or greenfield app.
 
@@ -66,7 +66,20 @@ Use this wording when describing it:
 
 ## Current In-Progress Changes
 
-No known in-progress changes at this handoff. Worktree should be clean.
+Active side project: upstream Loki contribution in `~/master_ai_loki_fork/`.
+
+- Goal is not to fork Loki as a Master AI product. Improve Loki and contribute upstream to `gitlab.com/maik3531/LibreOffice_KI-Assistent`.
+- Do not move this work into `~/scripts/master_ai.py`; Master AI stays untouched for this lane.
+- Existing Loki chat dialog is the surface to polish. It is a hand-built non-modal UNO dialog in `main.py`, launched by the `Chat` command / AI Chat menu item.
+- Menu mapping in `Addons.xcu`: `M1` Extend selection, `M2` Edit/create text, `M3` Insert AI image, `M4` AI Chat, `M5` Settings.
+- Current local patch in `~/master_ai_loki_fork/main.py` adds chat tabs inside the existing chat dialog and a `Make Doc` button.
+- `Make Doc` uses Loki's configured backend through `call_chat_api()` and creates a Writer `.odt` document from the active chat. It extracts URLs and inserts QR images when the optional Python `qrcode` package is available.
+- Verification so far: `python3 -m py_compile ~/master_ai_loki_fork/main.py` passes.
+- Not yet verified: actual LibreOffice UNO dialog behavior and ODT save flow inside Writer.
+
+Important correction: Alt+C appears in Loki accelerator config/runtime installer, but do not assume it works or describe it as the primary user path. Anchor the feature on the existing AI Chat command/menu unless shortcut repair is explicitly requested.
+
+Parked idea: a separate Master-AI-specific Writer extension is not the immediate move.
 
 ## Current Sync Snapshot
 
@@ -91,6 +104,8 @@ As of commit `ffb5475`, the older "WHERE WE WERE" snapshot that stops at
   - `master` opens the main portal/menu.
   - `sensei` opens the terminal agent directly.
   - Installer creates both commands and auto-configures PATH.
+  - Sensei now has `image: <prompt>` for local image jobs; Pupil's Image tab
+    shows the same sd-server job stream and inline PNG result.
 
 ## Important Existing Architecture
 

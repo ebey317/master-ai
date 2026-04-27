@@ -262,6 +262,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <select id="setup-anykey-service" title="override which service this key belongs to">
           <option value="">auto-detect</option>
           <option value="groq">Groq</option>
+          <option value="fireworks">Fireworks</option>
           <option value="openrouter">OpenRouter</option>
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
@@ -309,6 +310,21 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <button class="setup-verify" onclick="setupVerify('groq')">Verify</button>
       </div>
       <div class="setup-status" id="setup-groq-status"></div>
+    </div>
+
+    <!-- Fireworks (Cloud) -->
+    <div class="setup-card" id="card-fireworks">
+      <div class="setup-card-head">
+        <div class="setup-card-icon">🔥</div>
+        <div class="setup-card-title">Fireworks</div>
+        <span class="setup-card-tag tag-cloud">cloud · BYOK</span>
+      </div>
+      <div class="setup-card-desc">OpenAI-compatible chat completions on Fireworks. Use your Fireworks API key.</div>
+      <div class="setup-field">
+        <input id="setup-fireworks-key" type="password" placeholder="fw_..."/>
+        <button class="setup-verify" onclick="setupVerify('fireworks')">Verify</button>
+      </div>
+      <div class="setup-status" id="setup-fireworks-status"></div>
     </div>
 
     <!-- OpenRouter (Cloud) -->
@@ -362,6 +378,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 <div class="tabs">
   <div class="tab active" onclick="showPane('chat')">Chat</div>
   <div class="tab" onclick="showPane('sessions')">Sessions</div>
+  <div class="tab" onclick="showPane('image')">Image</div>
   <div class="tab" onclick="showPane('settings')">Settings</div>
 </div>
 
@@ -472,6 +489,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
   <div class="provider-row">
     <button class="prov-btn active" data-prov="ollama" onclick="setProvider('ollama')">🤖 Master AI (local)</button>
     <button class="prov-btn" data-prov="groq" onclick="setProvider('groq')">Groq</button>
+    <button class="prov-btn" data-prov="fireworks" onclick="setProvider('fireworks')">Fireworks</button>
     <button class="prov-btn" data-prov="openrouter" onclick="setProvider('openrouter')">OpenRouter</button>
     <button class="prov-btn" data-prov="web" id="prov-web" onclick="setProvider('web')" title="Force every question through live web search (Gemini grounded + Wikipedia + DDG)">🌐 Web</button>
     <button class="prov-btn" data-prov="research" id="prov-research" onclick="setProvider('research')" title="Search the web, then have the local model write a direct answer from the results — use when you want the ANSWER, not just the search results. Prefix shortcut: research: your question">🔬 Research</button>
@@ -485,7 +503,7 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
     <input id="file-input" type="file" multiple style="display:none" onchange="queueFiles(this.files); this.value=''"/>
     <button class="attach-btn" title="Attach small file reference" onclick="pickFiles()">📎</button>
     <button class="attach-btn" title="Attach link" onclick="attachLink()">🔗</button>
-    <textarea class="input-box" id="user-input" placeholder="ask anything — x to pause, (name) to save session" rows="1" onkeydown="inputKey(event)"></textarea>
+    <textarea class="input-box" id="user-input" placeholder="ask anything — x to pause, (name) to save session" rows="1" oninput="autoResizeInput(this)" onkeydown="inputKey(event)"></textarea>
     <button class="mic-btn" id="mic-btn" title="Speak to type (Web Speech API)" onclick="toggleMic()">🎙</button>
     <button class="stop-btn" id="stop-btn" onclick="stopStream()">■ Stop</button>
     <button class="send-btn" id="send-btn" onclick="sendMsg()">Send</button>
@@ -510,6 +528,43 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
   </div>
 </div>
 
+<!-- IMAGE PANE -->
+<div class="pane" id="pane-image">
+  <div style="padding:14px;display:flex;flex-direction:column;gap:10px;height:100%;overflow:hidden;box-sizing:border-box">
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      <textarea id="img-prompt" placeholder="Describe an image (e.g. a sun-kissed corn stalk at dawn)" rows="2"
+        style="flex:1;min-height:44px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-family:inherit;font-size:14px;resize:vertical"
+        onkeydown="if(event.ctrlKey&&event.key==='Enter')imgGenerate()"></textarea>
+      <button id="img-go" onclick="imgGenerate()"
+        style="padding:10px 18px;background:var(--accent);color:#fff;border:0;border-radius:8px;cursor:pointer;font-weight:600;white-space:nowrap;min-height:44px">Generate</button>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text-soft);align-items:center">
+      <label style="display:flex;align-items:center;gap:5px">size
+        <select id="img-size" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 6px;font-size:11px">
+          <option value="512">512×512</option>
+          <option value="384">384×384 (faster)</option>
+          <option value="256">256×256 (thumbnail)</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:5px">steps
+        <select id="img-steps" style="background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:3px 6px;font-size:11px">
+          <option value="4">4 (LCM, default)</option>
+          <option value="2">2 (LCM, fastest)</option>
+          <option value="8">8 (LCM, max quality)</option>
+        </select>
+      </label>
+      <span id="img-engine-state" style="margin-left:auto"></span>
+    </div>
+    <div id="img-status" style="font-size:12px;color:var(--text-soft);min-height:18px;font-family:'SF Mono',Menlo,Consolas,monospace"></div>
+    <div id="img-result" style="flex:1;display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px dashed var(--border);border-radius:8px;overflow:auto;padding:14px;min-height:200px">
+      <div style="color:var(--text-soft);font-size:13px;text-align:center;line-height:1.6">
+        Type a prompt and press Generate (Ctrl+Enter).<br>
+        Local sd-server on :7860 — about 56 s per 512×512 on this CPU.
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- SETTINGS PANE -->
 <div class="pane" id="pane-settings">
   <div class="settings-wrap">
@@ -521,6 +576,14 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
           <button class="w-btn" onclick="verifyKey('groq')">verify</button>
           <span id="groq-status" style="font-size:12px"></span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Fireworks API Key</label>
+        <input class="setting-input" id="fireworks-key" type="password" placeholder="fw_..."/>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <button class="w-btn" onclick="verifyKey('fireworks')">verify</button>
+          <span id="fireworks-status" style="font-size:12px"></span>
         </div>
       </div>
       <div class="setting-row">
@@ -635,6 +698,18 @@ function setAppHeight() {
     : window.innerHeight;
   document.documentElement.style.setProperty('--app-height', h + 'px');
 }
+function autoResizeInput(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  const next = Math.min(el.scrollHeight, 120);
+  el.style.height = next + 'px';
+  el.style.overflowY = el.scrollHeight > 120 ? 'auto' : 'hidden';
+}
+function resetInputHeight(el) {
+  if (!el) return;
+  el.style.height = '';
+  el.style.overflowY = '';
+}
 setAppHeight();
 window.addEventListener('resize', setAppHeight, { passive: true });
 if (window.visualViewport) {
@@ -702,7 +777,7 @@ let sessions = JSON.parse(localStorage.getItem(lsKey('ta_sessions')) || '[]');
 let _autoSessionId = null;
 let settings = JSON.parse(localStorage.getItem(lsKey('ta_settings')) || '{}');
 let scrollLocked = false;
-let setupState = { ollama: false, groq: false, openrouter: false, ollamaModels: [] };
+let setupState = { ollama: false, groq: false, fireworks: false, openrouter: false, ollamaModels: [] };
 
 // ── HOST DEFAULTS — Tailscale / LAN / phone friendly ──
 // When Pupil is served at http://<server>:8080/pupil.html, direct calls to
@@ -837,6 +912,7 @@ function updateTokenCounter() {
   const key = lsKey('ta_count_' + currentProvider + '_' + new Date().toDateString());
   const used = parseInt(localStorage.getItem(key) || '0');
   const limit = FREE_LIMITS[currentProvider] || 0;
+  if (!limit) { el.textContent = used + ' requests today · BYOK cloud'; el.style.color = ''; return; }
   const left = Math.max(limit - used, 0);
   el.textContent = left + ' / ' + limit + ' free today';
   el.style.color = left < 20 ? '#e03030' : left < 50 ? '#f59e0b' : '';
@@ -851,6 +927,7 @@ function detectKeyService(key) {
   if (!key) return null;
   const k = key.trim();
   if (k.startsWith('gsk_'))        return { service: 'groq',        label: 'Groq',              field: 'groqKey' };
+  if (k.startsWith('fw_'))         return { service: 'fireworks',   label: 'Fireworks',         field: 'fireworksKey' };
   if (k.startsWith('sk-ant-'))      return { service: 'anthropic',   label: 'Anthropic / Claude', field: 'anthropicKey' };
   if (k.startsWith('sk-or-v1-'))    return { service: 'openrouter',  label: 'OpenRouter',        field: 'openrouterKey' };
   if (k.startsWith('sk-proj-'))     return { service: 'openai',      label: 'OpenAI',            field: 'openaiKey' };
@@ -893,14 +970,14 @@ function registerAnyKey() {
   const overrideSel = document.getElementById('setup-anykey-service');
   const overrideVal = overrideSel ? overrideSel.value : '';
   const SERVICE_LABELS = {
-    groq: 'Groq', openrouter: 'OpenRouter', openai: 'OpenAI',
+    groq: 'Groq', fireworks: 'Fireworks', openrouter: 'OpenRouter', openai: 'OpenAI',
     anthropic: 'Anthropic / Claude', deepseek: 'DeepSeek',
     gemini: 'Google Gemini', xai: 'xAI / Grok', huggingface: 'HuggingFace',
     brave: 'Brave Search', firecrawl: 'Firecrawl', serper: 'Serper',
     google: 'Google Cloud', gumroad: 'Gumroad',
   };
   const SERVICE_FIELDS = {
-    groq: 'groqKey', openrouter: 'openrouterKey', openai: 'openaiKey',
+    groq: 'groqKey', fireworks: 'fireworksKey', openrouter: 'openrouterKey', openai: 'openaiKey',
     anthropic: 'anthropicKey', deepseek: 'deepseekKey', gemini: 'geminiKey',
     xai: 'xaiKey', huggingface: 'huggingfaceKey', brave: 'braveKey',
     firecrawl: 'firecrawlKey', serper: 'serperKey', google: 'googleKey',
@@ -934,6 +1011,9 @@ function registerAnyKey() {
   // Auto-fill the matching setup card (if it exists) so the user can also run verify.
   if (hit.service === 'groq') {
     const inp = document.getElementById('setup-groq-key');
+    if (inp && placement === 'primary') inp.value = val;
+  } else if (hit.service === 'fireworks') {
+    const inp = document.getElementById('setup-fireworks-key');
     if (inp && placement === 'primary') inp.value = val;
   } else if (hit.service === 'openrouter') {
     const inp = document.getElementById('setup-or-key');
@@ -973,6 +1053,32 @@ async function setupVerify(prov) {
       el.style.color = '#2a8a4a';
       setupState.groq = true;
       card.classList.add('verified');
+    } else if (prov === 'fireworks') {
+      const key = document.getElementById('setup-fireworks-key').value.trim();
+      if (!key) { el.textContent = '🔴 paste your key first'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://api.fireworks.ai/inference/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ' + key
+        },
+        body: JSON.stringify({
+          model: 'accounts/fireworks/models/deepseek-v3p1',
+          max_tokens: 1,
+          top_p: 1,
+          top_k: 40,
+          presence_penalty: 0,
+          frequency_penalty: 0,
+          temperature: 0.6,
+          messages: [{ role: 'user', content: 'ping' }]
+        })
+      });
+      if (!res.ok) throw new Error('invalid key (status ' + res.status + ')');
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      setupState.fireworks = true;
+      card.classList.add('verified');
     } else if (prov === 'openrouter') {
       const key = document.getElementById('setup-or-key').value.trim();
       if (!key) { el.textContent = '🔴 paste your key first'; el.style.color = '#e03030'; return; }
@@ -998,6 +1104,7 @@ function finishSetup() {
   settings.ollamaHost = document.getElementById('setup-ollama-host').value.trim();
   settings.ollamaModel = setupState.ollamaModels[0] || 'qwen2.5:7b';
   if (setupState.groq) settings.groqKey = document.getElementById('setup-groq-key').value.trim();
+  if (setupState.fireworks) settings.fireworksKey = document.getElementById('setup-fireworks-key').value.trim();
   if (setupState.openrouter) settings.openrouterKey = document.getElementById('setup-or-key').value.trim();
   settings.setupDone = true;
   saveSettingsToStorage();
@@ -1025,8 +1132,10 @@ function downloadConfigured() {
     setupDone: true
   };
   const groqKey = document.getElementById('setup-groq-key').value.trim();
+  const fireworksKey = document.getElementById('setup-fireworks-key').value.trim();
   const orKey = document.getElementById('setup-or-key').value.trim();
   if (setupState.groq && groqKey) cfg.groqKey = groqKey;
+  if (setupState.fireworks && fireworksKey) cfg.fireworksKey = fireworksKey;
   if (setupState.openrouter && orKey) cfg.openrouterKey = orKey;
   // Get clean page source and inject auto-launch
   let html = document.documentElement.outerHTML;
@@ -1060,6 +1169,7 @@ async function syncKeysFromServer() {
     // Map menu 11 field names (from update_keys.sh) → Pupil's settings keys.
     const MAP = {
       groq: 'groqKey',
+      fireworks: 'fireworksKey',
       openrouter: 'openrouterKey',
       openai: 'openaiKey',
       anthropic: 'anthropicKey',
@@ -1118,6 +1228,7 @@ async function init() {
   // via option 11, Pupil already knows and the setup wizard won't nag you.
   await syncKeysFromServer();
   if (settings.groqKey) document.getElementById('groq-key').value = settings.groqKey;
+  if (settings.fireworksKey) document.getElementById('fireworks-key').value = settings.fireworksKey;
   if (settings.openrouterKey) document.getElementById('openrouter-key').value = settings.openrouterKey;
   if (settings.ollamaHost) document.getElementById('ollama-host').value = settings.ollamaHost;
   if (settings.ollamaModel) document.getElementById('ollama-model').value = settings.ollamaModel;
@@ -1258,6 +1369,8 @@ async function updateModelBadge() {
   } else if (currentProvider === 'groq') {
     opts = ['llama-3.1-8b-instant','llama-3.3-70b-versatile','meta-llama/llama-4-scout-17b-16e-instruct','openai/gpt-oss-120b','qwen/qwen3-32b']
       .map(m => [m, 'groq/' + m.split('/').pop()]);
+  } else if (currentProvider === 'fireworks') {
+    opts = [['accounts/fireworks/models/deepseek-v3p1', 'fireworks/deepseek-v3p1']];
   } else if (currentProvider === 'openrouter') {
     opts = [['openrouter/auto', 'openrouter/auto']];
   } else if (currentProvider === 'web') {
@@ -1530,7 +1643,7 @@ async function selectProject(name) {
     );
   }
   const ta = document.getElementById('user-input');
-  if (ta) { ta.value = `I want to work on ${name}. `; ta.focus(); }
+  if (ta) { ta.value = `I want to work on ${name}. `; autoResizeInput(ta); ta.focus(); }
 }
 
 // ── Paperwork-style briefing render ──
@@ -2755,10 +2868,11 @@ async function sendMsg() {
 
   // session save shortcut
   const saveMatch = text.match(/^\((.+)\)$/);
-  if (saveMatch && pendingUploads.length === 0) { saveSession(saveMatch[1]); input.value = ''; return; }
-  if (text === 'x' && pendingUploads.length === 0) { stopStream(); input.value = ''; return; }
+  if (saveMatch && pendingUploads.length === 0) { saveSession(saveMatch[1]); input.value = ''; resetInputHeight(input); return; }
+  if (text === 'x' && pendingUploads.length === 0) { stopStream(); input.value = ''; resetInputHeight(input); return; }
 
   input.value = '';
+  resetInputHeight(input);
   const uploadLines = compactUploadLines(text);
   const userText = text || 'Uploaded references.';
   const contentText = userText + uploadLines;
@@ -2855,6 +2969,7 @@ async function sendMsg() {
 function getAvailableProviders() {
   const p = ['ollama'];
   if (settings.groqKey) p.push('groq');
+  if (settings.fireworksKey) p.push('fireworks');
   if (settings.openrouterKey) p.push('openrouter');
   return p;
 }
@@ -2983,6 +3098,49 @@ async function streamResponse(userText, prov) {
           }
         }
       }
+    } else if (prov === 'fireworks') {
+      const key = settings.fireworksKey;
+      if (!key) { thinking.querySelector('.msg-text').innerHTML = 'Fireworks API key missing — add in Settings.'; }
+      else {
+        const res = await fetch('https://api.fireworks.ai/inference/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': 'Bearer ' + key
+          },
+          body: JSON.stringify({
+            model: 'accounts/fireworks/models/deepseek-v3p1',
+            max_tokens: 4096,
+            top_p: 1,
+            top_k: 40,
+            presence_penalty: 0,
+            frequency_penalty: 0,
+            temperature: 0.6,
+            stream: true,
+            messages: msgs
+          }),
+          signal: abortController.signal
+        });
+        if (!res.ok) throw new Error('Fireworks error: ' + res.status);
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = dec.decode(value);
+          for (const line of chunk.split('\n')) {
+            if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
+            try {
+              const d = JSON.parse(line.replace(/^data: /, ''));
+              const t = d.choices?.[0]?.delta?.content || d.choices?.[0]?.message?.content || '';
+              fullText += t;
+              thinking.querySelector('.msg-text').innerHTML = escHtml(fullText);
+              if (!scrollLocked) document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+            } catch {}
+          }
+        }
+      }
     } else if (prov === 'openrouter') {
       const key = settings.openrouterKey;
       if (!key) { thinking.querySelector('.msg-text').innerHTML = 'OpenRouter API key missing — add in Settings.'; }
@@ -3083,8 +3241,7 @@ function toggleMic() {
       else interim += t;
     }
     input.value = baseText + finalText + interim;
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+    autoResizeInput(input);
   };
   rec.onerror = (e) => {
     console.warn('STT error', e);
@@ -3282,6 +3439,32 @@ async function verifyKey(provider) {
       el.style.color = '#2a8a4a';
       settings.groqKey = key;
       saveSettingsToStorage();
+    } else if (provider === 'fireworks') {
+      const key = document.getElementById('fireworks-key').value.trim();
+      if (!key) { el.textContent = '🔴 no key entered'; el.style.color = '#e03030'; return; }
+      const res = await fetch('https://api.fireworks.ai/inference/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Authorization': 'Bearer ' + key
+        },
+        body: JSON.stringify({
+          model: 'accounts/fireworks/models/deepseek-v3p1',
+          max_tokens: 1,
+          top_p: 1,
+          top_k: 40,
+          presence_penalty: 0,
+          frequency_penalty: 0,
+          temperature: 0.6,
+          messages: [{ role: 'user', content: 'ping' }]
+        })
+      });
+      if (!res.ok) throw new Error(res.status);
+      el.textContent = '🟢 key valid — saved';
+      el.style.color = '#2a8a4a';
+      settings.fireworksKey = key;
+      saveSettingsToStorage();
     } else if (provider === 'openrouter') {
       const key = document.getElementById('openrouter-key').value.trim();
       if (!key) { el.textContent = '🔴 no key entered'; el.style.color = '#e03030'; return; }
@@ -3303,6 +3486,7 @@ async function verifyKey(provider) {
 // ---- SETTINGS ----
 function saveSettings() {
   settings.groqKey = document.getElementById('groq-key').value.trim();
+  settings.fireworksKey = document.getElementById('fireworks-key').value.trim();
   settings.openrouterKey = document.getElementById('openrouter-key').value.trim();
   settings.ollamaHost = document.getElementById('ollama-host').value.trim();
   settings.ollamaModel = document.getElementById('ollama-model').value.trim();
@@ -3327,6 +3511,165 @@ async function checkTTS() {
     await fetch(host + '/speak', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text:'TTS online' }) });
     el.textContent = 'status: online ✓';
   } catch { el.textContent = 'status: offline — run python3 ~/scripts/tts_server.py'; }
+}
+
+// ── Image pane: local sd-server, reached via reverse proxy through this
+// same Pupil server (stt_server.py /sdcpp/*). sd-server stays bound to
+// 127.0.0.1:7860; only :8080 is exposed. Same-origin → no CORS dance,
+// works wherever Pupil itself works (localhost, LAN, Tailscale).
+function _sdHost() {
+  return window.location.origin;
+}
+let _sdPollTimer = null;
+
+function _imgClearRendered(result) {
+  if (!result) return;
+  const prevUrl = result.dataset && result.dataset.objectUrl;
+  if (prevUrl) {
+    try { URL.revokeObjectURL(prevUrl); } catch {}
+    result.removeAttribute('data-object-url');
+  }
+}
+
+function _imgExtractB64(payload) {
+  if (!payload) return '';
+  const root = payload.result || payload;
+  const images = root && (root.images || payload.images);
+  if (Array.isArray(images) && images.length > 0) {
+    const first = images[0] || {};
+    return String(first.b64_json || first.b64 || first.data || '').trim();
+  }
+  return String(root && (root.b64_json || root.b64 || root.data) || '').trim();
+}
+
+function _imgRenderB64(result, b64) {
+  if (!result) return false;
+  _imgClearRendered(result);
+  const cleaned = String(b64 || '').trim().replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+  if (!cleaned) return false;
+  let bytes;
+  try {
+    const bin = atob(cleaned);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch {
+    return false;
+  }
+  const blob = new Blob([bytes], {type:'image/png'});
+  const url = URL.createObjectURL(blob);
+  const img = document.createElement('img');
+  img.alt = 'generated';
+  img.loading = 'eager';
+  img.decoding = 'async';
+  img.style.cssText = 'max-width:100%;max-height:100%;border-radius:6px;display:block';
+  img.onload = function() {
+    const prevUrl = result.dataset && result.dataset.objectUrl;
+    if (prevUrl && prevUrl !== url) {
+      try { URL.revokeObjectURL(prevUrl); } catch {}
+    }
+  };
+  img.onerror = function() {
+    try { URL.revokeObjectURL(url); } catch {}
+    result.innerHTML = '<div style="color:var(--accent)">completed but image preview failed to load</div>';
+  };
+  result.dataset.objectUrl = url;
+  result.replaceChildren(img);
+  img.src = url;
+  return true;
+}
+
+async function imgEngineCheck() {
+  const tag = document.getElementById('img-engine-state');
+  if (!tag) return;
+  try {
+    const r = await fetch(_sdHost() + '/sdcpp/v1/capabilities', {cache:'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    tag.textContent = 'engine: online';
+    tag.style.color = 'var(--text-soft)';
+  } catch {
+    tag.textContent = 'engine: offline — systemctl --user start sd-server';
+    tag.style.color = 'var(--accent)';
+  }
+}
+
+async function imgGenerate() {
+  const ta = document.getElementById('img-prompt');
+  const btn = document.getElementById('img-go');
+  const status = document.getElementById('img-status');
+  const result = document.getElementById('img-result');
+  let prompt = (ta.value || '').trim();
+  if (!prompt) { status.textContent = 'enter a prompt first'; return; }
+  const size = parseInt(document.getElementById('img-size').value, 10) || 512;
+  const steps = parseInt(document.getElementById('img-steps').value, 10) || 4;
+  if (_sdPollTimer) { clearInterval(_sdPollTimer); _sdPollTimer = null; }
+  btn.disabled = true;
+  status.textContent = 'submitting…';
+  result.innerHTML = '<div style="color:var(--text-soft);font-size:13px">rendering…</div>';
+  try {
+    const r = await fetch(_sdHost() + '/sdcpp/v1/img_gen', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        prompt, width: size, height: size,
+        lora: [{ path: 'lcm-lora-sdv1-5.safetensors', multiplier: 1.0, is_high_noise: false }],
+        sample_params: { sample_steps: steps, sample_method: 'euler_a', guidance: { txt_cfg: 1.0 } }
+      })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const job = await r.json();
+    if (!job.id) throw new Error('no job id');
+    status.textContent = `job ${job.id} — ${job.status || 'queued'}…`;
+    imgPoll(job.id);
+  } catch (e) {
+    status.textContent = `error: ${e.message}. is sd-server running? systemctl --user start sd-server`;
+    result.innerHTML = '<div style="color:var(--text-soft);font-size:13px;text-align:center">no result — check status above</div>';
+    btn.disabled = false;
+  }
+}
+
+function imgPoll(jobId) {
+  const btn = document.getElementById('img-go');
+  const status = document.getElementById('img-status');
+  const result = document.getElementById('img-result');
+  const t0 = Date.now();
+  if (_sdPollTimer) clearInterval(_sdPollTimer);
+  const tick = async () => {
+    let d;
+    try {
+      const r = await fetch(`${_sdHost()}/sdcpp/v1/jobs/${jobId}`, {cache:'no-store'});
+      d = await r.json();
+    } catch (e) { return; } // transient — keep polling
+    const elapsed = Math.round((Date.now() - t0) / 1000);
+    let line = `job ${jobId} — ${d.status} (${elapsed}s)`;
+    if (d.status === 'queued' && d.queue_position != null) line += ` · pos ${d.queue_position}`;
+    status.textContent = line;
+    if (d.status === 'completed') {
+      clearInterval(_sdPollTimer); _sdPollTimer = null;
+      const b64 = _imgExtractB64(d);
+      if (_imgRenderB64(result, b64)) {
+        status.textContent = `job ${jobId} — completed (${elapsed}s)`;
+      } else {
+        result.innerHTML = '<div style="color:var(--accent)">completed but no image data</div>';
+      }
+      btn.disabled = false;
+    } else if (d.status === 'failed' || d.status === 'error') {
+      clearInterval(_sdPollTimer); _sdPollTimer = null;
+      _imgClearRendered(result);
+      status.textContent = `failed: ${d.error || 'unknown'}`;
+      btn.disabled = false;
+    }
+  };
+  tick();
+  _sdPollTimer = setInterval(tick, 2000);
+}
+
+// Re-check engine state whenever the user opens the Image tab.
+const _origShowPane = window.showPane;
+if (typeof _origShowPane === 'function') {
+  window.showPane = function(id) {
+    _origShowPane(id);
+    if (id === 'image') imgEngineCheck();
+  };
 }
 </script>
 </body>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, json, tempfile, re, gzip, urllib.request
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
@@ -47,6 +47,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # /sdcpp/* → reverse-proxy to local sd-server on 127.0.0.1:7860.
+        # Keeps the image engine loopback-bound while letting Pupil reach it
+        # from any host that can reach :8080 (LAN, Tailscale). Same-origin.
+        if self.path.startswith('/sdcpp/'):
+            return self._proxy_sdcpp()
+
         # /project_summary?name=X[&refresh=1] — precomputed project briefing.
         # Reads the project's PROJECTS.md block + recent sessions, asks local
         # Ollama for a 5-bullet summary, caches under
@@ -461,6 +467,10 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         length = int(self.headers.get('Content-Length', 0))
         data   = self.rfile.read(length)
 
+        # /sdcpp/* → reverse-proxy to local sd-server (see do_GET note).
+        if self.path.startswith('/sdcpp/'):
+            return self._proxy_sdcpp(body=data)
+
         # /ask — federated routing endpoint. Accepts {prompt, model?} and runs
         # it through the LOCAL Ollama on this node, returning the response.
         # Auth: X-Mesh-Token header must match the token in ~/.master_ai_mesh.json.
@@ -777,6 +787,43 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+
+    def _proxy_sdcpp(self, body=b""):
+        """Reverse-proxy /sdcpp/* to local sd-server on 127.0.0.1:7860.
+
+        Keeps sd-server loopback-bound while letting Pupil reach it from any
+        host that can reach :8080 (LAN, Tailscale). Same-origin → no CORS.
+        Times: image gens take ~56s on this CPU, so timeout is generous.
+        """
+        upstream = "http://127.0.0.1:7860" + self.path
+        req_headers = {}
+        ct = self.headers.get("Content-Type")
+        if ct:
+            req_headers["Content-Type"] = ct
+        try:
+            req = urllib.request.Request(
+                upstream, data=(body if body else None),
+                headers=req_headers, method=self.command)
+            with urllib.request.urlopen(req, timeout=180) as r:
+                status = r.status
+                up_ct = r.headers.get("Content-Type", "application/octet-stream")
+                payload = r.read()
+        except urllib.error.HTTPError as e:
+            status = e.code
+            up_ct = e.headers.get("Content-Type", "text/plain")
+            payload = e.read() or str(e).encode()
+        except Exception as e:
+            status = 502
+            up_ct = "application/json"
+            payload = json.dumps({"error": f"sd-server unreachable: {e}"}).encode()
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", up_ct)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        except _CLIENT_DISCONNECTS:
+            pass
 
     def log_message(self, fmt, *args):
         pass

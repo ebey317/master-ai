@@ -78,6 +78,7 @@ try:
 
     _COMPLETIONS = [
         "hub", "menu", "home", "help", "tips", "model", "model auto", "mode plan", "mode review", "mode auto",
+        "mode local", "mode connected",
         "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
         "task done ", "task clear", "tasks", "save session", "load summary", "copy chat", "copy session",
         "load session", "clear", "clear history", "clear cache", "clear approved", "clear chats",
@@ -161,6 +162,7 @@ APPROVED_FILE = _pfile("approved")
 PERMS_FILE    = _pfile("permissions_done")
 CACHE_FILE    = _pfile("cache.json")
 LAST_CREATED_FILE = _pfile("last_created")
+LAST_ACTION_FILE  = _pfile("last_action.json")
 HINTS_FILE    = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
 OLLAMA_URL    = "http://localhost:11434"
@@ -211,8 +213,8 @@ if _SENSEI_APP is not None:
 LAST_ROUTE           = ""      # route used by the most recent handle() — for Review's "who" line
 LAST_MODEL           = ""      # model name used by the most recent handle() — for Review's "who" line
 PENDING_PLAN_TEXT    = ""
-PENDING_USER_NOTE    = ""
 PENDING_PLAN_REQUEST = ""
+PENDING_USER_NOTE    = ""
 HINTS                = 0 if HINTS_FILE.exists() else 1
 ACTIVE_PROJECT       = ""
 _SETTINGS            = Path.home() / ".master_ai_settings"
@@ -248,6 +250,7 @@ MODEL_MENU = [
     ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision"),
     # ── CLOUD (free tiers — tokens tracked) ──
     ("groq",               "☁ FREE · Llama 3.3 70B — fastest"),
+    ("fireworks",          "☁ BYOK · DeepSeek V3.1 — Fireworks"),
     ("deepseek-r1",        "☁ FREE · DeepSeek R1 — reasoning"),
     ("hermes-405b",        "☁ FREE · Hermes 405B — biggest free model"),
     ("gpt-oss-120b",       "☁ FREE · GPT-OSS 120B — OpenAI open source"),
@@ -302,7 +305,13 @@ def _load_active_from_gate():
                 globals()['ACTIVE_TASK'] = task
         if ACTIVE_MODEL_FILE.exists():
             mdl = ACTIVE_MODEL_FILE.read_text().strip()
-            if mdl:
+            if mdl and mdl.lower() in ("cloud", "connected", "auto", "default"):
+                globals()['PINNED_MODEL'] = None
+                try:
+                    ACTIVE_MODEL_FILE.write_text("")
+                except Exception:
+                    pass
+            elif mdl:
                 globals()['PINNED_MODEL'] = mdl
     except Exception:
         pass
@@ -537,12 +546,79 @@ def _clear_runtime_cache(reason="startup"):
         log(f"CACHE_CLEAR_ERROR [{reason}]: {e}")
         return False
 
+def _tmux_resize_to_client():
+    """Keep the Sensei tmux window matched to the latest attached client."""
+    if not os.environ.get("TMUX"):
+        return None
+    try:
+        subprocess.run(["tmux", "kill-pane", "-a"], check=False, capture_output=True)
+        subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
+                       check=False, capture_output=True)
+        subprocess.run(["tmux", "set-window-option", "-g", "window-size", "latest"],
+                       check=False, capture_output=True)
+
+        r = subprocess.run(
+            ["tmux", "list-clients", "-F", "#{client_activity} #{client_width}x#{client_height}"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        clients = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and "x" in parts[1]:
+                try:
+                    clients.append((int(parts[0]), parts[1]))
+                except ValueError:
+                    pass
+        dims = max(clients, default=(0, ""))[1]
+
+        if not dims:
+            r = subprocess.run(
+                ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            dims = (r.stdout or "").strip()
+
+        if "x" in dims:
+            w, h = dims.split("x", 1)
+            if w.isdigit() and h.isdigit() and int(w) > 0 and int(h) > 0:
+                subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
+                               check=False, capture_output=True)
+                subprocess.run(["tmux", "refresh-client", "-S"],
+                               check=False, capture_output=True)
+                return dims
+
+        subprocess.run(["tmux", "resize-window", "-A"], check=False, capture_output=True)
+        return "auto"
+    except Exception as e:
+        log(f"RESIZE_ERROR: {e}")
+        return None
+
 def _remember_created_file(filepath):
     try:
         p = Path(os.path.expanduser(filepath)).resolve()
         LAST_CREATED_FILE.write_text(str(p))
     except Exception as e:
         log(f"LAST_CREATED_WRITE_ERROR: {e}")
+
+def _remember_last_action(kind, command="", path=""):
+    try:
+        LAST_ACTION_FILE.write_text(json.dumps({
+            "ts": int(time.time()),
+            "kind": kind,
+            "command": command,
+            "path": str(Path(os.path.expanduser(path)).resolve()) if path else "",
+        }, ensure_ascii=False))
+    except Exception as e:
+        log(f"LAST_ACTION_WRITE_ERROR: {e}")
+
+def _load_last_action(max_age_s=300):
+    try:
+        data = json.loads(LAST_ACTION_FILE.read_text())
+        if int(time.time()) - int(data.get("ts", 0)) <= max_age_s:
+            return data
+    except Exception:
+        pass
+    return {}
 
 def _latest_created_file():
     def _preview_rank(p):
@@ -678,7 +754,14 @@ TOOL_REQUIRED_PHRASES = (
     "update my project", "update the project", "update project",
     "save the conversation", "save this conversation", "save this chat",
     "write to ", "write a file", "edit the file", "edit this file",
-    "create the file", "delete the file",
+    "create the file", "create a file", "create one complete",
+    "create and run", "make a script", "write a script",
+    "make a video", "create a video", "generate a video",
+    "make a clip", "create a clip", "generate a clip",
+    "make a movie", "create a movie", "generate a movie",
+    "complete bash script", "bash script at", "script at /",
+    "script at ~", "chmod +x", "verify it exists",
+    "delete the file",
     "run this", "run the command", "execute this", "execute the",
 )
 
@@ -842,10 +925,16 @@ def detect_route(text, has_image=False):
     t = text.lower()
     words = set(t.split())
 
-    # Manual pin overrides everything
+    # Manual pin overrides chat/reasoning, but never tool work. If the user
+    # asks to create/edit/run files, Sensei must stay on the local directive
+    # lane even when the header says MODEL:CLOUD.
     if PINNED_MODEL:
+        if _is_tool_required(t):
+            return "local", MODELS["master"], "tool-required overrides pinned model → master-ai"
         if PINNED_MODEL == "groq":
             return "cloud", "groq", f"pinned → Groq"
+        if PINNED_MODEL == "fireworks":
+            return "cloud", "fireworks", f"pinned → Fireworks"
         if PINNED_MODEL == "deepseek-r1":
             return "cloud", "deepseek-r1", f"pinned → DeepSeek R1"
         if PINNED_MODEL == "gemini":
@@ -853,7 +942,7 @@ def detect_route(text, has_image=False):
         return "local", PINNED_MODEL, f"pinned → {PINNED_MODEL}"
 
     if has_image or (any(w in t for w in VISION_WORDS) and not _looks_app_shaped(t, words)):
-        return "vision", MODELS["kimi"], "vision → kimi-k2.5 (1T) · llava locally in apocalypse mode"
+        return "vision", MODELS["kimi"], "vision → kimi-k2.5 (1T) · llava locally in local mode"
     if words & CODE_WORDS:
         return "local", MODELS["coder"], f"code → {MODELS['coder']}"
     if words & WEB_WORDS:
@@ -885,7 +974,26 @@ _GREETINGS = {"hi", "hello", "hey", "yo", "sup", "howdy", "hola",
               "bye", "goodbye", "cya", "later"}
 
 def _is_tool_required(stripped_low):
-    return any(p in stripped_low for p in TOOL_REQUIRED_PHRASES)
+    if any(p in stripped_low for p in TOOL_REQUIRED_PHRASES):
+        return True
+    if re.search(r'\b(create|write|make|build|generate)\b.*\b(script|file|html|app|page|demo|animation|effect|video|clip|movie)\b', stripped_low):
+        return True
+    if re.search(r'\b(chmod|bash|python3?|node|npm|pytest|ls)\b\s+[^&;\n]*(/home/|~/|\.sh\b|\.py\b|\.html\b)', stripped_low):
+        return True
+    return False
+
+def _is_generative_video_request(stripped_low):
+    return bool(
+        re.search(r'\b(create|make|generate)\b.*\b(video|clip|movie)\b', stripped_low)
+        and not any(p in stripped_low for p in (
+            "source footage", "use footage", "edit footage", "existing footage",
+            "source video", "original footage", "video url", "footage url",
+            "use my footage", "from footage", "edit my video"
+        ))
+    )
+
+def _video_quality_anchor():
+    return Path("/home/elijah/Desktop/rabbit_hop.mp4")
 
 # App-shape detection: text that mentions building/making + concrete tech.
 # Used to disambiguate "show me my pictures" (real vision request) vs.
@@ -1150,9 +1258,9 @@ def _scope_check_question(stripped: str, words, word_set, history) -> str:
 
 def _read_run_mode():
     """Which product mode is the user running in?
-      'apocalypse' (default) — local-first. Self-sufficient. Cloud is opt-in per-request.
-      'peacetime'            — cloud-first when keys present. Speed over sovereignty.
-    File: ~/.master_ai_run_mode. Empty / missing / unknown → 'apocalypse'.
+      stored default — local-first. Cloud is opt-in per-request.
+      peacetime      — cloud-first when keys present.
+    File: ~/.master_ai_run_mode. Empty / missing / unknown → local-first.
     Elijah's North Star: the product has to work when it's just him and the machine."""
     try:
         p = Path.home() / ".master_ai_run_mode"
@@ -1187,9 +1295,10 @@ def orchestrate(history, user_text, image_path=None):
     run_mode = _read_run_mode()
     keys_now = load_keys()
     have_groq   = bool((keys_now.get('groq') or '').strip())
+    have_fireworks = bool((keys_now.get('fireworks') or '').strip())
     have_or     = bool((keys_now.get('openrouter') or '').strip())
     have_gemini = bool((keys_now.get('gemini') or '').strip())
-    any_cloud   = have_groq or have_or or have_gemini
+    any_cloud   = have_groq or have_fireworks or have_or or have_gemini
 
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
@@ -1216,6 +1325,10 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "cloud_fast", "model": "groq",
                 "stripped_text": stripped[5:].strip(),
                 "reason": "explicit 'fast:' → Groq"}
+    if low.startswith("fireworks:") and have_fireworks:
+        return {"route": "cloud", "model": "fireworks",
+                "stripped_text": stripped[10:].strip(),
+                "reason": "explicit 'fireworks:' → Fireworks"}
     if low.startswith("deep:"):
         if have_or:
             return {"route": "cloud_deep", "model": "deepseek-r1",
@@ -1229,6 +1342,15 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "local", "model": MODELS["master"],
                 "stripped_text": stripped[prefix_len:].strip(),
                 "reason": "explicit local/private → local 7b"}
+
+    generative_video = _is_generative_video_request(low)
+    if generative_video:
+        if any_cloud:
+            model = "deepseek-r1" if have_or else MODELS["qwen3"]
+            return {"route": "cloud_deep", "model": model,
+                    "reason": f"generative video → {model} (generate from words, not source footage)"}
+        return {"route": "local", "model": MODELS["master"],
+                "reason": "generative video → local fallback (no cloud keys)"}
 
     tool_required = _is_tool_required(low)
     work_request = bool(
@@ -1266,15 +1388,15 @@ def orchestrate(history, user_text, image_path=None):
         except Exception as e:
             log(f"HARVEST_LOOKUP_ERROR: {e}")
 
-    # 3. Vision — prefer local llava in apocalypse mode; cloud multimodal in peacetime
+    # 3. Vision — prefer local llava in local mode; cloud multimodal in connected mode
     if image_path or (any(w in low for w in VISION_WORDS) and not _looks_app_shaped(low, word_set)):
         if run_mode == "peacetime" and any_cloud and have_gemini:
             return {"route": "cloud_vision", "model": "gemini",
-                    "reason": "peacetime vision → Gemini 2.0 Flash"}
-        # Apocalypse default: use local llava (no internet needed). Fall
+                    "reason": "connected vision → Gemini 2.0 Flash"}
+        # Local default: use local llava (no internet needed). Fall
         # through to kimi:cloud only when llava isn't pulled.
         return {"route": "local", "model": MODELS["vision"],
-                "reason": "apocalypse vision → llava (local, offline-capable)"}
+                "reason": "local vision → llava (offline-capable)"}
 
     # 4. Ambiguous → ask the user
     amb = _is_ambiguous(stripped, words, history)
@@ -1338,6 +1460,15 @@ def orchestrate(history, user_text, image_path=None):
                      "task_type": "deep", "base_score": 72,
                      "reason": "local deep fallback"},
                 ], reason_prefix="peacetime scored")
+            if have_fireworks:
+                return _choose_route([
+                    {"route": "cloud", "model": "fireworks",
+                     "task_type": "deep", "base_score": 84,
+                     "reason": "peacetime alter/code/deep → Fireworks DeepSeek V3.1"},
+                    {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
+                     "task_type": "deep", "base_score": 72,
+                     "reason": "local deep fallback"},
+                ], reason_prefix="peacetime scored")
             return _choose_route([
                 {"route": "cloud_deep", "model": MODELS["qwen3"],
                  "task_type": "deep", "base_score": 84,
@@ -1351,6 +1482,15 @@ def orchestrate(history, user_text, image_path=None):
                 {"route": "cloud_fast", "model": "groq",
                  "task_type": "chat", "base_score": 88,
                  "reason": "peacetime chat → Groq (fast lane)"},
+                {"route": "local", "model": MODELS["master"],
+                 "task_type": "chat", "base_score": 60,
+                 "reason": "local chat fallback"},
+            ], reason_prefix="peacetime scored")
+        if have_fireworks:
+            return _choose_route([
+                {"route": "cloud", "model": "fireworks",
+                 "task_type": "chat", "base_score": 82,
+                 "reason": "peacetime chat → Fireworks"},
                 {"route": "local", "model": MODELS["master"],
                  "task_type": "chat", "base_score": 60,
                  "reason": "local chat fallback"},
@@ -1374,6 +1514,15 @@ def orchestrate(history, user_text, image_path=None):
             {"route": "cloud_fast", "model": "groq",
              "task_type": "chat", "base_score": 82,
              "reason": "chat → Groq (content-routed)"},
+            {"route": "local", "model": MODELS["master"],
+             "task_type": "chat", "base_score": 62,
+             "reason": "chat → local master fallback"},
+        ], reason_prefix="chat scored")
+    if is_chat_class and have_fireworks:
+        return _choose_route([
+            {"route": "cloud", "model": "fireworks",
+             "task_type": "chat", "base_score": 80,
+             "reason": "chat → Fireworks (content-routed)"},
             {"route": "local", "model": MODELS["master"],
              "task_type": "chat", "base_score": 62,
              "reason": "chat → local master fallback"},
@@ -1404,7 +1553,7 @@ def orchestrate(history, user_text, image_path=None):
             candidates.append({"route": "local", "model": "qwen2.5:14b",
                                "task_type": "code", "base_score": 82,
                                "reason": "code → qwen2.5:14b local"})
-        return _choose_route(candidates, reason_prefix="apocalypse scored")
+        return _choose_route(candidates, reason_prefix="local scored")
     if any(w in low for w in REASONING_WORDS) or (word_set & COMPLEX_WORDS):
         candidates = [
             {"route": "local", "model": MODELS["master"],
@@ -1415,7 +1564,7 @@ def orchestrate(history, user_text, image_path=None):
             candidates.insert(0, {"route": "local", "model": "qwen2.5:14b",
                                   "task_type": "deep", "base_score": 88,
                                   "reason": "deep → 14b big brain (local)"})
-        return _choose_route(candidates, reason_prefix="apocalypse scored")
+        return _choose_route(candidates, reason_prefix="local scored")
     if len(words) > 100:
         candidates = [
             {"route": "local", "model": MODELS["master"],
@@ -1426,7 +1575,7 @@ def orchestrate(history, user_text, image_path=None):
             candidates.insert(0, {"route": "local", "model": "qwen2.5:14b",
                                   "task_type": "long", "base_score": 88,
                                   "reason": f"long ({len(words)} words) → 14b local"})
-        return _choose_route(candidates, reason_prefix="apocalypse scored")
+        return _choose_route(candidates, reason_prefix="local scored")
     # 2026-04-21: short-prompt → qwen2.5:3b route REMOVED. Short ≠ simple —
     # "fix the bug" is 3 words but requires senior-engineer reasoning. The 3B
     # mushes directives ("master ai endurance" hallucinated folder from voice-to-
@@ -1436,7 +1585,7 @@ def orchestrate(history, user_text, image_path=None):
         {"route": "local", "model": MODELS["master"],
          "task_type": "default", "base_score": 80,
          "reason": "default → master-ai brain (qwen2.5:7b + baked behavior, local)"}
-    ], reason_prefix="apocalypse scored")
+    ], reason_prefix="local scored")
 
 
 # Time-sensitive / current-events markers. Frozen local models can't know
@@ -2505,6 +2654,56 @@ def ask_cloud_deepseek(messages):
             _cloud_trip_network(e, 60)
         return None
 
+def ask_cloud_fireworks_dsv3(messages):
+    """Fireworks AI → DeepSeek V3.1 (non-reasoning, long-context chat/coder).
+
+    Distinct from `ask_cloud_deepseek` (DeepSeek's own API → R1 reasoning).
+    Fireworks pricing is per-token; opt-in via key in ~/.master_ai_keys
+    under 'fireworks'. No free tier.
+    """
+    if not _cloud_allowed("fireworks"):
+        return None
+    key = KEYS.get("fireworks")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log("CLOUD [fireworks/deepseek-v3p1]")
+    payload = {
+        "model": "accounts/fireworks/models/deepseek-v3p1",
+        "messages": messages,
+        "max_tokens": 4096,
+        "top_p": 1, "top_k": 40,
+        "presence_penalty": 0, "frequency_penalty": 0,
+        "temperature": 0.6,
+        "stream": False,
+    }
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://api.fireworks.ai/inference/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json",
+                 "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        label = {401: "AUTH FAIL — check API key",
+                 403: "AUTH FAIL — check API key",
+                 429: "RATE LIMIT hit",
+                 402: "OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"FIREWORKS_ERROR: {label}")
+        if code == 429:
+            _cloud_trip("fireworks", "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"FIREWORKS_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
 def _ask_openrouter(messages, model, label, timeout=60):
     """Generic OpenRouter caller with token tracking."""
     provider_key = f"openrouter/{label}"
@@ -2580,6 +2779,7 @@ def ask_cloud_openrouter(messages):
 def ask_cloud(messages, provider="groq"):
     fn_map = {
         "groq":         ask_cloud_groq,
+        "fireworks":    ask_cloud_fireworks_dsv3,
         "deepseek-r1":  ask_cloud_openrouter_r1,
         "gemini":       ask_cloud_gemini,
         "hermes-405b":  ask_cloud_openrouter_405b,
@@ -2614,6 +2814,7 @@ def ask_cloud(messages, provider="groq"):
     fallback_order = [
         ("hermes-405b", ask_cloud_openrouter_405b),
         ("deepseek-r1", ask_cloud_openrouter_r1),
+        ("fireworks",   ask_cloud_fireworks_dsv3),
         ("groq",        ask_cloud_groq),
         ("nemotron",    ask_cloud_openrouter_nemotron),
         ("gpt-oss-120b",ask_cloud_openrouter_gptoss),
@@ -3276,12 +3477,12 @@ def show_plan_demo():
 # banner stay in sync. Adding a mode? Add ONE entry here.
 MODE_CONTRACTS = {
     "plan": {
-        "tagline": "brainstorm + draft plans — default, no execution",
+        "tagline": "concrete execution plan first — default, no execution",
         "contract": (
-            "1. Chat freely — I won't touch the system unless you approve a plan.\n"
-            "2. Ask me to do something, I draft a plan; press 1 or Enter to run it.\n"
-            "3. Press 2 to edit the plan, 3 to discard, 4 to keep talking.\n"
-            "4. Good for thinking out loud, mapping out work, learning."
+            "1. Ask for work, I inspect context mentally and draft a concrete execution plan.\n"
+            "2. Good plans name likely files, exact changes, risks, and verification.\n"
+            "3. Press 1 or Enter to execute the approved plan, 2 to edit, 3 to discard.\n"
+            "4. I ask questions only when the answer blocks safe execution."
         ),
     },
     "review": {
@@ -3310,7 +3511,7 @@ MODE_CONTRACTS = {
 
 # Title shown atop the contract.
 MODE_HINT_TITLES = {
-    "plan": "Plan Mode — brainstorm + draft plans",
+    "plan": "Plan Mode — concrete execution plan",
     "review": "Review Mode — confirm every command",
     "auto": "⚠  Auto Mode Active — you are allowing:",
 }
@@ -3337,7 +3538,7 @@ def run_tutorial():
         ("How to talk to me",
          "Type any request and press Enter.\nExamples:\n  List files in my home folder\n  Install ffmpeg\n  Write a Python script that renames files\n  What is my IP address?"),
         ("Modes: Plan / Review / Auto",
-         "mode plan    → brainstorm + draft plans (default, no execution)\nmode review  → ask before every command (per-action confirm)\nmode auto    → run commands without asking (destructive still pauses)"),
+         "mode plan    → concrete execution plan first (default, no execution)\nmode review  → ask before every command (per-action confirm)\nmode auto    → run commands without asking (destructive still pauses)"),
         ("Memory",
          "remember: I prefer dark mode\n  → teaches me a fact to keep across sessions\nforget: dark mode\n  → removes matching facts\nmemory\n  → shows all stored facts"),
         ("Voice Input",
@@ -3434,7 +3635,7 @@ def _build_idle_tips():
     if not out:
         out = [
             ("hub",     "18-action control panel"),
-            ("help",    "8-slide command reference"),
+            ("help",    "full command reference"),
             ("refresh", "soft-restart if screen glitches"),
             ("",        "Your AI. Every entry point. Your hardware."),
         ]
@@ -3644,13 +3845,14 @@ def show_autotips(slide_delay=4.0):
             "Type anything — sends to AI (no prefix needed)",
             "'hub'    → 18-action control panel",
             "'projects' → your apps at a glance",
-            "'x' or Ctrl+C → exit (auto-saves)",
+            "'x' → exit (auto-saves)",
         ]),
         ("Models & Modes", [
             "'model' → pick a specific AI (11 options)",
             "'mode plan' → AI plans first, 'go' to run",
             "'mode auto' → no confirmation prompts",
-            "'mode plan' → brainstorm + draft plans (default)   ·   'mode review' → ask before each command",
+            "'mode local' → force local-only routing   ·   'mode connected' → cloud-first routing",
+            "'mode plan' → concrete execution plan   ·   'mode review' → ask before each command",
         ]),
         ("Memory & Context", [
             "'remember: <fact>' → persist across sessions",
@@ -3668,6 +3870,7 @@ def show_autotips(slide_delay=4.0):
             "Letter keys (n/b/q) > arrows — RustDesk eats Esc",
             "Drag-select in tmux → copies to phone (needs xclip)",
             "'tts on' → replies spoken aloud",
+            "', ; . /' are worth pressing",
             "'last' → re-print last AI reply inline",
         ]),
     ]
@@ -3718,7 +3921,7 @@ def show_hub():
     Returns the command string selected, or None if user quit."""
     items = [
         # (number shown, command executed, description)
-        ("help",         "paginated command reference"),
+        ("help",         "full command reference"),
         ("tips",         "quick-start tips screen"),
         ("tutorial",     "replay feature walkthrough"),
         ("model",        "pick AI model (11 models)"),
@@ -3896,10 +4099,17 @@ def show_help():
             ("v",                    "record voice (5 sec)"),
             ("r <secs>",             "record for N seconds"),
             ("<text> + Enter",       "send message directly — no prefix needed"),
+            (", ; . /",              "punctuation buckets to explore"),
             ("↑ / ↓",               "scroll command history"),
-            ("← →  Ctrl+A/E",       "move cursor within line"),
+            ("← →",                 "move cursor within line"),
             ("i <path>",             "analyze an image file"),
             ("dl <url>",             "download a file"),
+        ]),
+        ("COMMAND BUCKETS", [
+            (",",                    "general actions"),
+            (";",                    "modes + toggles"),
+            (".",                    "navigation + status"),
+            ("/",                    "payload commands"),
         ]),
         ("AI ROUTING", [
             ("model",                "open model picker — choose any model"),
@@ -3907,15 +4117,17 @@ def show_help():
             ("search <query>",       "force web search, show results"),
             ("reason: <question>",   "tighter reasoning — DeepSeek if available, local fallback"),
             ("tight: <question>",    "same as reason:"),
-            ("mode plan",            "brainstorm + draft plans (default — no execution)"),
+            ("mode plan",            "concrete execution plan first (default — no execution)"),
             ("mode review",          "ask before every command (per-action confirm)"),
             ("mode plan",            "AI shows plan first — type 'go' to run"),
             ("mode auto",            "commands run without asking"),
+            ("mode local",           "local-only routing"),
+            ("mode connected",       "cloud-first routing"),
             ("go  /  cancel",        "execute or discard a pending plan"),
         ]),
         ("MEMORY & CONTEXT", [
-            ("remember: <fact>",     "teach AI a fact (persists across sessions)"),
-            ("forget: <word>",       "remove facts matching word"),
+            ("remember: <fact>",     "teach AI a fact"),
+            ("forget: <word>",       "remove matching facts"),
             ("memory",               "show all stored facts"),
             ("project <path>",       "set active project — scans files, injects context"),
             ("project",              "show active project"),
@@ -3968,6 +4180,7 @@ def show_help():
             ("help hide <name>",     "hide a slide (e.g. 'help hide SCROLL')"),
             ("help show <name>",     "re-enable a hidden slide"),
             ("help reset",           "show every slide again"),
+            ("help buckets",         "show the punctuation teaser"),
             ("x",                    "exit Master AI"),
         ]),
     ]
@@ -4125,9 +4338,8 @@ def show_tips():
 
     section("POWER TIPS")
     blank()
-    row("Tab",             "auto-complete any command")
+    row("Tab",             "auto-complete any command; punctuation buckets narrow faster")
     row("↑ / ↓",          "scroll through command history")
-    row("Ctrl+C",          "interrupt + save session")
     row("file mentions",   "AI auto-reads files you name in your message")
     row("RUN: / READ:",    "AI can run commands and read files for you")
     row("chain tasks",     "just describe multi-step work in plain English")
@@ -4147,12 +4359,17 @@ def show_commands():
         ("mode plan", "Think first. Nothing runs until you approve"),
         ("mode review", "Ask before each file edit or command"),
         ("mode auto", "Work faster. Safe blocks still apply"),
+        ("mode local", "Local-only routing"),
+        ("mode connected", "Cloud-first routing"),
         ("reason: <question>", "DeepSeek if online; local fallback"),
         ("fast: <message>", "Quick cloud answer when Groq is configured"),
+        ("image: <prompt>", "Submit a local PNG job; see Pupil"),
+        (", ; . /", "Explore the punctuation buckets"),
         ("project ~/path", "Use a folder as context"),
         ("remember: <fact>", "Save something to memory"),
         ("doctor", "Check services, models, URLs, and warnings"),
         ("copy chat", "Export this conversation"),
+        ("help buckets", "Show the punctuation teaser"),
         ("refresh", "Restart the screen/engine in place"),
         ("kick", "Force restart if stuck"),
     ]
@@ -4164,6 +4381,23 @@ def show_commands():
         print(f"{BC}  ║{X}  {Y}{cmd:<19}{X} {C}{desc:<42}{X}{BC}║{X}")
     print(f"{BC}  ╚{'═' * width}╝{X}")
     print(f"  {D}Tip: you can ignore commands and just say what you want built.{X}\n")
+
+def show_buckets():
+    """Quick reference for the punctuation command buckets."""
+    rows = [
+        (",", "general actions"),
+        (";", "modes + toggles"),
+        (".", "navigation + status"),
+        ("/", "payload commands"),
+    ]
+    width = 66
+    print(f"\n{BC}  ╔{'═' * width}╗{X}")
+    print(f"{BC}  ║{X}  {BW}Punctuation buckets{X}{' ' * (width - 20)}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * width}╣{X}")
+    for key, desc in rows:
+        print(f"{BC}  ║{X}  {Y}{key:<2}{X} {C}{desc:<54}{X}{BC}║{X}")
+    print(f"{BC}  ╚{'═' * width}╝{X}")
+    print(f"  {D}Tip: type a few letters after the punctuation to narrow the list.{X}\n")
 
 # ── SAFETY BLOCK ─────────────────────────────────────────────
 BLOCKED_PATTERNS = [
@@ -4458,6 +4692,8 @@ def _pill(kind, detail=""):
         "CREATED": f"{BTN_G} CREATED {X}",
         "EDITED":  f"{BTN_G} EDITED  {X}",
         "DONE":    f"{BTN_G} DONE    {X}",
+        "SIGPIPE": f"{BTN_Y} SIGPIPE {X}",
+        "POLICY":  f"{BTN_C} POLICY  {X}",
         "BLOCKED": f"{BTN_R} BLOCKED {X}",
         "SKIPPED": f"{BTN_Y} SKIPPED {X}",
         "ERROR":   f"{BTN_R} ERROR   {X}",
@@ -4479,6 +4715,8 @@ class RunResult(str):
 def _action_ok(result):
     if isinstance(result, bool):
         return result
+    if hasattr(result, "exit_code") and getattr(result, "exit_code") == 141:
+        return True
     if hasattr(result, "ok"):
         return bool(result.ok)
     return result is not None
@@ -4487,12 +4725,158 @@ _INTERACTIVE_RUN_WORDS = {
     "less", "more", "man", "nano", "vim", "vi", "emacs", "top", "htop",
     "btop", "watch", "tail -f", "ssh", "mysql", "psql", "sqlite3",
 }
+_VISUAL_RUN_WORDS = {
+    "rain", "matrix", "animation", "animate", "screensaver", "terminal-effect",
+    "terminal_effect", "curses", "fullscreen",
+}
+
+def _shell_and_parts(cmd):
+    """Split a simple shell chain on top-level && while preserving quotes.
+
+    This is intentionally narrow: it handles the common model output shape
+    `chmod +x file && file` without pretending to be a full shell parser.
+    """
+    parts, buf = [], []
+    quote = ""
+    esc = False
+    i = 0
+    while i < len(cmd or ""):
+        ch = cmd[i]
+        if esc:
+            buf.append(ch)
+            esc = False
+        elif ch == "\\":
+            buf.append(ch)
+            esc = True
+        elif quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in ("'", '"'):
+            buf.append(ch)
+            quote = ch
+        elif ch == "&" and i + 1 < len(cmd) and cmd[i + 1] == "&":
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        parts.append(tail)
+    return parts or [(cmd or "").strip()]
+
+def _scriptish_token(token):
+    t = (token or "").strip().strip("'\"")
+    return bool(
+        t.startswith(("~", "/home/", "./", "../"))
+        or t.endswith((".sh", ".py", ".js", ".html", ".htm"))
+    )
+
+def _is_setup_command_part(part):
+    try:
+        toks = shlex.split(part)
+    except Exception:
+        toks = (part or "").split()
+    if not toks:
+        return False
+    first = toks[0].lower()
+    if first in ("chmod", "ls", "stat", "file", "test"):
+        return True
+    if first in ("bash", "sh", "python", "python3", "node") and len(toks) > 1 and toks[1] in ("-n", "--check"):
+        return True
+    return False
+
+def _is_script_execution_part(part):
+    try:
+        toks = shlex.split(part)
+    except Exception:
+        toks = (part or "").split()
+    if not toks:
+        return False
+    first = toks[0].lower()
+    if first in ("bash", "sh", "python", "python3", "node"):
+        return any(_scriptish_token(t) for t in toks[1:] if not t.startswith("-"))
+    return _scriptish_token(toks[0])
+
+def _missing_execution_targets(cmd):
+    missing = []
+    for part in _shell_and_parts(cmd):
+        try:
+            toks = shlex.split(part)
+        except Exception:
+            toks = (part or "").split()
+        if not toks:
+            continue
+        first = toks[0].lower()
+        candidates = []
+        if first in ("bash", "sh", "python", "python3", "node"):
+            for t in toks[1:]:
+                if t.startswith("-"):
+                    continue
+                if _scriptish_token(t):
+                    candidates.append(t)
+                    break
+        elif _scriptish_token(toks[0]):
+            candidates.append(toks[0])
+        elif first in ("chmod", "ls", "cat", "stat", "file"):
+            candidates.extend(t for t in toks[1:] if not t.startswith("-") and _scriptish_token(t))
+
+        for c in candidates:
+            exp = os.path.expanduser(c)
+            if not os.path.exists(exp):
+                missing.append(exp)
+    return sorted(set(missing))
+
+def _is_visual_command_part(part, visual_requested=False):
+    low = (part or "").strip().lower()
+    if not low or _is_setup_command_part(part):
+        return False
+    if any(f"| {w}" in low or f"|{w}" in low for w in ("less", "more", "tail -f")):
+        return True
+    try:
+        first = shlex.split(part)[0].lower()
+    except Exception:
+        first = low.split()[0] if low.split() else ""
+    if first in _INTERACTIVE_RUN_WORDS or low.startswith("tail -f "):
+        return True
+    if any(w in low for w in _VISUAL_RUN_WORDS):
+        return True
+    if visual_requested and _is_script_execution_part(part):
+        return True
+    return False
+
+def _split_run_policy(cmd, visual_requested=False):
+    """Return (run_parts, runterm_parts) for a model-emitted RUN command."""
+    parts = _shell_and_parts(cmd)
+    if len(parts) == 1:
+        if _is_visual_command_part(parts[0], visual_requested=visual_requested):
+            return [], [parts[0]]
+        return [cmd], []
+
+    run_parts, runterm_parts = [], []
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if _is_visual_command_part(part, visual_requested=visual_requested):
+            # Keep the visual command plus any following shell pieces together
+            # in the terminal. Setup/check pieces before it stay captured.
+            runterm_parts.append(" && ".join(parts[i:]))
+            break
+        run_parts.append(part)
+        i += 1
+    return run_parts, runterm_parts
 
 def _looks_interactive_run(cmd):
     low = (cmd or "").strip().lower()
     if not low:
         return False
     if any(f"| {w}" in low or f"|{w}" in low for w in ("less", "more", "tail -f")):
+        return True
+    if _is_visual_command_part(cmd, visual_requested=False):
         return True
     try:
         first = shlex.split(cmd)[0].lower()
@@ -4529,18 +4913,21 @@ def run_command(cmd):
                                 shell=False,
                                 capture_output=True, text=True, timeout=300)
         output = (result.stdout + result.stderr).strip()
+        chain_ok = (result.returncode == 0 or result.returncode == 141)
         if output:
             print(f"{G}{output}{X}")
         if result.returncode == 0:
             print(_pill("RAN", f"{D}{shell_cmd[:70]}{X}"))
+        elif result.returncode == 141:
+            print(_pill("SIGPIPE", f"{D}exit 141 · {shell_cmd[:60]}{X}"))
         else:
             print(_pill("ERROR", f"{D}exit {result.returncode} · {shell_cmd[:60]}{X}"))
         log(f"PC_CMD: {shell_cmd}")
-        _router_metric("execution", action="run", ok=(result.returncode == 0),
+        _router_metric("execution", action="run", ok=chain_ok,
                        exit_code=result.returncode,
                        latency_s=round(time.time() - _t0, 3),
                        detail=shell_cmd[:240])
-        return RunResult(output, ok=(result.returncode == 0),
+        return RunResult(output, ok=chain_ok,
                          exit_code=result.returncode, command=shell_cmd)
     except subprocess.TimeoutExpired:
         print(_pill("ERROR", f"{D}timeout (5 min) · {cmd[:60]}{X}"))
@@ -4708,7 +5095,7 @@ def show_doctor():
     mem_count = _doctor_count_lines(MEMORY_FILE)
     approved_count = _doctor_count_lines(APPROVED_FILE)
     task_count = active_task_count()
-    cloud_count = sum(1 for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter'] if KEYS.get(k))
+    cloud_count = sum(1 for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'] if KEYS.get(k))
     tts_pref = "ON" if TTS_ENABLED else "OFF"
 
     crash = ""
@@ -4807,9 +5194,43 @@ def _normalize_run_cmd(cmd):
     fixed = re.sub(r'(?<=\s)\./~/', '~/', fixed)
     fixed = re.sub(r'(?<!\S)\.~/+', '~/', fixed)
     fixed = re.sub(r'(?<=\s)\.~/+', '~/', fixed)
+    fixed = _normalize_ollama_systemctl_scope(fixed)
     if fixed != (cmd or "").strip():
         print(f"{Y}  normalized command:{X} {fixed}")
     return fixed
+
+def _normalize_ollama_systemctl_scope(cmd):
+    """Ollama is a system unit on Madam-Mary, never a user unit."""
+    try:
+        parts = shlex.split(cmd)
+    except Exception:
+        return cmd
+    if len(parts) < 4:
+        return cmd
+
+    sudo_prefix = []
+    systemctl_i = 0
+    if parts[0] == "sudo":
+        sudo_prefix = ["sudo"]
+        systemctl_i = 1
+    if len(parts) <= systemctl_i + 3 or parts[systemctl_i] != "systemctl":
+        return cmd
+    if parts[systemctl_i + 1] != "--user":
+        return cmd
+
+    action = parts[systemctl_i + 2]
+    service = parts[systemctl_i + 3]
+    if service not in ("ollama", "ollama.service"):
+        return cmd
+
+    system_actions = {"start", "stop", "restart", "reload", "status", "enable", "disable", "is-active"}
+    if action not in system_actions:
+        return cmd
+
+    rewritten = [*sudo_prefix, "systemctl", action, service, *parts[systemctl_i + 4:]]
+    if not sudo_prefix and action in {"start", "stop", "restart", "reload", "enable", "disable"}:
+        rewritten.insert(0, "sudo")
+    return " ".join(shlex.quote(p) for p in rewritten)
 
 # ── 4-OPTION CONFIRM ─────────────────────────────────────────
 @_awaiting_confirm
@@ -4821,11 +5242,17 @@ def confirm_run(cmd):
         _audit("RUN-EMPTY", cmd)
         return None
 
-    if _looks_interactive_run(cmd):
-        print(_pill("BLOCKED", f"{D}interactive command belongs in RUNTERM, not RUN: {cmd[:60]}{X}"))
-        log(f"BLOCKED-INTERACTIVE-RUN: {cmd}")
-        _audit("RUN-BLOCK-INTERACTIVE", cmd)
+    if cmd.rstrip().endswith("\\"):
+        print(_pill("BLOCKED", f"{D}incomplete shell continuation in RUN: {cmd[:60]}{X}"))
+        log(f"RUN-BLOCK-DANGLING-BACKSLASH: {cmd}")
+        _audit("RUN-BLOCK-CONTINUATION", cmd)
         return None
+
+    if _looks_interactive_run(cmd):
+        print(_pill("RUNTERM", f"{D}visual/interactive command redirected to terminal: {cmd[:60]}{X}"))
+        log(f"RUN-REDIRECT-RUNTERM: {cmd}")
+        _audit("RUNTERM-REDIRECT", cmd)
+        return confirm_runterm(cmd)
 
     if is_blocked(cmd):
         print(_pill("BLOCKED", f"{D}dangerous command refused: {cmd[:60]}{X}"))
@@ -4954,6 +5381,19 @@ def confirm_runterm(cmd):
         _audit("RUNTERM-EMPTY", cmd)
         return None
 
+    if cmd.rstrip().endswith("\\"):
+        print(_pill("BLOCKED", f"{D}incomplete shell continuation in RUNTERM: {cmd[:60]}{X}"))
+        log(f"RUNTERM-BLOCK-DANGLING-BACKSLASH: {cmd}")
+        _audit("RUNTERM-BLOCK-CONTINUATION", cmd)
+        return None
+
+    missing = _missing_execution_targets(cmd)
+    if missing:
+        print(_pill("BLOCKED", f"{D}RUNTERM target missing: {missing[0][:70]}{X}"))
+        log(f"RUNTERM-BLOCK-MISSING-TARGET: {cmd} missing={missing}")
+        _audit("RUNTERM-BLOCK-MISSING", cmd)
+        return None
+
     if is_blocked(cmd):
         print(_pill("BLOCKED", f"{D}dangerous command refused: {cmd[:60]}{X}"))
         log(f"BLOCKED-TERM: {cmd}")
@@ -4966,12 +5406,16 @@ def confirm_runterm(cmd):
     if cmd in load_approved():
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
         _audit("RUNTERM", cmd)
-        return run_in_terminal(cmd)
+        result = run_in_terminal(cmd)
+        _remember_last_action("runterm", command=cmd)
+        return result
 
     if globals().get("MODE", "plan") == "auto":
         print(f"{C}  ⚡ auto-flow (new terminal): {Y}{cmd}{X}")
         _audit("RUNTERM-AUTO", cmd)
-        return run_in_terminal(cmd)
+        result = run_in_terminal(cmd)
+        _remember_last_action("runterm", command=cmd)
+        return result
 
     print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
     print(f"{D}║  🥷 {BOLD}AI wants to run in a NEW terminal:{X}")
@@ -4987,7 +5431,9 @@ def confirm_runterm(cmd):
     _check_kick_escape(choice)
     if choice == '1':
         _audit("RUNTERM", cmd)
-        return run_in_terminal(cmd)
+        result = run_in_terminal(cmd)
+        _remember_last_action("runterm", command=cmd)
+        return result
     print(f"{Y}  ⏭  Skipped.{X}")
     return None
 
@@ -5193,7 +5639,41 @@ def confirm_edit(filepath, find_text, replace_text):
 def process_reply(reply, history, streamed=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
-    lines = reply.splitlines()
+    raw_lines = reply.splitlines()
+
+    def _join_shell_continuations(src_lines):
+        """Join directive shell commands split with trailing backslashes.
+
+        Models often emit:
+          RUN: ffmpeg ... \
+            -vf ... \
+            output.mp4
+        The old parser treated only the first physical line as RUN, so
+        bash received a dangling backslash and ffmpeg saw '\' as output.
+        """
+        out = []
+        i = 0
+        directive_re = re.compile(r'^\s*(RUN|RUNTERM):\s*(.*)$', re.IGNORECASE)
+        while i < len(src_lines):
+            line = src_lines[i]
+            m = directive_re.match(line)
+            if not m:
+                out.append(line)
+                i += 1
+                continue
+            name, rest = m.group(1), m.group(2).rstrip()
+            pieces = [rest[:-1].rstrip() if rest.endswith("\\") else rest]
+            continued = rest.endswith("\\")
+            i += 1
+            while continued and i < len(src_lines):
+                nxt = src_lines[i].strip()
+                continued = nxt.endswith("\\")
+                pieces.append(nxt[:-1].rstrip() if continued else nxt)
+                i += 1
+            out.append(f"{name}: {' '.join(p for p in pieces if p).strip()}")
+        return out
+
+    lines = _join_shell_continuations(raw_lines)
 
     # Strip surrounding backticks/quotes from extracted commands — local
     # models sometimes wrap commands in `backticks` or 'quotes'. Shell
@@ -5399,12 +5879,77 @@ def process_reply(reply, history, streamed=False):
             })
             return None  # caller re-asks AI with injected context
 
+    def _latest_user_turn():
+        for msg in reversed(history):
+            if msg.get("role") == "user":
+                return (msg.get("content") or "")
+        return ""
+
+    def _creation_expected():
+        text = _latest_user_turn().lower()
+        return bool(
+            _is_tool_required(text)
+            and re.search(r'\b(create|write|make|build|generate)\b.*\b(script|file|html|app|page|demo|animation|effect|video|clip|movie)\b', text)
+        )
+
+    def _inline_python_generator(cmd):
+        low = cmd.lower()
+        if not re.search(r'\bpython(?:3|\d(?:\.\d+)?)?\s+-c\b', low):
+            return False
+        if len(cmd) < 140:
+            return False
+        return any(tok in low for tok in (
+            "from pil import", "import pil", "imagedraw", "imagefont",
+            "subprocess.run(", "os.system(", "ffmpeg", "image.new(",
+            "draw.", "frames", "generate", "animate", "render"
+        ))
+
+    def _visual_requested():
+        text = _latest_user_turn().lower()
+        return bool(
+            any(w in text for w in _VISUAL_RUN_WORDS)
+            or "terminal effect" in text
+            or "terminal animation" in text
+            or "matrix style" in text
+            or "matrix-style" in text
+        )
+
     # CREATE: / EDIT: run BEFORE RUN: — so RUN: bash <path> works on a file
     # the same reply just created. Prior order produced exit-127s when the
     # model emitted CREATE: + RUN: together.
     action_failed = False
     created_ok_paths = []
     for filepath, content in create_files:
+        if _visual_requested() and str(filepath).lower().endswith(".sh"):
+            visual_issues = []
+            low_content = content.lower()
+            if "killall" in low_content or "pkill" in low_content:
+                visual_issues.append("uses killall/pkill instead of a timed frame loop")
+            if re.search(r'\bsleep\s+1[12]0\b', low_content):
+                visual_issues.append("uses one long sleep instead of animation frames")
+            if "trap " not in low_content:
+                visual_issues.append("missing cleanup trap")
+            if "tput" not in low_content and "stty size" not in low_content:
+                visual_issues.append("not terminal-size aware")
+            if "while" not in low_content and "for ((" not in low_content:
+                visual_issues.append("missing animation loop")
+            if visual_issues:
+                print(_pill("BLOCKED", f"{D}visual script below quality bar: {visual_issues[0]}{X}"))
+                log(f"VISUAL_QUALITY_REPAIR: {filepath} issues={visual_issues}")
+                history.append({
+                    "role": "user",
+                    "content": (
+                        "[Directive repair]\n"
+                        f"The generated visual script for {filepath} is below the product-demo quality bar:\n"
+                        + "\n".join(f"- {i}" for i in visual_issues)
+                        + "\n\nRegenerate the same file with a complete bash animation script. "
+                          "Required: cleanup trap, hidden/restored cursor, clear screen, tput rows/cols, "
+                          "timed frame loop using SECONDS/end time, multiple moving elements per frame, "
+                          "color/depth variation, no killall/pkill, no long sleep shortcut, no static echo spam. "
+                          "Then verify with bash -n, chmod, ls, and run the visual script with RUNTERM."
+                    )
+                })
+                return None
         if confirm_create(filepath, content):
             created_ok_paths.append(os.path.expanduser(filepath))
         else:
@@ -5420,9 +5965,67 @@ def process_reply(reply, history, streamed=False):
             log("CHAIN_ABORT: skipped RUN/RUNTERM after failed CREATE/EDIT")
         return reply
 
+    if (run_cmds or runterm_cmds) and not create_files and not edit_ops and _creation_expected():
+        missing = []
+        for cmd in run_cmds + runterm_cmds:
+            missing.extend(_missing_execution_targets(cmd))
+        if missing:
+            uniq_missing = sorted(set(missing))
+            print(_pill("BLOCKED", f"{D}model tried to use missing file before CREATE: {uniq_missing[0][:60]}{X}"))
+            log(f"DIRECTIVE_REPAIR_MISSING_CREATE: {uniq_missing}")
+            history.append({
+                "role": "user",
+                "content": (
+                    "[Directive repair]\n"
+                    "You tried to run commands against missing file(s):\n"
+                    + "\n".join(f"- {p}" for p in uniq_missing[:6])
+                    + "\n\nThis is a file-creation task. First emit a complete CREATE block "
+                      "for the required file path with <<<CONTENT and >>>CONTENT. Only after "
+                      "the CREATE block may you emit chmod, ls, bash, or RUNTERM commands. "
+                    "Do not explain. Repair the directive chain now."
+                )
+            })
+            return None
+
+    if (run_cmds or runterm_cmds) and not create_files and not edit_ops:
+        inline_python = [c for c in run_cmds + runterm_cmds if _inline_python_generator(c)]
+        if inline_python:
+            print(_pill("BLOCKED", f"{D}inline python generator must be CREATEd first{X}"))
+            log(f"DIRECTIVE_REPAIR_INLINE_PYTHON: {inline_python[:3]}")
+            history.append({
+                "role": "user",
+                "content": (
+                    "[Directive repair]\n"
+                    "You tried to run a long inline python generator with python3 -c. "
+                    "Do not use a one-liner for generated images or video. First emit a CREATE block "
+                    "for a real .py or .sh generator file on Desktop, then verify it, then run that file "
+                    "by path. Keep the filename stable through CREATE → chmod/ls → RUN/RUNTERM. "
+                    "Do not explain. Repair the directive chain now."
+                )
+            })
+            return None
+
+    # Deterministic execution policy: setup stays captured, visual work runs
+    # in a real terminal. Example model drift:
+    #   RUN: chmod +x file.sh && file.sh
+    # becomes:
+    #   RUN: chmod +x file.sh
+    #   RUNTERM: file.sh
+    visual_requested = _visual_requested()
+    normalized_run_cmds = []
+    for cmd in run_cmds:
+        setup_parts, visual_parts = _split_run_policy(cmd, visual_requested=visual_requested)
+        if visual_parts:
+            print(_pill("POLICY", f"{D}split visual command into RUN setup + RUNTERM execution{X}"))
+            log(f"RUN_POLICY_SPLIT: {cmd!r} -> run={setup_parts!r} runterm={visual_parts!r}")
+        normalized_run_cmds.extend(setup_parts)
+        runterm_cmds.extend(visual_parts)
+    run_cmds = normalized_run_cmds
+
     for cmd in run_cmds:
         result = confirm_run(cmd)
-        if not _action_ok(result):
+        chain_ok = _action_ok(result)
+        if not chain_ok:
             # Informational commands (systemctl status etc.) return nonzero
             # exits as diagnostic answers, not failures. Let the chain
             # advance so a follow-up `systemctl start` can fire.
@@ -5462,6 +6065,28 @@ def process_reply(reply, history, streamed=False):
         log(f"AUTO-MARK-DONE: project={proj!r} task={task!r} flipped={flipped}")
 
     return reply
+
+def execute_approved_plan(original_request, approved_plan, history):
+    """Turn a Plan-mode prose plan into a real execution turn.
+
+    Older Plan mode re-ran the original user sentence after approval. That
+    lost the concrete plan the user had just accepted, so the model could
+    drift back into explanation or ask-for-permission behavior. This handoff
+    keeps the approved plan in the prompt and asks for machine directives.
+    """
+    plan = (approved_plan or "").strip()
+    request = (original_request or "").strip()
+    execution_prompt = (
+        "EXECUTE THE APPROVED PLAN BELOW.\n"
+        "Do not re-plan. Do not ask whether to proceed. The user already approved it.\n"
+        "Use real machine directives now: READ, CREATE, EDIT, RUN, or RUNTERM.\n"
+        "Read files before editing them. Verify work with a RUN command when possible.\n"
+        "If a step is impossible, do the safe parts first, then say exactly what blocked.\n\n"
+        f"ORIGINAL USER REQUEST:\n{request}\n\n"
+        f"APPROVED PLAN:\n{plan}\n\n"
+        "Start executing now."
+    )
+    return handle(execution_prompt, history)
 
 # ── PERMISSIONS WIZARD ────────────────────────────────────────
 def permissions_wizard():
@@ -5585,8 +6210,8 @@ def startup_check():
           f"{_count(APPROVED_FILE)} auto-approved commands{X}")
 
     # Cloud keys
-    if any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter']):
-        print(f"  {G}✅ Cloud AI     {C}keys loaded (Groq / OpenAI / OpenRouter){X}")
+    if any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter']):
+        print(f"  {G}✅ Cloud AI     {C}keys loaded (Groq / Fireworks / OpenAI / OpenRouter){X}")
     else:
         print(f"  {Y}⚠  Cloud AI     {C}no keys found — local Ollama only{X}")
 
@@ -5621,7 +6246,7 @@ def draw_status_bar():
             return 0
     mem = _count(MEMORY_FILE)
     tasks = active_task_count()
-    has_cloud = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'gemini', 'groq', 'openai', 'openrouter'])
+    has_cloud = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'])
     model_label = PINNED_MODEL if PINNED_MODEL else ("AUTO+CLOUD" if has_cloud else "AUTO")
     tts_on = os.path.exists(Path.home() / ".master_ai_tts_on")
 
@@ -5733,7 +6358,7 @@ def handle_loop_task(task, history):
     start = _t.time()
     print()
     print(f"  {BC}🔁  LOOP MODE — {task}{X}")
-    print(f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS//60} min · Ctrl+C to abort{X}")
+    print(f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS//60} min · abort to stop{X}")
     print()
 
     # Phase 1 — plan
@@ -5924,6 +6549,61 @@ def handle_tight_reasoning(user_text, query, history):
         print(f"\n  {Y}tight reasoning interrupted{X}")
     except Exception as e:
         print(f"  {R}tight reasoning error: {e}{X}")
+
+def handle_image_gen(user_text, prompt, history):
+    """Submit a local image-gen job via sd-server (CPU, ~56s/image on Madam-Mary).
+
+    Async by design: returns immediately with the job id. The PNG lands in
+    ~/scripts/image_engine/out/. Pupil pane (when wired) polls /sdcpp/v1/jobs/<id>.
+    Falls through cleanly with a clear error if the sd-server systemd user
+    service isn't running — does NOT auto-start it (Elijah's call to keep
+    the always-on RAM cost opt-in).
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        print(f"  {Y}usage: image: <prompt>{X}")
+        return
+
+    imagegen = Path.home() / "scripts" / "image_engine" / "imagegen.sh"
+    if not imagegen.exists():
+        print(f"  {R}image engine not installed at {imagegen}{X}")
+        return
+
+    try:
+        h = subprocess.run([str(imagegen), "health"], capture_output=True, timeout=5)
+    except Exception as e:
+        print(f"  {R}image engine health check failed: {e}{X}")
+        return
+    if h.returncode != 0:
+        print(f"  {Y}sd-server not running. Start it with:{X}")
+        print(f"      {C}systemctl --user start sd-server{X}")
+        return
+
+    print(f"  {BC}[thinking: dispatching local image gen — ~56s on this CPU]{X}")
+    try:
+        r = subprocess.run([str(imagegen), "submit", prompt],
+                           capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print(f"  {R}submit failed: {e}{X}")
+        return
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or f"exit {r.returncode}"
+        print(f"  {R}submit failed: {err}{X}")
+        return
+    job_id = r.stdout.strip()
+    if not job_id:
+        print(f"  {R}submit returned no job id{X}")
+        return
+
+    out_dir = Path.home() / "scripts" / "image_engine" / "out"
+    msg = (
+        f"rendering, see Pupil [job {job_id}]\n"
+        f"  • status: ~/scripts/image_engine/imagegen.sh status {job_id}\n"
+        f"  • result lands in: {out_dir}/"
+    )
+    print(f"\n  {M}Sensei:{X} {msg}\n", flush=True)
+    history.append({"role": "user", "content": user_text})
+    history.append({"role": "assistant", "content": msg})
 
 def handle(user_text, history, image_path=None):
     # ── Deterministic "open <url/site>" catch — no model call needed ───
@@ -6158,6 +6838,11 @@ def handle(user_text, history, image_path=None):
         "PREFER CREATE: over 'bash -c \"echo ... > file\"' redirects — CREATE: writes the\n"
         "file via the directive parser (with auto-chmod on shebangs); redirects run inside\n"
         "bash -c where '$0' is 'bash' not the filename, which breaks self-deleting scripts.\n\n"
+        "VIDEO GENERATION: If the user asks to make/create/generate a video/clip/movie and does\n"
+        "not provide source footage, create an original MP4 from scratch instead of asking for a URL.\n"
+        "Use CREATE to write a local generator script or frame builder, then RUN to verify and render.\n"
+        "Use /home/elijah/Desktop/rabbit_hop.mp4 as the minimum quality anchor for word-only bunny/video requests: real scene, visible subject motion, background depth, and a valid MP4. If the output is just text-on-background or a placeholder encode, repair and regenerate.\n"
+        "Only ask for source footage when the user explicitly says edit/use existing footage.\n\n"
         "URL DISCIPLINE — NEVER invent a URL, git remote, or path. If the user says\n"
         "'open <website>' or 'open github', emit `RUN: xdg-open <actual-url>`. If you\n"
         "don't know the exact URL, ASK — do not guess. Known fact: Elijah's GitHub\n"
@@ -6204,6 +6889,17 @@ def handle(user_text, history, image_path=None):
                     "Tool task. Use only real directive blocks, no markdown fences, no prose-only plan. "
                     "For files, emit CREATE with <<<CONTENT and >>>CONTENT. "
                     "For a single-file HTML demo, inline CSS in <style> and JavaScript in <script>. "
+                    "For video/clip/movie requests with no source footage, generate an original local MP4 "
+                    "using bash+ffmpeg or Python frames+ffmpeg; do not ask for a source URL unless the "
+                    "user explicitly asked to edit/use existing footage. Create a script or generator, "
+                    "run it, then verify the MP4 exists. "
+                    "For terminal animations, rain, matrix effects, curses, or fullscreen visual scripts, "
+                    "write product-demo quality: cleanup trap, hidden/restored cursor, clear screen, "
+                    "tput rows/cols, timed frame loop, multiple moving elements per frame, color/depth "
+                    "variation, no killall/sleep shortcut, no static echo spam. Emit RUNTERM to run "
+                    "the finished script; never emit RUN for the visual execution. "
+                    "Never emit chmod, ls, bash, RUNTERM, or file verification for a new path until "
+                    "you have emitted the CREATE block for that exact path earlier in the same reply. "
                     "After creating, emit RUN to verify the file exists.\n\n"
                     "User: "
                 )
@@ -6285,11 +6981,37 @@ def handle(user_text, history, image_path=None):
     if not reply:
         reply = "No response from AI."
 
-    result = process_reply(reply, history, streamed=streamed)
+    low_user = user_text.lower()
+    low_reply = (reply or "").lower()
+    generative_video_request = (
+        re.search(r'\b(make|create|generate)\b.*\b(video|clip|movie)\b', low_user)
+        and not any(p in low_user for p in ("from footage", "use footage", "edit footage", "source video", "url"))
+    )
+    if generative_video_request and any(p in low_reply for p in ("provide a url", "source video", "original footage", "where the original footage")):
+        print(_pill("POLICY", f"{D}generative video request repaired: no source footage required{X}"))
+        history.append({
+            "role": "user",
+            "content": (
+                "[Directive repair]\n"
+                "The user asked to make/generate a video from words, not edit existing footage. "
+                "Do not ask for a source URL or original footage. Create an original generated MP4 locally. "
+                "Use CREATE to write a complete bash or Python generator on Desktop. Use ffmpeg to render "
+                "a 30-second MP4, verify the file exists, and open it or report the path. "
+                f"Match or exceed the quality of {_video_quality_anchor()} as the minimum bar."
+            )
+        })
+        result = None
+    else:
+        result = process_reply(reply, history, streamed=streamed)
 
     # READ: was triggered — re-ask with injected file content
     if result is None:
-        if route in ("cloud", "web"):
+        repair_turn = bool(history and history[-1].get("role") == "user"
+                           and str(history[-1].get("content", "")).startswith("[Directive repair]"))
+        if repair_turn:
+            reply2 = ask_local_stream(history, model=MODELS["master"])
+            streamed = True
+        elif route in ("cloud", "web"):
             _spin2 = local_thinking_start()
             reply2 = ask_cloud(history)
             local_thinking_stop(_spin2)
@@ -6475,9 +7197,7 @@ def main():
 
     startup_check()
 
-    # ── Auto-resize tmux pane to match the ACTUAL client terminal dims ──
-    # resize-window -A uses the client's bounds, but we also fetch them
-    # explicitly so we can log the mismatch if the pane is still small.
+    # ── Auto-resize tmux pane to match the actual client terminal dims ──
     if os.environ.get("TMUX"):
         mouse_pref = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
         tmux_mouse = "on" if mouse_pref != "0" else "off"
@@ -6485,22 +7205,7 @@ def main():
                        check=False, capture_output=True)
         subprocess.run(["tmux", "set-window-option", "-g", "mouse", tmux_mouse],
                        check=False, capture_output=True)
-        subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
-                       check=False, capture_output=True)
-        try:
-            r = subprocess.run(
-                ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
-                capture_output=True, text=True, timeout=2, check=False,
-            )
-            dims = (r.stdout or "").strip()
-            if "x" in dims:
-                w, h = dims.split("x", 1)
-                subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
-                               check=False, capture_output=True)
-                subprocess.run(["tmux", "refresh-client", "-S"],
-                               check=False, capture_output=True)
-        except Exception as e:
-            log(f"RESIZE_ERROR: {e}")
+        _tmux_resize_to_client()
 
     # ── Collect boot status silently (no heavy output yet) ────────
     # Count loaded cloud KEYS — skip usage counters / metadata (names with '_')
@@ -6522,19 +7227,13 @@ def main():
     if _SENSEI_APP is None:
         os.system('clear')
 
-    # ── Use the SAME banner as master.sh main menu (brand.sh banner_master_ai) ─
-    # In TUI mode we must CAPTURE the subprocess output and push it through
-    # sys.stdout (the shim); otherwise the bash child writes directly to the
-    # real terminal FD, bypassing the scrollable output region.
+    # ── Use the SAME banner as master.sh main menu in classic mode ─
+    # TUI mode already has a full-width header/frame. The shell banner is
+    # fixed-width, so rendering it inside the TUI leaves an 80-column block
+    # on wide terminals and makes the screen look like it failed to resize.
     try:
         if _SENSEI_APP is not None:
-            res = subprocess.run(
-                "source ~/scripts/brand.sh && banner_master_ai",
-                shell=True, executable="/bin/bash",
-                capture_output=True, text=True, check=False,
-            )
-            sys.stdout.write(res.stdout or "")
-            sys.stdout.flush()
+            pass
         else:
             subprocess.run(
                 "source ~/scripts/brand.sh && banner_master_ai",
@@ -6596,7 +7295,7 @@ def main():
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
 
-    # Save on any exit — force-close, terminal close, Ctrl+C, SIGTERM
+    # Save on any exit — force-close, terminal close, SIGTERM
     def _exit_save(signum=None, frame=None):
         save_session(GLOBAL_HISTORY, silent=True)
         sys.exit(0)
@@ -6732,6 +7431,9 @@ def main():
             _save_hidden_help_sections(set())
             print(f"  {G}✓ all help slides restored{X}")
             continue
+        if lo in ("help buckets", "buckets", "bucket menu"):
+            show_buckets()
+            continue
 
         # ── Help (slide show — may return a typed message) ────
         if lo in ("commands", "command", "?"):
@@ -6839,11 +7541,11 @@ def main():
                 print(f"  {C}Hints are {state}.{X}")
             continue
 
-        # ── Run-mode (routing preference — apocalypse/local vs peacetime/cloud) ──
+        # ── Run-mode (routing preference — local vs connected/cloud) ──
         # Independent of execution mode (safe/plan/auto). This one decides
         # whether the orchestrator prefers the LOCAL engine or routes to
         # cloud when keys exist.
-        if lo in ("mode local", "mode offline", "mode in-house", "mode apocalypse"):
+        if lo in ("mode local", "mode offline", "mode in-house"):
             try:
                 (Path.home() / ".master_ai_run_mode").write_text("apocalypse")
             except Exception:
@@ -6952,7 +7654,7 @@ def main():
                 try: _SENSEI_APP.set_mode("review")
                 except Exception: pass
             print(f"\n{C}  ▶ handoff: Plan → Review — executing plan...{X}")
-            reply = handle(PENDING_PLAN_REQUEST, history)
+            reply = execute_approved_plan(PENDING_PLAN_REQUEST, PENDING_PLAN_TEXT, history)
             globals()['PENDING_PLAN_TEXT'] = ""
             globals()['PENDING_PLAN_REQUEST'] = ""
             if TTS_ENABLED and reply:
@@ -6980,7 +7682,7 @@ def main():
                 try: _SENSEI_APP.set_mode("auto")
                 except Exception: pass
             print(f"{G}  ▶ handoff: Review → Auto — running the project in flow...{X}")
-            reply = handle(PENDING_PLAN_REQUEST, history)
+            reply = execute_approved_plan(PENDING_PLAN_REQUEST, PENDING_PLAN_TEXT, history)
             globals()['PENDING_PLAN_TEXT'] = ""
             globals()['PENDING_PLAN_REQUEST'] = ""
             if TTS_ENABLED and reply:
@@ -7228,39 +7930,25 @@ def main():
         # ── Resize: snap tmux pane to attached-client dims (full-screen fix) ──
         if lo in ("resize", "maximize", "fit"):
             if os.environ.get("TMUX"):
-                try:
-                    r = subprocess.run(
-                        ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
-                        capture_output=True, text=True, timeout=2, check=False,
-                    )
-                    dims = (r.stdout or "").strip()
-                    if "x" in dims:
-                        w, h = dims.split("x", 1)
-                        subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
-                                       check=False, capture_output=True)
-                        subprocess.run(["tmux", "refresh-client", "-S"],
-                                       check=False, capture_output=True)
-                        print(f"  {G}✅ pane snapped to client dims: {dims}{X}")
-                    else:
-                        subprocess.run(["tmux", "resize-window", "-A"], check=False)
-                        print(f"  {G}✅ pane resized (fallback to -A).{X}")
-                except Exception as e:
-                    print(f"  {R}resize failed: {e}{X}")
-                subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
-                               check=False, capture_output=True)
+                dims = _tmux_resize_to_client()
+                if dims and dims != "auto":
+                    print(f"  {G}✅ pane snapped to latest client dims: {dims}{X}")
+                elif dims == "auto":
+                    print(f"  {G}✅ pane resized (fallback to tmux auto-fit).{X}")
+                else:
+                    print(f"  {R}resize failed — no attached tmux client dims found.{X}")
             else:
                 print(f"  {Y}not in tmux — resize is automatic in plain terminals.{X}")
             continue
 
         # ── Only: kill every other tmux pane so Sensei owns the whole window ──
-        # Dots (·····) on the side = another pane is splitting your screen.
+        # Dots on the side = another pane is splitting your screen.
         if lo in ("only", "full", "fullpane", "alone"):
             if os.environ.get("TMUX"):
                 before = subprocess.run(["tmux", "list-panes"], capture_output=True, text=True)
                 n = len([l for l in (before.stdout or "").splitlines() if l.strip()])
                 if n > 1:
-                    subprocess.run(["tmux", "kill-pane", "-a"], check=False)
-                    subprocess.run(["tmux", "resize-window", "-A"], check=False)
+                    _tmux_resize_to_client()
                     print(f"  {G}✅ killed {n-1} other pane(s) — Sensei is alone now.{X}")
                 else:
                     print(f"  {D}already the only pane.{X}")
@@ -7496,7 +8184,7 @@ def main():
 
         # ── Keys ──────────────────────────────────────────────
         if lo == "keys":
-            known = [('groq','Groq'),('openai','OpenAI'),('openrouter','OpenRouter'),
+            known = [('groq','Groq'),('fireworks','Fireworks'),('openai','OpenAI'),('openrouter','OpenRouter'),
                      ('anthropic','Anthropic'),('gumroad','Gumroad')]
             print(f"\n{C}  API Keys:{X}")
             for field, label in known:
@@ -7607,10 +8295,9 @@ def main():
             "sensei":  f"{C}🥷 Sensei IS this thing — the tmux terminal AI you're talking to.{X}\n"
                        f"  Runs master_ai.py, routes between local models + cloud.\n"
                        f"  Current primary: qwen2.5:7b · fast tier: qwen2.5:3b · vision: llava.",
-            "apocalypse mode": f"{C}🥷 Apocalypse Mode:{X} the local-only state of Master AI.\n"
-                       f"  When cloud is dead, you rely on the trifecta (3b/7b/llava).\n"
-                       f"  Was linked to the chunker (now archived); mechanism being rethought.\n"
-                       f"  See memory: project_apocalypse_mode.md",
+            "local mode": f"{C}🥷 Local Mode:{X} the local-first state of Master AI.\n"
+                       f"  When cloud is unavailable, you rely on the trifecta (3b/7b/llava).\n"
+                       f"  Switch with `mode local`; return to cloud-first with `mode connected`.",
             "trifecta": f"{C}🥷 The trifecta:{X} qwen2.5:3b (spark) + qwen2.5:7b (brain) + llava (eyes).\n"
                        f"  Total ~11.3 GB disk, fits Elijah's budget ceiling.\n"
                        f"  OLLAMA_MAX_LOADED_MODELS=1 recommended to prevent RAM pressure.",
@@ -7808,11 +8495,38 @@ def main():
         if not user_text:
             continue
 
+        _ut_stripped = user_text.strip()
+        _ut_lower = _ut_stripped.lower()
+
+        # ── Duplicate-action guard ─────────────────────────────
+        # After a fresh visual/script run, complaint/correction language is
+        # feedback, not a request to execute the same script again. Inspect
+        # the last artifact/action and report instead of rerunning.
+        last_action = _load_last_action(max_age_s=600)
+        feedback_words = (
+            "didn't", "didnt", "doesn't", "doesnt", "nothing happened",
+            "weak", "bad", "2 out of 10", "not executing", "not bexcut",
+            "press enter", "sudu", "sudo", "ran twice", "sequence twice",
+            "again", "same thing", "come on",
+        )
+        if last_action and last_action.get("kind") == "runterm" and any(w in _ut_lower for w in feedback_words):
+            p = _latest_created_file()
+            print(f"  {Y}Feedback on last run detected — inspecting instead of rerunning.{X}")
+            if p:
+                print(f"  {C}Last artifact:{X} {p}")
+                run_command(f"ls -l {shlex.quote(str(p))} && bash -n {shlex.quote(str(p))}")
+            else:
+                print(f"  {Y}No last created file found to inspect.{X}")
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": "Feedback received on the last run. I inspected the last artifact instead of rerunning it."})
+            _request_auto_save(history)
+            continue
+
         # ── Loop mode (loop: prefix) — plan / execute / critique / refine ──
         # Explicit opt-in: `loop: <task>`. Breaks the task into steps, runs
         # each through normal handle() (sandbox stays enforced), asks the AI
         # to critique the result, then decides: continue / retry / done.
-        # Capped at 5 cycles and 10 min wall-clock. Ctrl+C aborts cleanly.
+        # Capped at 5 cycles and 10 min wall-clock. Interrupts abort cleanly.
         if user_text.lower().startswith("loop:"):
             task = user_text[5:].strip()
             if not task:
@@ -7833,8 +8547,6 @@ def main():
         # Tolerate voice-to-text variants: "term:" (canonical), "term "
         # (colon dropped — common phone voice-to-text), "term;" (semicolon
         # mis-transcribed). Not "turn:" — too many English false positives.
-        _ut_stripped = user_text.strip()
-        _ut_lower = _ut_stripped.lower()
         if (_ut_lower.startswith("term:")
                 or _ut_lower.startswith("term;")
                 or (_ut_lower.startswith("term ") and len(_ut_stripped.split()) >= 2)):
@@ -7843,6 +8555,18 @@ def main():
                 print(f"  {Y}usage: term: <bash command>{X}")
                 continue
             confirm_runterm(cmd)
+            continue
+
+        # ── image: prefix — local image generation via sd-server ──
+        # Submits an async job to the local stable-diffusion.cpp HTTP server
+        # on 127.0.0.1:7860 (~56s/image on this CPU, 4-step LCM LoRA,
+        # q4_0, structured LoRA payload).
+        # Reply carries the job id so Pupil (or `imagegen.sh status <id>`)
+        # can show progress; the PNG lands in ~/scripts/image_engine/out/.
+        if user_text.lower().startswith("image:"):
+            prompt = user_text[6:].strip()
+            handle_image_gen(user_text, prompt, history)
+            _request_auto_save(history)
             continue
 
         # ── tight: prefix — best available reasoning lane.
@@ -7913,15 +8637,28 @@ def main():
             # Small local models (3B/7B) follow SHORT prompts better than
             # long ones. Kept to 7 lines of hard rules + grounding + input.
             _plan_prompt = (
-                "PLAN MODE. Produce a numbered prose plan. NO code blocks, NO bash, "
-                "NO directive keywords (the colon-suffixed ones).\n"
-                "You MAY ask up to 4 clarifying questions across turns. Assume "
-                "Linux Mint + /home/elijah paths unless told otherwise.\n"
-                "Read past voice-to-text flips (Lennox→Linux Mint, except→accept, "
-                "sensi→Sensei, pants→hints).\n"
-                "When the plan is ready, YOU emit the literal line '<PLAN READY>' "
-                "on its own line as the final line. Never tell the user to type it.\n"
-                "If questions remain, do NOT emit <PLAN READY> — just ask."
+                "PLAN MODE. Act like Claude Code/Codex planning before touching files.\n"
+                "Your job is to make a concrete execution plan, not generic advice.\n\n"
+                "Hard rules:\n"
+                "1. Infer reasonable defaults from the actual machine context. Do not ask questions "
+                "unless the task is impossible or dangerous without the answer.\n"
+                "2. If the task touches code/files, name the likely files or directories to inspect first.\n"
+                "3. Include the exact kind of verification to run at the end: syntax check, test, service "
+                "restart, browser preview, log check, or file existence check.\n"
+                "4. Call out blockers/risks in plain words if they affect execution.\n"
+                "5. Keep the plan short: 3 to 7 numbered steps. Each step must be actionable.\n"
+                "6. NO code blocks. NO shell command blocks. NO directive keywords with colons.\n"
+                "7. Do not tell Elijah to do the work. Sensei will execute after approval.\n\n"
+                "Plan format:\n"
+                "1. Inspect <specific place> to learn <specific fact>.\n"
+                "2. Change <specific file/behavior> so <result>.\n"
+                "3. Verify with <specific check>.\n"
+                "Risk/blocker: <one line, or 'none obvious'>\n"
+                "<PLAN READY>\n\n"
+                "Voice-to-text fixes: sensi=Sensei, pants=plans, Lennox=Linux Mint, "
+                "except=accept, seperate=separate.\n"
+                "When the plan is ready, the final line MUST be exactly <PLAN READY>. "
+                "If a real blocker question remains, ask only that question and do not emit the marker."
                 f"{_grounding}"
                 "\n"
                 f"User: {user_text}"

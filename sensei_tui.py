@@ -36,7 +36,7 @@ from typing import Callable, List, Optional
 from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
@@ -52,34 +52,192 @@ from prompt_toolkit.layout.containers import (
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame, TextArea
 
 
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
-COMPLETER_WORDS: List[str] = [
-    "hub", "menu", "home", "help", "tips", "model", "model auto",
-    "mode plan", "mode review", "mode auto", "mode",
-    "memory", "remember:", "forget:",
-    "task", "task add", "task list", "task done", "task clear", "tasks",
-    "save session", "load summary", "load session", "transcript", "log", "preview", "open preview",
-    "clear", "clear history", "clear cache", "clear approved", "clear chats", "chats",
-    "doctor", "health", "refresh", "reload", "restart", "kick",
-    "up", "down", "top", "bottom", "last",
-    "mouse remote", "mouse local", "mouse status",
-    "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
-    "cache", "perms", "tutorial", "hints on", "hints off",
-    "tts on", "tts off", "tts", "hints", "project",
-    "search", "dl", "gdrive",
-    "git", "git status", "git diff", "git log", "git commit",
-    "go", "cancel", "accessibility", "x", "e", "resize",
-]
+COMMAND_MENU_HINTS = {
+    "hub": "open full command menu",
+    "menu": "open full command menu",
+    "home": "return to main command menu",
+    "help": "quick reference",
+    "tips": "show practical command tips",
+    "model": "pick active model",
+    "model auto": "return model routing to automatic",
+    "mode plan": "draft plans only",
+    "mode review": "confirm each action",
+    "mode auto": "run non-destructive work",
+    "mode local": "force local/offline routing",
+    "mode connected": "cloud-first when keys exist",
+    "mode": "show current execution mode",
+    "memory": "show saved facts",
+    "remember:": "type your text after the colon",
+    "forget:": "type keyword after the colon",
+    "task": "task command help",
+    "task add": "type task text after this",
+    "task list": "show active tasks",
+    "task done": "mark a task complete",
+    "task clear": "clear tasks",
+    "tasks": "show active tasks",
+    "save session": "save current chat",
+    "load summary": "load compact context",
+    "load session": "load saved chat",
+    "transcript": "save transcript",
+    "log": "show log path",
+    "preview": "open latest preview",
+    "open preview": "open latest preview",
+    "clear": "clear screen",
+    "clear history": "clear input history",
+    "clear cache": "clear answer cache",
+    "clear approved": "clear approved commands",
+    "clear chats": "clear saved chats",
+    "chats": "browse saved chats",
+    "doctor": "system health",
+    "health": "system health",
+    "refresh": "soft reload",
+    "reload": "soft reload",
+    "restart": "restart Sensei",
+    "kick": "force supervisor respawn",
+    "up": "scroll chat up",
+    "down": "scroll chat down",
+    "top": "jump to oldest chat",
+    "bottom": "jump to latest chat",
+    "last": "show last reply",
+    "mouse remote": "phone scrolling mode",
+    "mouse local": "terminal copy mode",
+    "mouse status": "show mouse mode",
+    "projects": "project picker",
+    "apps": "app tools",
+    "autotips": "automatic tips",
+    "slideshow": "open slideshow",
+    "tour": "open walkthrough",
+    "keys": "API key setup",
+    "approved": "approved command list",
+    "cache": "cache status",
+    "perms": "permissions status",
+    "tutorial": "replay walkthrough",
+    "hints on": "enable contextual hints",
+    "hints off": "disable contextual hints",
+    "tts on": "enable voice replies",
+    "tts off": "disable voice replies",
+    "tts": "voice status",
+    "hints": "hint status",
+    "project": "current project",
+    "search": "web search route",
+    "dl": "download helper",
+    "gdrive": "Google Drive helper",
+    "git": "git command help",
+    "git status": "show repo status",
+    "git diff": "show repo diff",
+    "git log": "show git log",
+    "git commit": "commit workflow",
+    "go": "accept pending plan",
+    "cancel": "cancel pending plan",
+    "accessibility": "input settings",
+    "x": "exit / stop",
+    "e": "edit thread label",
+    "resize": "fit tmux pane",
+    "only": "make Sensei the only tmux pane",
+}
+
+COMMAND_MENU_GROUPS = {
+    ",": [
+        "hub", "menu", "home", "help", "tips",
+        "refresh", "reload", "restart", "kick",
+        "save session", "load summary", "load session", "transcript", "log",
+        "preview", "open preview", "clear", "clear history", "clear cache",
+        "clear approved", "clear chats", "chats", "doctor", "health",
+        "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
+        "cache", "perms", "tutorial", "project",
+        "go", "cancel", "e", "only",
+    ],
+    ";": [
+        "mode plan", "mode review", "mode auto", "mode local", "mode connected", "mode",
+        "model", "model auto",
+        "tts on", "tts off", "tts",
+        "hints on", "hints off", "hints",
+        "mouse remote", "mouse local", "mouse status",
+        "accessibility",
+    ],
+    ".": [
+        "up", "down", "top", "bottom", "last",
+        "cache", "approved", "log", "health", "doctor",
+    ],
+    "/": [
+        "remember:", "forget:", "task add", "git commit",
+    ],
+}
+
+COMPLETER_WORDS: List[str] = []
+for _group in COMMAND_MENU_GROUPS.values():
+    for _cmd in _group:
+        if _cmd not in COMPLETER_WORDS:
+            COMPLETER_WORDS.append(_cmd)
+
+def _menu_prefix(text: str) -> Optional[str]:
+    text = (text or "")
+    return text[:1] if text[:1] in COMMAND_MENU_GROUPS else None
+
+def _menu_command_matches(text: str) -> List[str]:
+    prefix = _menu_prefix(text)
+    if not prefix:
+        return []
+    query = text[1:].strip().lower()
+    commands = COMMAND_MENU_GROUPS.get(prefix, [])
+    query = (query or "").strip().lower()
+    if not query:
+        return list(commands)
+
+    ranked = []
+    for idx, command in enumerate(commands):
+        cmd = command.lower()
+        hint = COMMAND_MENU_HINTS.get(command, "").lower()
+        cmd_words = re.split(r"[\s:/-]+", cmd)
+        hint_words = re.split(r"[\s:/-]+", hint)
+        if cmd.startswith(query):
+            score = 0
+        elif any(w.startswith(query) for w in cmd_words if w):
+            score = 1
+        elif any(w.startswith(query) for w in hint_words if w):
+            score = 2
+        elif query in cmd:
+            score = 3
+        elif query in hint:
+            score = 4
+        else:
+            continue
+        ranked.append((score, idx, command))
+    return [command for _, _, command in sorted(ranked)]
+
+class PunctCommandCompleter(Completer):
+    """Popup command menus triggered by punctuation prefixes.
+
+    Typing `,`, `;`, `.`, or `/` opens the matching command bucket. Typing
+    after the prefix filters by command text or hint. The inserted text
+    replaces the punctuation prefix so the existing command dispatcher
+    receives the same words as manual typing.
+    """
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if "\n" in text or not _menu_prefix(text):
+            return
+        for command in _menu_command_matches(text):
+            hint = COMMAND_MENU_HINTS.get(command, "")
+            yield Completion(
+                command,
+                start_position=-len(text),
+                display=command,
+                display_meta=hint,
+            )
 
 LEGEND_WORDS = [
     "hub", "help", "tips", "model", "mode plan", "chats", "tts",
-    "Ctrl+T transcript", "Ctrl+L log", "Ctrl+P preview", "Ctrl+K cache",
-    "e=edit label", "x=exit",
+    "transcript", "log", "comma", "semicolon", "period", "slash",
+    "e=edit label",
 ]
 
 IDLE_TIPS = [
@@ -103,6 +261,7 @@ IDLE_TIPS = [
     "'model' switches the active AI model",
     "'tts on' speaks replies out loud (Piper voice)",
     "'remember: <fact>' saves a fact across all sessions",
+    "', ; . / are worth pressing",
 ]
 
 def _term_size():
@@ -251,11 +410,8 @@ class SenseiApp:
             # still growing for pasted prompts.
             height=Dimension(min=1, max=5, preferred=2),
             history=FileHistory(HISTORY_FILE),
-            completer=WordCompleter(
-                COMPLETER_WORDS, ignore_case=True,
-                match_middle=False, sentence=True,
-            ),
-            complete_while_typing=False,
+            completer=PunctCommandCompleter(),
+            complete_while_typing=True,
             focusable=True,
             # User-typed text stays the terminal's default color — no blue.
             style="class:textinput",
@@ -292,7 +448,7 @@ class SenseiApp:
         # Window's default handlers bump self.vertical_scroll, but our
         # rendering re-anchors to the invisible cursor each frame, so the
         # wheel would otherwise snap back every repaint. Overriding these
-        # two methods keeps wheel + Ctrl+Up + PageUp on the same offset.
+        # two methods keeps wheel and page-up/down on the same offset.
         def _wheel_up():
             self._scroll_offset += 5
             try: self._app.invalidate()
@@ -363,6 +519,16 @@ class SenseiApp:
             self._output_frame,
             self._frame,
         ])
+        root = FloatContainer(
+            content=root,
+            floats=[
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    content=CompletionsMenu(max_height=10, display_arrows=True),
+                ),
+            ],
+        )
 
         self._on_submit: Optional[Callable[[str], None]] = None
 
@@ -540,10 +706,9 @@ class SenseiApp:
         current_mode = getattr(self, "_mode", "plan").upper()
         width = _term_size().columns
         if width < 56:
-            words = [f"MODE:{current_mode}", "P preview", "B copy", "K cache", "x"]
+            words = [f"MODE:{current_mode}", "comma", "semi", "period", "slash"]
         elif width < 84:
-            words = [f"MODE:{current_mode}", "Ctrl+P preview", "Ctrl+B copy",
-                     "Ctrl+K cache", "x"]
+            words = [f"MODE:{current_mode}", "comma", "semicolon", "period", "slash"]
         else:
             words = []
             for w in LEGEND_WORDS:
@@ -588,26 +753,62 @@ class SenseiApp:
         line = _fit_text(f"💭 {self._tip}", _term_size().columns - 4)
         return FormattedText([("class:tip", line)])
 
+    def _active_comma_completion(self) -> Optional[str]:
+        """Return the selected punctuation-menu command, or the first match."""
+        buf = self._input.buffer
+        state = getattr(buf, "complete_state", None)
+        if not state or not getattr(state, "completions", None):
+            return self._menu_query_match(buf.document.text_before_cursor)
+        original = getattr(state, "original_document", None)
+        source = original.text_before_cursor if original else buf.document.text_before_cursor
+        if "\n" in source or not _menu_prefix(source):
+            return None
+        index = state.complete_index if state.complete_index is not None else 0
+        try:
+            return state.completions[index].text
+        except Exception:
+            return None
+
+    def _menu_query_match(self, text: str) -> Optional[str]:
+        """Fallback when Enter lands before prompt_toolkit opens completions."""
+        if "\n" in text or not _menu_prefix(text):
+            return None
+        matches = _menu_command_matches(text)
+        return matches[0] if matches else None
+
+    def _insert_payload_command(self, command: str) -> bool:
+        """Payload commands replace the comma prefix and wait for user text."""
+        if not any(command == p or command.startswith(p + " ") for p in COMMAND_MENU_GROUPS.get("/", [])):
+            return False
+        suffix = "" if command.endswith(":") else " "
+        self._input.buffer.document = Document(command + suffix, len(command + suffix))
+        try: self._app.invalidate()
+        except Exception: pass
+        return True
+
     # ── key bindings ───────────────────────────────────────────
 
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
 
-        def _dispatch_command(text: str, echo: str = "") -> None:
-            now = time.monotonic()
-            last_text, last_ts = getattr(self, "_last_shortcut_dispatch", ("", 0.0))
-            if text == last_text and (now - last_ts) < 0.75:
-                return
-            self._last_shortcut_dispatch = (text, now)
-            if echo:
-                self.write(f"\n\033[2m[{echo}]\033[0m\n")
-            if self._on_submit:
-                threading.Thread(
-                    target=self._safe_dispatch, args=(text,), daemon=True,
-                ).start()
-
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
+            menu_command = self._active_comma_completion()
+            if menu_command:
+                self._input.buffer.cancel_completion()
+                if self._insert_payload_command(menu_command):
+                    return
+                text = menu_command
+                self._input.text = ""
+                self._scroll_offset = 0
+                self.write(f"\n\033[1m> {text}\033[0m\n")
+                if self._on_submit:
+                    t = threading.Thread(
+                        target=self._safe_dispatch, args=(text,), daemon=True,
+                    )
+                    t.start()
+                return
+
             # Multi-line paste fix (2026-04-24): pasted text contains \n
             # characters that arrive as rapid-fire Enter events. Real
             # human Enters are always >50ms apart. If this Enter is within
@@ -640,54 +841,28 @@ class SenseiApp:
         def _newline(event):
             self._input.buffer.insert_text("\n")
 
+        @kb.add("down", filter=has_focus(self._input))
+        def _completion_down(event):
+            if self._active_comma_completion():
+                self._input.buffer.complete_next()
+            else:
+                event.current_buffer.history_forward()
+
+        @kb.add("up", filter=has_focus(self._input))
+        def _completion_up(event):
+            if self._active_comma_completion():
+                self._input.buffer.complete_previous()
+            else:
+                event.current_buffer.history_backward()
+
         @kb.add("c-c")
         def _sigint(event):
-            # Let the handler decide — we mark the input as empty submit
-            # so master_ai.py's save-on-exit runs.
             if self._on_submit:
                 threading.Thread(
                     target=self._safe_dispatch, args=("x",), daemon=True,
                 ).start()
             else:
                 event.app.exit()
-
-        # Standard app-style shortcuts. These dispatch the same word commands
-        # a user can type, so keyboard and voice paths stay in sync.
-        @kb.add("c-t")
-        def _shortcut_transcript(event):
-            _dispatch_command("transcript", "Ctrl+T transcript")
-
-        @kb.add("c-l")
-        def _shortcut_log(event):
-            _dispatch_command("log", "Ctrl+L log")
-
-        @kb.add("c-o")
-        def _shortcut_open(event):
-            _dispatch_command("open preview", "Ctrl+O open")
-
-        @kb.add("c-p")
-        def _shortcut_preview(event):
-            _dispatch_command("preview", "Ctrl+P preview")
-
-        @kb.add("c-k")
-        def _shortcut_cache(event):
-            _dispatch_command("clear cache", "Ctrl+K clear cache")
-
-        @kb.add("c-r")
-        def _shortcut_refresh(event):
-            _dispatch_command("refresh", "Ctrl+R refresh")
-
-        @kb.add("c-b")
-        def _shortcut_keyboard(event):
-            _dispatch_command("mouse local", "Ctrl+B keyboard/copy")
-
-        @kb.add("c-s")
-        def _shortcut_save(event):
-            _dispatch_command("save session", "Ctrl+S save")
-
-        @kb.add("c-q")
-        def _shortcut_quit(event):
-            _dispatch_command("x", "Ctrl+Q quit")
 
         # Bracketed paste — PROPER fix for multi-line paste-split bug
         # (2026-04-24). When the terminal sends bracketed-paste sequences
@@ -708,27 +883,23 @@ class SenseiApp:
         # events while held → smooth scroll. Tap = one event = 3 lines.
         # Plain Up/Down stay reserved for input history.
         @kb.add("s-up")
-        @kb.add("c-up")
         @kb.add("pageup")
         def _scroll_up(event):
             self._scroll_offset += 8
             event.app.invalidate()
 
         @kb.add("s-down")
-        @kb.add("c-down")
         @kb.add("pagedown")
         def _scroll_down(event):
             self._scroll_offset = max(0, self._scroll_offset - 8)
             event.app.invalidate()
 
         @kb.add("home")
-        @kb.add("c-home")
         def _scroll_top(event):
             self._scroll_offset = 10_000
             event.app.invalidate()
 
         @kb.add("end")
-        @kb.add("c-end")
         def _scroll_bottom(event):
             self._scroll_offset = 0
             event.app.invalidate()

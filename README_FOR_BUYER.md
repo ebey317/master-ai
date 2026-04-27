@@ -123,6 +123,7 @@ Inside Sensei (menu 4), type these at the prompt:
 | `deep: <message>` | One reasoning answer through DeepSeek-R1/OpenRouter when configured |
 | `tight: <hard question>` | Best reasoning lane: DeepSeek-R1 if available, local deep reasoning loop otherwise |
 | `think: <hard question>` | Local multi-pass reasoning loop, no cloud and no command execution |
+| `image: <prompt>` | Submit a local image job; Sensei replies with a job id and Pupil shows the result |
 | `remember: <text>` | Saves a fact to long-term memory |
 | `forget: <text>` | Removes a memory |
 | `task add <text>` | Adds a side-task (not tied to PROJECTS.md boards) |
@@ -135,7 +136,9 @@ Inside Sensei (menu 4), type these at the prompt:
 | `load summary` | Re-injects the last session summary |
 | `refresh` | Soft restart (preserves session) |
 | `kick` | Hard restart (tmux rebuild) |
+| `,` / `;` / `.` / `/` | Command buckets to explore |
 | `hub` / `help` / `tips` | Slideshow walkthroughs |
+| `help buckets` | Shows the punctuation teaser |
 | `x` | Clean exit |
 
 ---
@@ -144,6 +147,7 @@ Inside Sensei (menu 4), type these at the prompt:
 
 Sensei's input box is pinned at the bottom. Mouse events do not write into it
 or submit it; text changes only from typing, bracketed paste, or Enter.
+Ctrl+C interrupts the current reply and saves the session.
 The layout adapts to small terminals: at 70x24 it compacts the header/status
 line, shortens the shortcut legend, hides idle tips, and keeps chat plus input
 inside framed boxes.
@@ -157,18 +161,8 @@ Useful shortcuts:
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl+T` | Save/copy transcript |
-| `Ctrl+L` | Show recent log |
-| `Ctrl+O` / `Ctrl+P` | Open product preview |
-| `Ctrl+K` | Clear cache |
-| `Ctrl+B` | Force local-copy mouse profile |
-| `Ctrl+R` | Refresh |
-| `Ctrl+S` | Save session |
-| `Ctrl+Q` | Clean exit |
-
-There is no `Ctrl+M` mouse shortcut. In terminals, `Ctrl+M` overlaps with
-Enter/carriage-return behavior, so mouse mode is changed only by typed
-commands: `mouse local`, `mouse remote`, `mouse status`, or `mouse toggle`.
+Mouse mode is changed only by typed commands: `mouse local`, `mouse remote`,
+`mouse status`, or `mouse toggle`.
 
 ---
 

@@ -92,7 +92,8 @@
 
   "tips": [
     { "cmd": "hub",              "desc": "18-action control panel" },
-    { "cmd": "help",             "desc": "8-slide command reference" },
+    { "cmd": "help",             "desc": "full command reference" },
+    { "cmd": "help buckets",     "desc": "show the punctuation teaser" },
     { "cmd": "projects",         "desc": "your apps + Tailscale URLs" },
     { "cmd": "remember: <fact>", "desc": "persists across sessions" },
     { "cmd": "memory",           "desc": "view all stored facts" },
@@ -101,10 +102,12 @@
     { "cmd": "mode plan",        "desc": "brainstorm + draft plans (default)" },
     { "cmd": "mode review",      "desc": "confirm every command (per-action)" },
     { "cmd": "mode auto",        "desc": "flow-through, destructive still pauses" },
+    { "cmd": "mode local",       "desc": "local-only routing" },
     { "cmd": "fast: <prompt>",   "desc": "route to Groq (fast cloud, needs key)" },
     { "cmd": "deep: <prompt>",   "desc": "route to DeepSeek-R1 (deep reasoning)" },
     { "cmd": "local: <prompt>",  "desc": "force local model (explicit privacy)" },
-    { "cmd": "mode connected",   "desc": "whole session switches to cloud-first" },
+    { "cmd": "mode connected",   "desc": "cloud-first routing" },
+    { "cmd": ", ; . /",          "desc": "worth pressing" },
     { "cmd": "copy chat",        "desc": "save full session to ~/.master_ai_chats/" },
     { "cmd": "last",             "desc": "re-print last AI reply inline" },
     { "cmd": "refresh",          "desc": "soft-restart if screen glitches" },

@@ -66,6 +66,7 @@ detect_service() {
     [[ "$key" == AIzaSy* ]]                         && { echo "gemini|Google Gemini|aistudio.google.com/app/apikey"; return; }
     [[ "$key" == BSA* ]]                            && { echo "brave|Brave Search|api.search.brave.com"; return; }
     [[ "$key" == fc-* ]]                            && { echo "firecrawl|Firecrawl|firecrawl.dev"; return; }
+    [[ "$key" == fw_* ]]                            && { echo "fireworks|Fireworks AI|fireworks.ai"; return; }
     [[ "$key" == Bearer\ * ]]                       && { echo "bearer|Bearer token|unknown"; return; }
     # NOTE: removed the "30-50 chars alphanumeric → Gumroad" catch-all. It
     # was matching Brave / Serper / Gumroad / any-raw-hex-key indiscriminately,
@@ -349,9 +350,10 @@ main() {
                     echo -e "  ${Y}10)${W} Firecrawl      ${D}firecrawl.dev${X}"
                     echo -e "  ${Y}11)${W} Serper         ${D}serper.dev${X}"
                     echo -e "  ${Y}12)${W} xAI / Grok     ${D}console.x.ai${X}"
-                    echo -e "  ${Y}13)${W} Other (custom name)${X}"
+                    echo -e "  ${Y}13)${W} Fireworks AI   ${D}fireworks.ai${X}"
+                    echo -e "  ${Y}14)${W} Other (custom name)${X}"
                     echo ""
-                    echo -ne "  ${C}Choose (1-13): ${X}"
+                    echo -ne "  ${C}Choose (1-14): ${X}"
                     read -r SVC_CHOICE
                     case "$SVC_CHOICE" in
                         1)  FIELD="groq";         LABEL="Groq" ;;
@@ -366,7 +368,8 @@ main() {
                         10) FIELD="firecrawl";    LABEL="Firecrawl" ;;
                         11) FIELD="serper";       LABEL="Serper" ;;
                         12) FIELD="xai";          LABEL="xAI / Grok" ;;
-                        13)
+                        13) FIELD="fireworks";    LABEL="Fireworks AI" ;;
+                        14)
                             echo -ne "  ${C}Service name (lowercase, no spaces): ${X}"
                             read -r FIELD
                             LABEL="$FIELD"
