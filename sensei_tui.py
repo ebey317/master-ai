@@ -219,8 +219,9 @@ class PunctCommandCompleter(Completer):
         text = document.text_before_cursor
         if "\n" in text or not _menu_prefix(text):
             return
+        narrow = _term_size().columns < 100
         for command in _menu_command_matches(text):
-            hint = COMMAND_MENU_HINTS.get(command, "")
+            hint = "" if narrow else COMMAND_MENU_HINTS.get(command, "")
             yield Completion(
                 command,
                 start_position=-len(text),
