@@ -7040,6 +7040,32 @@ def startup_check():
     print()
     return errors
 
+def _show_tui_credit_roll(cloud_status, mem_count):
+    """Opening-credit style brand roll inside the TUI chat frame."""
+    if _SENSEI_APP is None:
+        return False
+    host = os.uname().nodename if hasattr(os, "uname") else "localhost"
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "user"
+    lines = [
+        "",
+        f"{BC}  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{X}",
+        f"{BC}    🥷  {BW}MASTER AI{X}",
+        f"{BG}    Vision · Voice · Web · Code{X}",
+        f"{BC}    HOST:{BW} {host}{X}",
+        f"{BC}    USER:{BW} {user}{X}",
+        f"{BC}    STATUS:{BG} ● ONLINE{X}",
+        f"{BC}  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{X}",
+        "",
+    ]
+    for line in lines:
+        print(line)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        time.sleep(0.10)
+    return True
+
 # ── STATUS BAR ───────────────────────────────────────────────
 def draw_status_bar():
     """Active status — bold blue, right-aligned at TOP RIGHT. No bg color.
@@ -8108,23 +8134,16 @@ def main():
             pass
     _clear_tmux_scrollback("startup")
 
-    # ── Branded login splash ─
-    # Full banner in classic/wide terminals. Compact brand splash in the
-    # 80x24 TUI so the first screen shows brand + system status together.
+    # ── Branded opening ─
+    # TUI mode rolls the brand/status through the chat frame like opening
+    # credits, then leaves the cleaned Sensei input box ready. Classic mode
+    # keeps the full shell banner.
     try:
-        banner_cmd = "banner_master_ai"
-        if _SENSEI_APP is not None and shutil.get_terminal_size((80, 24)).columns < 100:
-            banner_cmd = "banner_compact"
         if _SENSEI_APP is not None:
-            banner = subprocess.run(
-                f"source ~/scripts/brand.sh && {banner_cmd}",
-                shell=True, executable="/bin/bash", check=False,
-                capture_output=True, text=True,
-            )
-            print(banner.stdout, end="")
+            _show_tui_credit_roll(cloud_status, mem_count)
         else:
             subprocess.run(
-                f"source ~/scripts/brand.sh && {banner_cmd}",
+                "source ~/scripts/brand.sh && banner_master_ai",
                 shell=True, executable="/bin/bash", check=False,
             )
     except Exception:
