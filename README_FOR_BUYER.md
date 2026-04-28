@@ -161,6 +161,12 @@ Useful shortcuts:
 
 | Shortcut | Action |
 |---|---|
+| Enter | Send message |
+| Shift+Enter | New line in the message |
+| PageUp / PageDown | Scroll the chat |
+| Up / Down | Previous / next input history |
+| Ctrl+C | Interrupt current reply and save |
+
 Mouse mode is changed only by typed commands: `mouse local`, `mouse remote`,
 `mouse status`, or `mouse toggle`.
 
@@ -217,7 +223,7 @@ Now your phone and your desktop share the same Sensei + Pupil instance. Same mem
 |---|---|
 | Pupil says "Ollama offline" | `systemctl start ollama` in a terminal |
 | Sensei won't start | Menu option 7 (Force rebuild) |
-| Drag-copy needs Shift | In Sensei, type `mouse local`, then `refresh / reload` |
+| Drag-copy does not work normally | In Sensei, type `mouse local`, then `refresh / reload` |
 | Preview opens an old note | Type `preview`; it now prefers `.html` / `.htm` product files |
 | Lost the template panel in Pupil | Type `menu` or `back` inside a lesson — panel returns |
 | Keys not syncing between menu 11 and Pupil | Make sure you opened Pupil via `http://localhost:8080/pupil.html`, not `file://` — only the served version syncs |

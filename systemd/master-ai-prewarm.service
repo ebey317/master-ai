@@ -1,12 +1,12 @@
 [Unit]
-Description=Pre-warm master-ai in Ollama so first query isn't cold
+Description=Pre-warm master-ai and llava in Ollama so first query/vision use is not cold
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sh -c 'i=0; until curl -s http://localhost:11434/api/tags >/dev/null || [ $i -gt 60 ]; do sleep 1; i=$((i+1)); done'
-ExecStart=/usr/bin/python3 -c "import urllib.request, json; urllib.request.urlopen(urllib.request.Request('http://localhost:11434/api/generate', data=json.dumps({'model':'master-ai','prompt':'ok','stream':False,'keep_alive':'30m'}).encode(), headers={'Content-Type':'application/json'}), timeout=180).read()"
+ExecStart=/usr/bin/python3 /home/elijah/scripts/prewarm_master_ai.py
 
 [Install]
 WantedBy=default.target

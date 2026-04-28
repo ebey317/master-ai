@@ -511,14 +511,12 @@ if [ -s "$SANDBOX/logs/ollama_tags.json" ]; then
     [ "$have_llava" = "1" ] && record_pass "trifecta: llava present"      || record_warn "llava not pulled (eyes missing)"
 fi
 
-# The machine keeps OLLAMA_MAX_LOADED_MODELS=1 to protect RAM. A stale
-# long-running model can block this gate even when the target models are
-# healthy, so reset the model slot before timing inference.
+# Preserve the warm model state. The product goal is that master-ai and
+# llava stay ready through the prewarm timer. Forcing an unload here turns
+# the acceptance gate into an artificial cold-start benchmark and defeats
+# the environment check it is supposed to validate.
 if [ "$have_3b" = "1" ] || [ "$have_llava" = "1" ]; then
-    ollama_unload_model "master-ai:latest"
-    ollama_unload_model "qwen2.5:3b"
-    ollama_unload_model "llava:latest"
-    record_info "ollama model slot reset before inference checks"
+    record_info "ollama warm-state preserved before inference checks"
 fi
 
 # Inference round-trip — ask 3b a tiny deterministic question.

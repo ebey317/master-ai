@@ -29,8 +29,8 @@
 #   • AUTO MODE actually flows — was prompting on everything, now only destructive
 #     patterns pause (rm, git reset --hard, drop table, systemctl stop, package
 #     uninstall, ollama rm, chmod -R). Everything else runs + audits.
-#   • Scroll = Shift+↑ / Shift+↓. Single binding, tap = 3 lines, hold = continuous.
-#     Other scroll keys removed per user pref "only want one."
+#   • 2026-04-28 customer-control reset: Enter sends, Shift+Enter newline,
+#     PageUp/PageDown scroll chat, local copy mode is the default.
 #   • Render crash guard — SafeFormattedTextControl catches IndexError in
 #     prompt_toolkit render loop; 50ms output cache prevents mid-frame races.
 #   • 🔬 Research mode in Pupil (and `research:` prefix) — runs web_search then
@@ -188,9 +188,11 @@ output region ABOVE it without moving your cursor.
 
 KEYBOARD (when focus is in the input):
   Tab            — auto-complete any command; punctuation buckets narrow the list faster
+  Enter          — send the message
+  Shift+Enter    — insert a new line, like ChatGPT / Claude
   ↑ / ↓          — scroll your input HISTORY (what you previously typed)
-  Shift+↑        — SCROLL CHAT UP.   Tap = 3 lines. Hold = continuous.
-  Shift+↓        — SCROLL CHAT DOWN. Tap = 3 lines. Hold = continuous.
+  PageUp         — scroll chat up
+  PageDown       — scroll chat down
   Ctrl+C         — interrupt the current reply + save session
 
 TYPED WORDS (alternative to keys — works on any keyboard, any remote):
@@ -206,7 +208,7 @@ MOUSE (local-copy default, remote capture opt-in):
   local default — SENSEI_MOUSE=0; prompt_toolkit mouse capture off; terminal
                   drag-select copy/paste works normally without Shift.
   wheel   — app-level wheel works only when launched with SENSEI_MOUSE=1
-  mouse remote — phone/RustDesk profile: tmux mouse on + SENSEI_MOUSE=1
+  mouse remote — opt-in phone/RustDesk profile: tmux mouse on + SENSEI_MOUSE=1
   mouse local  — local-copy profile: tmux mouse off + SENSEI_MOUSE=0
   mouse status — show which profile is saved
   mouse toggle — typed command only; there is no mouse shortcut chord.
@@ -215,10 +217,8 @@ Use `refresh` after switching mouse profiles so the TUI relaunches with the
 saved SENSEI_MOUSE value. Remote is best for phone scrolling/taps. Local is
 best when sitting at Madam-Mary and drag-select copy matters most.
 
-"Tap vs hold" is the OS's key-repeat. One press fires once. Hold fires
-~30/sec for as long as you hold. Useful with Shift+↑/↓.
-
-(Locked 2026-04-19 to ONE scroll chord — Shift+arrow — per user preference.)
+Shift stays available for normal terminal selection/copy. Customers should not
+need Shift-only app controls to use the chat.
 
 ### COPY / PASTE IN SENSEI
 Default local-copy mode (`SENSEI_MOUSE=0`) leaves mouse handling to the
@@ -226,8 +226,8 @@ terminal. Plain click-drag selects text; the terminal's copy/paste shortcuts
 still work. The TUI does not use mouse events to write into the input box.
 
 If `mouse remote` is enabled (`SENSEI_MOUSE=1`), the app captures mouse events
-for phone/RustDesk scrolling. In that profile, use Shift+click-drag when you
-need terminal selection, or switch back with `mouse local` then `refresh`.
+for phone/RustDesk scrolling. Switch back with `mouse local` then `refresh`
+before doing terminal text selection.
 
 Type `copy` (or `clip`) at the Sensei prompt to push the LAST AI reply straight
 into the X11 clipboard via xclip. Type `copy chat` to save the full transcript.

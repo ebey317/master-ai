@@ -89,7 +89,7 @@ try:
         "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
         "commands", "?",
         "tts on", "tts off", "tts",
-        "hints", "project", "search ", "dl ", "gdrive ", "git", "git status",
+        "hints", "project", "attach ", "search ", "dl ", "gdrive ", "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
         "how", "how we work", "hww",
     ]
@@ -677,6 +677,127 @@ def _open_file_preview(path=None):
         print(f"  {R}preview failed: {e}{X}")
         log(f"PREVIEW_ERROR: {e}")
         return False
+
+ATTACHMENT_MAX_CHARS = 140000
+_ATTACHMENT_SUFFIXES = {
+    ".txt", ".md", ".markdown", ".csv", ".json", ".jsonc", ".xml", ".html", ".htm",
+    ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".zsh", ".yaml",
+    ".yml", ".toml", ".ini", ".conf", ".log", ".sql",
+}
+
+def _attach_text_file(path, history):
+    p = Path(os.path.expanduser(str(path))).expanduser()
+    if not p.exists() or not p.is_file():
+        print(f"  {R}attachment not found: {p}{X}")
+        return False
+    if p.suffix.lower() not in _ATTACHMENT_SUFFIXES:
+        print(f"  {Y}attachment skipped: {p.name} does not look like a text file{X}")
+        print(f"  {D}Supported: txt, md, csv, json, html, css, js, ts, py, sh, yaml, log, sql, etc.{X}")
+        return False
+    try:
+        content = p.read_text(errors="replace")
+    except Exception as e:
+        print(f"  {R}attachment read failed: {e}{X}")
+        return False
+    clipped = len(content) > ATTACHMENT_MAX_CHARS
+    body = content[:ATTACHMENT_MAX_CHARS]
+    history.append({
+        "role": "user",
+        "content": (
+            "[Attached file contents]\n"
+            f"--- {p}{' (clipped)' if clipped else ''} ---\n"
+            f"{body}\n\n"
+            "Use this attachment as context for my next request."
+        ),
+    })
+    size = p.stat().st_size
+    print(f"  {G}✅ attached:{X} {p} {D}({size} bytes, {len(body)} chars{' clipped' if clipped else ''}){X}")
+    print(f"  {D}Ask your question now; Sensei will include this attachment in context.{X}")
+    return True
+
+_DESKTOP_APP_ALIASES = {
+    "libreoffice": ["libreoffice"],
+    "libre office": ["libreoffice"],
+    "writer": ["libreoffice", "--writer"],
+    "libreoffice writer": ["libreoffice", "--writer"],
+    "calc": ["libreoffice", "--calc"],
+    "libreoffice calc": ["libreoffice", "--calc"],
+    "impress": ["libreoffice", "--impress"],
+    "libreoffice impress": ["libreoffice", "--impress"],
+    "files": ["xdg-open", str(Path.home())],
+    "file manager": ["xdg-open", str(Path.home())],
+}
+_DESKTOP_APP_COMMANDS = {
+    "xdg-open", "gio", "libreoffice", "soffice",
+    "google-chrome", "chrome", "chromium", "chromium-browser",
+    "firefox", "nautilus",
+}
+_DESKTOP_DOC_SUFFIXES = {
+    ".odt", ".ods", ".odp", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".pdf", ".html", ".htm", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+    ".txt", ".md",
+}
+
+def _launch_desktop_argv(argv, label="desktop app"):
+    try:
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        print(f"  {G}✅ Opened {label}:{X} {' '.join(shlex.quote(str(a)) for a in argv)}")
+        log(f"DESKTOP_OPEN: {argv}")
+        return RunResult(output=f"[opened {label}]", ok=True, exit_code=0, command=" ".join(map(str, argv)))
+    except Exception as e:
+        print(f"  {R}desktop open failed: {e}{X}")
+        log(f"DESKTOP_OPEN_ERROR: {argv} {e}")
+        return RunResult(output=f"desktop open failed: {e}", ok=False, exit_code=1, command=" ".join(map(str, argv)), error=str(e))
+
+def _desktop_launch_from_command(cmd):
+    """Return argv for GUI/browser/app commands that must not be wrapped in a terminal."""
+    try:
+        parts = shlex.split(cmd or "")
+    except Exception:
+        return None
+    if not parts:
+        return None
+    # Keep only the first desktop-launch command; ignore shell redirection and echo-after-open checks.
+    stop_tokens = {"&&", ";", "||", "|"}
+    first = parts[0]
+    if first == "gio" and len(parts) >= 3 and parts[1] == "open":
+        args = []
+        for p in parts[2:]:
+            if p in stop_tokens or p.startswith(("1>", "2>", ">", "<")):
+                break
+            args.append(os.path.expanduser(p))
+        return ["gio", "open", *args] if args else None
+    if first not in _DESKTOP_APP_COMMANDS:
+        return None
+    args = []
+    for p in parts[1:]:
+        if p in stop_tokens or p.startswith(("1>", "2>", ">", "<")):
+            break
+        args.append(os.path.expanduser(p))
+    return [first, *args]
+
+def _try_desktop_open_intent(user_text):
+    """Deterministic launcher for browser URLs, local documents, and GUI apps.
+
+    Terminal is for shells and TTY apps. xdg-open/LibreOffice/browser launches
+    should happen directly, otherwise the user gets a terminal plus the app.
+    """
+    if not user_text:
+        return None
+    text = user_text.strip()
+    m = re.match(r'^open\s+(.+?)[\s.!?]*$', text, re.IGNORECASE)
+    if not m:
+        return None
+    target = re.sub(r'^(my|the)\s+', '', m.group(1).strip(), flags=re.IGNORECASE)
+    low = target.lower()
+    if low in _DESKTOP_APP_ALIASES:
+        return (_DESKTOP_APP_ALIASES[low], low)
+    expanded = Path(os.path.expanduser(target))
+    if target.startswith(("~", "/", ".")) and expanded.exists():
+        return (["xdg-open", str(expanded)], str(expanded))
+    if target.startswith(("~", "/", ".")) and expanded.suffix.lower() in _DESKTOP_DOC_SUFFIXES:
+        return (["xdg-open", str(expanded)], str(expanded))
+    return None
 
 def _show_recent_log(lines=80):
     try:
@@ -1914,7 +2035,9 @@ _LINK_LOOKUP_PHRASES = (
     "official website", "official site", "source link", "source links",
     "citation", "citations", "references", "sources",
     "download link", "download page", "github repo", "github repository",
+    "official github", "repo for", "website for", "site for",
     "where can i download", "where do i download",
+    "where is the website", "where's the website",
     "find the link", "find a link", "find me the link",
     "pull accurate links", "accurate links",
 )
@@ -1933,6 +2056,120 @@ def _looks_link_lookup(low, word_set):
         if any(w in word_set for w in ("find", "get", "pull", "show", "give", "need", "accurate", "real")):
             return True
     return False
+
+_PLACEHOLDER_HOSTS = {
+    "example.com", "example.org", "example.net", "example.edu",
+    "placeholder.com", "yourdomain.com", "your-domain.com",
+    "domain.com", "website.com", "mysite.com", "localhost",
+    "127.0.0.1", "0.0.0.0",
+}
+_PLACEHOLDER_URL_RE = re.compile(
+    r'https?://(?:[^\s<>"\')\]]+)',
+    re.IGNORECASE,
+)
+
+def _is_placeholder_url(url):
+    """True for fake/template URLs that must never be presented as sources."""
+    if not url:
+        return True
+    try:
+        import urllib.parse as _up
+        p = _up.urlparse(url.strip())
+    except Exception:
+        return True
+    host = (p.netloc or "").lower().split("@")[-1].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    path = (p.path or "").lower()
+    if host in _PLACEHOLDER_HOSTS or host.endswith(".example.com"):
+        return True
+    if host == "github.com" and re.search(
+        r'/(?:your[-_]?username|username|user|owner|org|organization)/(?:repo|repository|project|your[-_]?repo)\b',
+        path,
+    ):
+        return True
+    if re.search(r'\b(?:placeholder|replace-me|your[-_](?:site|domain|url|repo|project))\b', url.lower()):
+        return True
+    return False
+
+def _valid_urls_in_text(text):
+    urls = []
+    for m in _PLACEHOLDER_URL_RE.finditer(text or ""):
+        url = m.group(0).rstrip(".,;:)")
+        if not _is_placeholder_url(url):
+            urls.append(url)
+    return urls
+
+def _filter_placeholder_links(text):
+    """Remove fake/template URLs from search output and require one real URL."""
+    if not text:
+        return None
+    removed = []
+    def repl(match):
+        url = match.group(0).rstrip(".,;:)")
+        suffix = match.group(0)[len(url):]
+        if _is_placeholder_url(url):
+            removed.append(url)
+            return "[removed placeholder URL]" + suffix
+        return match.group(0)
+    cleaned = _PLACEHOLDER_URL_RE.sub(repl, text)
+    if removed:
+        log(f"PLACEHOLDER_LINKS_REMOVED: {removed[:5]}")
+    if not _valid_urls_in_text(cleaned):
+        return None
+    return cleaned
+
+def _url_exists_with_curl(url, timeout=8):
+    """Validate a candidate URL with curl. Used as a fallback when Python
+    socket/DNS or search libraries are unavailable on the customer box."""
+    if _is_placeholder_url(url) or not shutil.which("curl"):
+        return False
+    try:
+        p = subprocess.run(
+            ["curl", "-I", "-L", "-s", "--max-time", str(timeout), url],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2,
+        )
+    except Exception as e:
+        log(f"CURL_URL_VALIDATE_ERROR: {url} {e}")
+        return False
+    if p.returncode != 0:
+        return False
+    return bool(re.search(r'^HTTP/\S+\s+(?:2|3)\d\d\b', p.stdout, re.MULTILINE))
+
+def _direct_verified_link_lookup(query):
+    """Small deterministic resolver for exact link requests we can verify.
+
+    This is not a search replacement. It covers cases where the user named a
+    site family plus a concrete handle/repo, then validates before returning.
+    """
+    q = (query or "").strip()
+    low = q.lower()
+    candidates = []
+    if "github" in low:
+        explicit = re.findall(r'https?://github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?', q)
+        candidates.extend(explicit)
+        words = re.findall(r'\b[A-Za-z0-9][A-Za-z0-9_.-]{1,38}\b', q)
+        stop = {
+            "github", "official", "link", "links", "repo", "repository",
+            "profile", "url", "for", "the", "and", "com", "https", "http",
+        }
+        useful = [w for w in words if w.lower() not in stop]
+        if len(useful) >= 2 and any(w in low for w in ("repo", "repository")):
+            candidates.append(f"https://github.com/{useful[0]}/{useful[1]}")
+        if useful:
+            candidates.append(f"https://github.com/{useful[0]}")
+    seen = set()
+    lines = []
+    for url in candidates:
+        url = url.rstrip(".,;:)")
+        if url in seen:
+            continue
+        seen.add(url)
+        if _url_exists_with_curl(url):
+            lines.append(f"• Verified URL\n  {url}")
+    return "\n".join(lines) if lines else None
 
 def _have_14b():
     """Cheap check — is the 14B big-brain model pulled on this box?
@@ -2320,6 +2557,9 @@ def web_search(query, max_results=4):
     Every engine returns None on error, so the combiner tolerates any
     subset being down. Explicit "Search unavailable" only when ALL fail."""
     log(f"WEB_SEARCH: {query}")
+    direct = _direct_verified_link_lookup(query)
+    if direct:
+        return f"[Direct verified lookup]\n{direct}"
     gem    = gemini_grounded_search(query)
     brave  = brave_search(query, max_results=max_results)
     serper = serper_search(query, max_results=max_results)
@@ -2336,8 +2576,11 @@ def web_search(query, max_results=4):
     if instant: blocks.append(f"[DuckDuckGo Instant Answer]\n{instant}")
     if howto:   blocks.append(f"[WikiHow (via Google site:)]\n{howto}")
     if blocks:
-        return "\n\n".join(blocks)
+        cleaned = _filter_placeholder_links("\n\n".join(blocks))
+        if cleaned:
+            return cleaned
     return ("Search unavailable: all engines failed or returned nothing "
+            "with a verifiable non-placeholder URL "
             "(Gemini, Brave, Serper, Wikipedia, DuckDuckGo, Instant Answer, WikiHow).")
 
 # ── DOWNLOAD FILE ────────────────────────────────────────────
@@ -5658,6 +5901,11 @@ def confirm_run(cmd):
         _audit("RUN-EMPTY", cmd)
         return None
 
+    desktop_argv = _desktop_launch_from_command(cmd)
+    if desktop_argv:
+        _audit("DESKTOP-OPEN", cmd)
+        return _launch_desktop_argv(desktop_argv, label="desktop target")
+
     if cmd.rstrip().endswith("\\"):
         print(_pill("BLOCKED", f"{D}incomplete shell continuation in RUN: {cmd[:60]}{X}"))
         log(f"RUN-BLOCK-DANGLING-BACKSLASH: {cmd}")
@@ -5804,6 +6052,13 @@ def confirm_runterm(cmd):
         log(f"EMPTY-RUNTERM: {cmd!r}")
         _audit("RUNTERM-EMPTY", cmd)
         return None
+
+    desktop_argv = _desktop_launch_from_command(cmd)
+    if desktop_argv:
+        print(_pill("DESKTOP", f"{D}desktop/browser launch redirected out of terminal{X}"))
+        log(f"RUNTERM-REDIRECT-DESKTOP: {cmd}")
+        _audit("DESKTOP-REDIRECT", cmd)
+        return _launch_desktop_argv(desktop_argv, label="desktop target")
 
     if cmd.rstrip().endswith("\\"):
         print(_pill("BLOCKED", f"{D}incomplete shell continuation in RUNTERM: {cmd[:60]}{X}"))
@@ -6132,6 +6387,13 @@ def process_reply(reply, history, streamed=False):
                 return True
         return False
 
+    def _directive_payload(line, name):
+        if not _real_directive(line, name):
+            return ""
+        return _strip_command_wrap(
+            re.split(rf'\b{name}:', line, maxsplit=1, flags=re.IGNORECASE)[1]
+        ).strip()
+
     # Use re.search with a word boundary — catches "RUN:" anywhere on the
     # line, not just at the start. This handles the 2026-04-20 case where
     # the local model echoed "PLAN ONLY: RUN: cmd" and the prior `re.match`
@@ -6145,6 +6407,17 @@ def process_reply(reply, history, streamed=False):
                     for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
+
+    create_directive_paths = [
+        os.path.expanduser(_directive_payload(l, "CREATE"))
+        for l in lines
+        if re.match(r'^\s*CREATE:', l, re.IGNORECASE) and _directive_payload(l, "CREATE")
+    ]
+    edit_directive_paths = [
+        os.path.expanduser(_directive_payload(l, "EDIT"))
+        for l in lines
+        if re.match(r'^\s*EDIT:', l, re.IGNORECASE) and _directive_payload(l, "EDIT")
+    ]
 
     # Parse CREATE: ... <<<CONTENT ... >>>CONTENT blocks
     create_files = []
@@ -6258,6 +6531,48 @@ def process_reply(reply, history, streamed=False):
                 create_files.append((exp_path, content))
                 created_paths.add(real_path)
 
+    parsed_create_paths = {os.path.realpath(os.path.expanduser(p)) for p, _ in create_files}
+    malformed_creates = [
+        p for p in create_directive_paths
+        if os.path.realpath(os.path.expanduser(p)) not in parsed_create_paths
+    ]
+    if malformed_creates:
+        print(_pill("BLOCKED", f"{D}malformed CREATE block: missing <<<CONTENT / >>>CONTENT{X}"))
+        log(f"DIRECTIVE_REPAIR_MALFORMED_CREATE: {malformed_creates[:5]}")
+        history.append({
+            "role": "user",
+            "content": (
+                "[Directive repair]\n"
+                "You emitted CREATE without a complete content block for:\n"
+                + "\n".join(f"- {p}" for p in malformed_creates[:5])
+                + "\n\nRepair the same task now. Emit CREATE on its own line, then "
+                  "a full <<<CONTENT / >>>CONTENT block. Do not describe the file; "
+                  "include the actual file contents. Keep the same filename."
+            )
+        })
+        return None
+
+    parsed_edit_paths = {os.path.realpath(os.path.expanduser(p)) for p, _, _ in edit_ops}
+    malformed_edits = [
+        p for p in edit_directive_paths
+        if os.path.realpath(os.path.expanduser(p)) not in parsed_edit_paths
+    ]
+    if malformed_edits:
+        print(_pill("BLOCKED", f"{D}malformed EDIT block: missing FIND / REPLACE markers{X}"))
+        log(f"DIRECTIVE_REPAIR_MALFORMED_EDIT: {malformed_edits[:5]}")
+        history.append({
+            "role": "user",
+            "content": (
+                "[Directive repair]\n"
+                "You emitted EDIT without complete <<<FIND / >>>FIND and "
+                "<<<REPLACE / >>>REPLACE blocks for:\n"
+                + "\n".join(f"- {p}" for p in malformed_edits[:5])
+                + "\n\nRepair the same task now with a complete EDIT block, or READ "
+                  "the target file first if you need exact text."
+            )
+        })
+        return None
+
     has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops)
 
     # Print non-directive narrative text. Backtick-wrapped directive names
@@ -6338,12 +6653,65 @@ def process_reply(reply, history, streamed=False):
             or "matrix-style" in text
         )
 
+    def _html_demo_expected():
+        text = _latest_user_turn().lower()
+        return bool(
+            re.search(r'\b(html|ui|browser|web|page|site|app|demo|dashboard|interface)\b', text)
+            and re.search(r'\b(create|write|make|build|generate|demo)\b', text)
+        )
+
+    def _html_demo_quality_issues(content):
+        issues = []
+        low = content.lower()
+        if not re.search(r'<!doctype\s+html|<html[\s>]', low):
+            issues.append("missing complete HTML document skeleton")
+        if "<style" not in low:
+            issues.append("missing inline CSS")
+        if "<script" not in low:
+            issues.append("missing working JavaScript")
+        if re.search(r'<link[^>]+href=["\'](?:styles?\.css|style\.css)["\']', low):
+            issues.append("depends on missing external CSS")
+        if re.search(r'<script[^>]+src=["\'](?:scripts?\.js|main\.js|app\.js)["\']', low):
+            issues.append("depends on missing external JavaScript")
+        if re.search(r'\b(lorem ipsum|placeholder|todo:|coming soon|replace me)\b', low):
+            issues.append("contains placeholder copy")
+        if not re.search(r'<button\b|<input\b|<select\b|<textarea\b|<form\b', low):
+            issues.append("has no interactive controls")
+        if not re.search(r'addEventListener|onclick\s*=|querySelector|localStorage|classList', content):
+            issues.append("JavaScript has no visible interaction wiring")
+        body_text = re.sub(r'<script.*?</script>|<style.*?</style>|<[^>]+>', ' ', content, flags=re.I | re.S)
+        real_words = re.findall(r'[A-Za-z]{3,}', body_text)
+        if len(real_words) < 45:
+            issues.append("body copy is too thin for a polished demo")
+        if "viewport" not in low or "@media" not in low:
+            issues.append("missing responsive viewport/media styling")
+        return issues[:4]
+
     # CREATE: / EDIT: run BEFORE RUN: — so RUN: bash <path> works on a file
     # the same reply just created. Prior order produced exit-127s when the
     # model emitted CREATE: + RUN: together.
     action_failed = False
     created_ok_paths = []
     for filepath, content in create_files:
+        if _html_demo_expected() and str(filepath).lower().endswith((".html", ".htm")):
+            html_issues = _html_demo_quality_issues(content)
+            if html_issues:
+                print(_pill("BLOCKED", f"{D}HTML demo below polish bar: {html_issues[0]}{X}"))
+                log(f"HTML_QUALITY_REPAIR: {filepath} issues={html_issues}")
+                history.append({
+                    "role": "user",
+                    "content": (
+                        "[Directive repair]\n"
+                        f"The generated HTML demo for {filepath} is below the product-demo quality bar:\n"
+                        + "\n".join(f"- {i}" for i in html_issues)
+                        + "\n\nRegenerate the same file as a complete single-file HTML demo. "
+                          "Required: full HTML skeleton, inline CSS, inline JavaScript, "
+                          "responsive layout, real UI text, visible controls, and working interactions. "
+                          "No placeholder copy and no missing external styles/scripts. "
+                          "Then verify the file exists."
+                    )
+                })
+                return None
         if _visual_requested() and str(filepath).lower().endswith(".sh"):
             visual_issues = []
             low_content = content.lower()
@@ -7030,6 +7398,16 @@ def handle_image_gen(user_text, prompt, history):
     history.append({"role": "assistant", "content": msg})
 
 def handle(user_text, history, image_path=None):
+    # ── Deterministic "open <desktop app/file>" catch — no terminal wrapper ─
+    _desktop_open = _try_desktop_open_intent(user_text)
+    if _desktop_open:
+        argv, label = _desktop_open
+        result = _launch_desktop_argv(argv, label=label)
+        msg = f"Opened {label}" if _action_ok(result) else f"Could not open {label}"
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": msg})
+        return msg
+
     # ── Deterministic "open <url/site>" catch — no model call needed ───
     _open_url = _try_open_url_intent(user_text)
     if _open_url:
@@ -7707,14 +8085,11 @@ def main():
         cloud_status = "LOCAL ONLY"
 
     # ── Clear screen so banner is always at TOP of the visible pane ─
-    # (classic mode only — TUI manages its own scrollback region)
+    # Classic mode owns the terminal and needs a full clear before the
+    # shell banner. TUI mode already wrote System Check into the chat box;
+    # clearing here would erase the status the customer expects to see.
     if _SENSEI_APP is None:
         os.system('clear')
-    else:
-        try:
-            _SENSEI_APP.clear_output()
-        except Exception:
-            pass
     _clear_tmux_scrollback("startup")
 
     # ── Use the SAME banner as master.sh main menu in classic mode ─
@@ -8916,6 +9291,15 @@ def main():
 
         image_path = None
         user_text = ""
+
+        # ── Attach text file context ─────────────────────────
+        if lo.startswith("attach ") or lo.startswith("attach:"):
+            raw = cmd.split(":", 1)[1].strip() if lo.startswith("attach:") else cmd[7:].strip()
+            if not raw:
+                print(f"  {Y}usage: attach ~/path/to/file.txt{X}")
+            else:
+                _attach_text_file(raw, history)
+            continue
 
         # ── Download ──────────────────────────────────────────
         if lo.startswith("dl "):
