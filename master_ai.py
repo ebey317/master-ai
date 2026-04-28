@@ -1619,6 +1619,11 @@ def orchestrate(history, user_text, image_path=None):
                 "synth_reply": synth,
                 "reason": "system query pattern → synthesized RUN: directive"}
 
+    if _looks_link_lookup(low, word_set):
+        return {"route": "link_lookup",
+                "query": stripped,
+                "reason": "link/source request → live search, no guessed URLs"}
+
     generative_video = _is_generative_video_request(low)
     if generative_video:
         if any_cloud:
@@ -1904,6 +1909,31 @@ def _looks_time_sensitive(low, word_set):
             return True
     return False
 
+_LINK_LOOKUP_PHRASES = (
+    "link to", "links to", "url for", "urls for",
+    "official website", "official site", "source link", "source links",
+    "citation", "citations", "references", "sources",
+    "download link", "download page", "github repo", "github repository",
+    "where can i download", "where do i download",
+    "find the link", "find a link", "find me the link",
+    "pull accurate links", "accurate links",
+)
+
+def _looks_link_lookup(low, word_set):
+    """True when the user needs real URLs/sources, not model prose.
+
+    These requests must go through live search and return source URLs. Local
+    models are prone to placeholder links or plausible-but-fake domains.
+    """
+    if not low:
+        return False
+    if any(p in low for p in _LINK_LOOKUP_PHRASES):
+        return True
+    if ("link" in word_set or "links" in word_set or "url" in word_set or "urls" in word_set):
+        if any(w in word_set for w in ("find", "get", "pull", "show", "give", "need", "accurate", "real")):
+            return True
+    return False
+
 def _have_14b():
     """Cheap check — is the 14B big-brain model pulled on this box?
     Cached for one minute so repeated orchestrator calls don't hammer Ollama."""
@@ -2039,8 +2069,16 @@ def duckduckgo_search(query, max_results=4):
             results = list(ddgs.text(query, max_results=max_results))
         if not results:
             return None
-        return "\n".join(f"• {r.get('title','')}: {r.get('body','')[:200]}"
-                         for r in results)
+        lines = []
+        for r in results:
+            title = (r.get("title") or "").strip()
+            body = (r.get("body") or "").strip()
+            href = (r.get("href") or r.get("url") or "").strip()
+            if href:
+                lines.append(f"• {title}: {body[:200]}\n  {href}")
+            else:
+                lines.append(f"• {title}: {body[:200]}")
+        return "\n".join(lines)
     except Exception as e:
         log(f"DDG_SEARCH_ERROR: {e}")
         return None
@@ -7068,6 +7106,18 @@ def handle(user_text, history, image_path=None):
                        directive=synth.split("RUN:", 1)[-1][:200] if "RUN:" in synth else "")
         return synth
 
+    if decision["route"] == "link_lookup":
+        q = decision.get("query") or user_text
+        print(f"\n  {BC}[thinking: link lookup — live search, no placeholder URLs]{X}")
+        results = web_search(q, max_results=6)
+        msg = f"Real link results for '{q}':\n{results}"
+        print(f"\n  {M}Sensei:{X} Real link results for '{q}':\n")
+        print(f"  {C}{results}{X}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": msg})
+        _router_metric("link_lookup", prompt=q[:200], ok=not results.lower().startswith("search unavailable"))
+        return msg
+
     if decision["route"] == "time_sensitive_warn":
         # Local brain's training data is frozen. Cloud AI (Groq, etc.)
         # ALSO has a training cutoff, so even 'fast:' would guess. The
@@ -7361,7 +7411,7 @@ def handle(user_text, history, image_path=None):
 
     else:
         _tool_required_turn = _is_tool_required(user_text.lower())
-        reply = ask_local_stream(history, model=model)
+        reply = ask_local_stream(history, model=model, image_path=image_path)
         if not reply:
             if _tool_required_turn:
                 reply = (

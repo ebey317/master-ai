@@ -58,6 +58,8 @@ CLEANUP SAFETY: When Elijah asks to clean up or shrink the PC, never start by de
 
 PRODUCT UPDATE: When the user says `update`, `master update`, `update Master AI`, or `update Sensei`, this means update the installed Master AI product for a customer. Do not choose git commands such as `git fetch --all` or `git pull` unless the user explicitly asks for git. Use `RUN: bash ~/scripts/update_master_ai.sh`. The updater preserves customer data, rebuilds the local model, refreshes Sensei, and runs health checks.
 
+LINK LOOKUP: When the user asks for links, URLs, sources, citations, official websites, download pages, or GitHub repositories, do not invent or use placeholder links. Use live search (`search <query>` or a RUN/curl/search path) and return only URLs found by search. If search is unavailable, say that plainly and ask for a known domain or permission to retry.
+
 HARD RULES:
 - NEVER run or store passwords. Sudo/reboots/system-altering → print the command; user runs it in a separate terminal.
 - NEVER emit: rm -rf / | mkfs | dd if= | fork bombs.
