@@ -593,6 +593,16 @@ def _tmux_resize_to_client():
         log(f"RESIZE_ERROR: {e}")
         return None
 
+def _clear_tmux_scrollback(reason="refresh"):
+    """Clear tmux history so old visual context is gone after fresh starts."""
+    if not os.environ.get("TMUX"):
+        return
+    try:
+        subprocess.run(["tmux", "clear-history"], check=False, capture_output=True)
+        log(f"TMUX_CLEAR_HISTORY: {reason}")
+    except Exception as e:
+        log(f"TMUX_CLEAR_HISTORY_ERROR [{reason}]: {e}")
+
 def _remember_created_file(filepath):
     try:
         p = Path(os.path.expanduser(filepath)).resolve()
@@ -3042,6 +3052,51 @@ def load_memory():
         return MEMORY_FILE.read_text().strip()
     except Exception:
         return ""
+
+def select_memory_context(user_text, max_chars=6000):
+    """Compact durable memory for local-model turns.
+
+    Local routes intentionally skip a dynamic system prompt so Ollama can keep
+    the baked Modelfile prefix hot. Without putting memory anywhere else,
+    though, the normal master-ai lane never sees ~/.master_ai_memory. Keep a
+    bounded, relevant slice in the user turn so fixes and durable facts stick
+    without flooding the 4k context window.
+    """
+    memory = load_memory()
+    if not memory:
+        return ""
+    lines = [ln.rstrip() for ln in memory.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+
+    words = {
+        w.lower()
+        for w in re.findall(r"[A-Za-z0-9_./~-]{4,}", user_text or "")
+        if len(w) >= 4
+    }
+    picked = []
+
+    def add(line):
+        if line not in picked:
+            picked.append(line)
+
+    for line in lines[:24]:
+        add(line)
+    if words:
+        for line in lines:
+            low = line.lower()
+            if any(w in low for w in words):
+                add(line)
+    for line in lines[-48:]:
+        add(line)
+
+    out = "\n".join(picked).strip()
+    if len(out) > max_chars:
+        out = out[-max_chars:]
+        first_nl = out.find("\n")
+        if first_nl >= 0:
+            out = out[first_nl + 1:]
+    return out
 
 # ── APPROVED COMMANDS ─────────────────────────────────────────
 def load_approved():
@@ -6883,9 +6938,14 @@ def handle(user_text, history, image_path=None):
     # Groq fallback the default path (2026-04-22 fix). Vanilla qwen2.5:7b
     # callers still need the hint so they keep getting it.
     if route == "local":
+        memory_slice = select_memory_context(user_text)
+        if memory_slice:
+            local_prefix = f"[MEMORY - durable facts]\n{memory_slice}\n\n[USER REQUEST]\n"
+        else:
+            local_prefix = ""
         if model == MODELS["master"]:
             if _is_tool_required(user_text.lower()):
-                local_prefix = (
+                local_prefix += (
                     "Tool task. Use only real directive blocks, no markdown fences, no prose-only plan. "
                     "For files, emit CREATE with <<<CONTENT and >>>CONTENT. "
                     "For a single-file HTML demo, inline CSS in <style> and JavaScript in <script>. "
@@ -6904,9 +6964,9 @@ def handle(user_text, history, image_path=None):
                     "User: "
                 )
             else:
-                local_prefix = ""
+                local_prefix += "User: " if local_prefix else ""
         else:
-            local_prefix = LOCAL_DIRECTIVE_HINT
+            local_prefix += LOCAL_DIRECTIVE_HINT
         if ACTIVE_PROJECT:
             local_prefix += f"[Active project: {ACTIVE_PROJECT[:80]}] "
     elif route == "vision" and ACTIVE_PROJECT:
@@ -7226,6 +7286,12 @@ def main():
     # (classic mode only — TUI manages its own scrollback region)
     if _SENSEI_APP is None:
         os.system('clear')
+    else:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("startup")
 
     # ── Use the SAME banner as master.sh main menu in classic mode ─
     # TUI mode already has a full-width header/frame. The shell banner is
@@ -7982,6 +8048,12 @@ def main():
             except Exception:
                 pass
             print(f"  {C}🔄 Refreshing Master AI — screen reset + engine restart...{X}", flush=True)
+            if _SENSEI_APP is not None:
+                try:
+                    _SENSEI_APP.clear_output()
+                except Exception:
+                    pass
+            _clear_tmux_scrollback("refresh")
             try:
                 subprocess.run(["stty", "sane"], check=False)
             except Exception:
@@ -7994,6 +8066,12 @@ def main():
         # ── Clear variants ─────────────────────────────────────
         if lo in ("clear", "clear history"):
             history = [h for h in history if h.get("role") == "system"]
+            if _SENSEI_APP is not None:
+                try:
+                    _SENSEI_APP.clear_output()
+                except Exception:
+                    pass
+            _clear_tmux_scrollback("clear")
             print(f"  {G}✅ Conversation cleared.{X}")
             _request_auto_save(history)
             continue

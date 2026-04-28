@@ -31,6 +31,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     # Resize to match current terminal before attaching
     tmux kill-pane -a -t "$SESSION" 2>/dev/null || true
     tmux resize-window -t "$SESSION" -x "$COLS" -y "$LINES" 2>/dev/null || true
+    tmux clear-history -t "$SESSION" 2>/dev/null || true
     if engine_alive; then
         echo "Master AI already running — reattaching..."
     else
@@ -43,6 +44,7 @@ else
     # Create with current terminal dims; aggressive-resize handles later changes
     tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES"
     tmux kill-pane -a -t "$SESSION" 2>/dev/null || true
+    tmux clear-history -t "$SESSION" 2>/dev/null || true
     tmux send-keys -t "$SESSION" "$SUPERVISOR" Enter
 fi
 
