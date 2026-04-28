@@ -192,3 +192,7 @@
 ### POC (auto-logged 2026-04-26 17:43)
 - **Ask:** approvals is not Claude Code’s approval system. which approvals && approvals
 - **Status:** brainstorming — scope-check fired
+
+### POC (auto-logged 2026-04-27 20:30)
+- **Ask:** we want to make apps
+- **Status:** brainstorming — scope-check fired

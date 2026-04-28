@@ -992,6 +992,251 @@ def _is_tool_required(stripped_low):
         return True
     return False
 
+
+# Deterministic system-query short-circuit. The local 7B model writes prose
+# for "where is X / find X / what's on port N / is X running" even though the
+# Modelfile says to emit RUN:/READ:. Architecture beats prompting — these
+# helpers synthesize a RUN: directive directly so the dispatcher executes it
+# without ever asking the model. _is_system_state_question is the broader
+# classifier used by retry-on-prose downstream.
+_FILE_INTENT_PATTERNS = [
+    re.compile(r"^where(?:\s+is|\s+are|\s+was|\s+were|'s|s)\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"),
+    re.compile(r"^find(?:\s+me)?\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"),
+    re.compile(r"^locate\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$"),
+    re.compile(r"^do\s+i\s+have\s+(?:a\s+|an\s+|any\s+)?(.+)$"),
+    re.compile(r"^show\s+me\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+?)(?:\s+please)?$"),
+]
+
+_FILE_TARGET_STOP = {"it", "that", "this", "them", "those", "these", "one", "any"}
+_FILE_TARGET_ABSTRACT_FIRST = {
+    "how", "why", "when", "what", "who", "which",
+    "way", "fix", "answer", "solution", "problem",
+    "idea", "plan", "thought", "reason", "purpose",
+    "out", "around",
+}
+
+def _build_filename_glob(target):
+    parts = re.findall(r"[a-zA-Z0-9_-]+", target)
+    drop = {"file", "files", "folder", "folders", "directory", "dir", "the", "my", "a", "an", "some"}
+    parts = [p for p in parts if p.lower() not in drop]
+    if not parts:
+        return None
+    return "*" + "*".join(p.lower() for p in parts) + "*"
+
+_TARGET_GLUE_WORDS = {
+    "to", "for", "that", "with", "from", "about", "before", "after", "while",
+    "i", "you", "we", "they", "he", "she",
+    "downloaded", "created", "saved", "made", "wrote", "built", "edited",
+    "is", "was", "be", "are", "were", "do", "does", "did",
+}
+
+def _system_query_short_circuit(text, low, words):
+    """Match common system-state intents and return a synthesized AI reply.
+
+    Returns a string suitable for process_reply() (with embedded RUN:/READ:),
+    or None when no pattern matches and the request should fall through to
+    the LLM. False positives are worse than false negatives — be conservative.
+    """
+    if not text:
+        return None
+    t = (low or "").strip().rstrip("?.!")
+    tt = text.strip().rstrip("?.!")  # case-preserved (paths must keep case)
+    if not t or len(t) > 200:
+        return None
+
+    # 1. Port lookup: "what's on port 8080", "what is using port 8080", "port 8080 status"
+    m_port = re.search(r"\bport\s+(\d{2,5})\b", t)
+    if m_port:
+        triggers = (
+            "what", "check", "on port", "listening", "open on", "using port",
+            "bound", "free", "status", "who", "process",
+        )
+        if t.startswith("port ") or any(k in t for k in triggers):
+            port = m_port.group(1)
+            return (
+                f"Checking what's on port {port}.\n"
+                f'RUN: ss -tlnp 2>/dev/null | grep -E "[:.]\\b{port}\\b" || '
+                f'lsof -i :{port} 2>/dev/null || echo "nothing listening on port {port}"'
+            )
+
+    # 2. Installed-package / executable check (must come BEFORE "is X running")
+    m_inst = re.match(
+        r"^(?:is\s+|do\s+i\s+have\s+|check\s+(?:if\s+)?)([a-z][a-z0-9_.+-]{1,40})\s+installed\b", t,
+    )
+    if m_inst:
+        pkg = m_inst.group(1)
+        return (
+            f"Checking for {pkg}.\n"
+            f'RUN: (command -v {pkg} 2>/dev/null; '
+            f'dpkg -l 2>/dev/null | grep -i "^ii.*{pkg}" | head -5; '
+            f'snap list 2>/dev/null | grep -i {pkg} | head -3; '
+            f'flatpak list 2>/dev/null | grep -i {pkg} | head -3) '
+            f'| head -20 || echo "{pkg}: not found"'
+        )
+
+    # 3. Service/process running: "is ollama running", "is sensei up"
+    m_svc = re.match(r"^is\s+([a-z][a-z0-9_.-]{1,40})\s+(running|on|up|alive|active|started)\b", t)
+    if m_svc:
+        name = m_svc.group(1)
+        if name not in {"it", "that", "this", "the", "a", "an"}:
+            return (
+                f"Checking if {name} is running.\n"
+                f'RUN: (systemctl --user is-active {name} 2>/dev/null; '
+                f'systemctl is-active {name} 2>/dev/null; '
+                f'pgrep -af "{name}" 2>/dev/null) | head -10 || echo "{name}: not running"'
+            )
+
+    # 4. Check service: "check service ollama", "check ollama service",
+    #                   "ollama service status", "service status ollama"
+    m_svc2 = re.match(
+        r"^(?:check\s+(?:the\s+)?service\s+|check\s+|service\s+status\s+(?:of\s+)?)"
+        r"([a-z][a-z0-9_.-]{1,40})(?:\s+(?:service|status))?$", t,
+    )
+    if m_svc2:
+        name = m_svc2.group(1)
+        if name not in {"it", "that", "this", "the", "a", "an", "if", "in", "on", "out"}:
+            return (
+                f"Checking {name} service.\n"
+                f'RUN: (systemctl --user status {name} 2>/dev/null | head -10; '
+                f'systemctl status {name} 2>/dev/null | head -10; '
+                f'pgrep -af "{name}" 2>/dev/null | head -5) || echo "{name}: no service or process found"'
+            )
+    m_svc3 = re.match(r"^([a-z][a-z0-9_.-]{1,40})\s+service(?:\s+status)?$", t)
+    if m_svc3:
+        name = m_svc3.group(1)
+        return (
+            f"Checking {name} service.\n"
+            f'RUN: (systemctl --user status {name} 2>/dev/null | head -10; '
+            f'systemctl status {name} 2>/dev/null | head -10) || echo "{name}: no such service"'
+        )
+
+    # 5. List files in a directory: "list files in ~/X", "ls ~/X",
+    #                                "show files in ~/X", "what's in ~/X"
+    # Match against case-preserved tt — paths must keep their case (~/Templates
+    # is not the same as ~/templates).
+    m_ls = re.match(
+        r"^(?:list|ls|show)\s+(?:the\s+)?files?\s+(?:in\s+)?(.+)$", tt, re.IGNORECASE,
+    )
+    if not m_ls:
+        m_ls = re.match(r"^ls\s+(.+)$", tt, re.IGNORECASE)
+    if not m_ls:
+        m_ls = re.match(r"^what(?:'s|\s+is)\s+in\s+(.+)$", tt, re.IGNORECASE)
+    if m_ls:
+        target = m_ls.group(1).strip().rstrip("?.!,")
+        if target.startswith(("~", "/", ".")) or re.match(r"^[A-Za-z][A-Za-z0-9_./-]*$", target):
+            safe_target = re.sub(r"[^A-Za-z0-9_./~-]", "", target)
+            if safe_target:
+                return (
+                    f"Listing {safe_target}.\n"
+                    f'RUN: ls -la {safe_target} 2>/dev/null | head -50 || echo "{safe_target}: not a directory"'
+                )
+
+    # 6. Open file: "open file ~/X", "open the file /path/X"
+    # Case-preserved match — file paths are case-sensitive on Linux.
+    m_open = re.match(r"^open\s+(?:the\s+)?file\s+(.+)$", tt, re.IGNORECASE)
+    if m_open:
+        target = m_open.group(1).strip().rstrip("?.!,")
+        if target.startswith(("~", "/", ".")):
+            safe_target = re.sub(r"[^A-Za-z0-9_./~-]", "", target)
+            if safe_target:
+                return (
+                    f"Opening {safe_target}.\n"
+                    f'RUN: xdg-open {safe_target} 2>/dev/null && echo "opened {safe_target}" '
+                    f'|| echo "cannot open {safe_target}"'
+                )
+
+    # 7. File search — "where is X", "find X", "locate X", "do I have X", "show me X"
+    for pat in _FILE_INTENT_PATTERNS:
+        m = pat.match(t)
+        if not m:
+            continue
+        target = m.group(1).strip().rstrip(".!?,")
+        target = re.sub(
+            r"\s+(?:located|saved|stored|kept)\s+(?:on\s+)?(?:my|the)?\s*"
+            r"(?:computer|machine|system|disk|drive)?\s*$",
+            "", target,
+        ).strip()
+        target = re.sub(
+            r"\s+on\s+(?:my|the|this)\s+(?:computer|machine|system|disk|drive)$",
+            "", target,
+        ).strip()
+        if not target or len(target) < 3 or "," in target:
+            return None
+        first = target.split()[0].lower()
+        if first in _FILE_TARGET_STOP or first in _FILE_TARGET_ABSTRACT_FIRST:
+            return None
+        # Skip "show me how/what/why" style — those are explanation requests.
+        if re.match(r"^(?:how|why|what|when|who|which)\b", target, re.IGNORECASE):
+            return None
+        # Glue/verb words signal a sentence shape, not a filename.
+        # "find a way to fix" → has "to" → skip. "find biovega field manual" → keep.
+        target_words_lower = [w.lower() for w in re.findall(r"[a-zA-Z0-9_.-]+", target)]
+        if any(w in _TARGET_GLUE_WORDS for w in target_words_lower):
+            return None
+        if len(target_words_lower) > 6:
+            return None
+        glob = _build_filename_glob(target)
+        if not glob or len(glob) < 5:
+            return None
+        return (
+            f"Looking for `{target}` on disk.\n"
+            f'RUN: find ~ -maxdepth 6 -iname "{glob}" 2>/dev/null | head -20 || '
+            f'echo "no matches for {glob}"'
+        )
+
+    return None
+
+
+_DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT")
+
+def _reply_has_directive(reply):
+    """True if the reply contains a non-backticked RUN/RUNTERM/READ/CREATE/EDIT
+    directive — same parity check process_reply uses, so the result matches
+    what the dispatcher would actually execute.
+
+    Used by retry-on-prose to detect when the local model wrote prose for a
+    system-state question instead of emitting a directive.
+    """
+    if not reply:
+        return False
+    for line in reply.splitlines():
+        for name in _DIRECTIVE_NAMES:
+            for match in re.finditer(rf'\b{name}:', line, re.IGNORECASE):
+                if line[:match.start()].count('`') % 2 == 0:
+                    return True
+    return False
+
+
+def _is_system_state_question(low):
+    """Lightweight classifier — true if the user is asking a system-state Q
+    (file/process/port/service status, installed package, file listing,
+    file-open). Used by retry-on-prose to know when a directive-less reply
+    is wrong. Broader than the short-circuit matcher: short-circuit needs
+    an extractable target; this just needs the shape."""
+    if not low:
+        return False
+    t = low.strip().rstrip("?.!")
+    if re.search(r"\bport\s+\d{2,5}\b", t):
+        return True
+    if re.match(r"^is\s+[a-z][a-z0-9_.+-]{1,40}\s+(running|on|up|alive|active|started|installed)\b", t):
+        return True
+    if re.match(r"^do\s+i\s+have\s+[a-z][a-z0-9_.+-]{1,40}\s+installed\b", t):
+        return True
+    if re.match(r"^[a-z][a-z0-9_.-]{1,40}\s+service(\s+status)?$", t):
+        return True
+    starts = (
+        "where is ", "where are ", "where's ", "wheres ",
+        "find ", "find me ", "locate ", "do i have ", "show me ",
+        "is there a ", "list files", "list the files", "what files",
+        "ls ", "ls\t",
+        "check if ", "check the file", "check the folder",
+        "check service ", "check the service ",
+        "open file ", "open the file ",
+        "what's in ", "what is in ",
+    )
+    return any(t.startswith(k) for k in starts)
+
+
 def _is_generative_video_request(stripped_low):
     return bool(
         re.search(r'\b(create|make|generate)\b.*\b(video|clip|movie)\b', stripped_low)
@@ -1352,6 +1597,19 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "local", "model": MODELS["master"],
                 "stripped_text": stripped[prefix_len:].strip(),
                 "reason": "explicit local/private → local 7b"}
+
+    # 2c. Deterministic system-query short-circuit. Catches "where is X",
+    #     "find X", "what's on port N", "is X running/installed", "list files
+    #     in X", "open file X" and synthesizes a RUN: directive directly —
+    #     no LLM call. The 7B local model writes prose for these even when
+    #     the Modelfile says to use directives. Architecture beats prompting.
+    #     Built 2026-04-27 after Sensei couldn't locate biovega_field_manual.md
+    #     while Claude Code found it in one shell call.
+    synth = _system_query_short_circuit(stripped, low, words)
+    if synth:
+        return {"route": "system_query",
+                "synth_reply": synth,
+                "reason": "system query pattern → synthesized RUN: directive"}
 
     generative_video = _is_generative_video_request(low)
     if generative_video:
@@ -3691,7 +3949,7 @@ def _build_idle_tips():
         out = [
             ("hub",     "18-action control panel"),
             ("help",    "full command reference"),
-            ("refresh", "soft-restart if screen glitches"),
+            ("refresh / reload", "soft-restart if screen glitches"),
             ("",        "Your AI. Every entry point. Your hardware."),
         ]
     return out
@@ -3907,7 +4165,7 @@ def show_autotips(slide_delay=4.0):
             "'mode plan' → AI plans first, 'go' to run",
             "'mode auto' → no confirmation prompts",
             "'mode local' → force local-only routing   ·   'mode connected' → cloud-first routing",
-            "'mode plan' → concrete execution plan   ·   'mode review' → ask before each command",
+            "'mode review' → ask before each command",
         ]),
         ("Memory & Context", [
             "'remember: <fact>' → persist across sessions",
@@ -3916,8 +4174,8 @@ def show_autotips(slide_delay=4.0):
             "'project <path>' → inject file tree to AI",
         ]),
         ("Recovery (if stuck)", [
-            "'refresh' → soft-restart engine in place",
-            "'kick'    → supervisor-loop hard restart",
+            "'refresh / reload' → soft-restart engine in place",
+            "'kick / restart' → supervisor-loop hard restart",
             "~/scripts/master_ai_refresh.sh → from any shell",
             "~/scripts/master_ai_kick.sh    → full tmux rebuild",
         ]),
@@ -3986,8 +4244,8 @@ def show_hub():
         ("chats",        "browse saved sessions"),
         ("save session", "save session + summary now"),
         ("doctor",       "live health + productivity check"),
-        ("refresh",      "redraw screen + reload engine"),
-        ("kick",         "force-restart engine"),
+        ("refresh / reload", "redraw screen + reload engine"),
+        ("kick / restart",   "force-restart engine"),
         ("clear cache",  "wipe cached responses"),
         ("keys",         "API key status"),
         ("tts",          "voice toggle / status"),
@@ -4174,7 +4432,6 @@ def show_help():
             ("tight: <question>",    "same as reason:"),
             ("mode plan",            "concrete execution plan first (default — no execution)"),
             ("mode review",          "ask before every command (per-action confirm)"),
-            ("mode plan",            "AI shows plan first — type 'go' to run"),
             ("mode auto",            "commands run without asking"),
             ("mode local",           "local-only routing"),
             ("mode connected",       "cloud-first routing"),
@@ -4205,7 +4462,7 @@ def show_help():
             ("save session",         "save full chat + auto-generate summary now"),
             ("load summary",         "inject last session summary into context"),
             ("load session",         "inject full last session transcript"),
-            ("clear / clear history","wipe conversation context"),
+            ("clear history",        "wipe conversation context"),
             ("cache",                "show response cache stats"),
             ("clear cache",          "wipe cached responses"),
             ("approved",             "show auto-approved command list"),
@@ -4220,8 +4477,8 @@ def show_help():
         ]),
         ("RECOVERY", [
             ("doctor",               "live health card: services, URLs, mode, mouse, task"),
-            ("refresh",              "restart engine in-place (screen glitch)"),
-            ("kick",                 "force-restart via supervisor (engine stuck)"),
+            ("refresh / reload",     "soft-restart engine in place (screen glitch)"),
+            ("kick / restart",       "force-restart via supervisor (engine stuck)"),
             ("~/scripts/master_ai_kick.sh", "from any shell: rebuild tmux session"),
         ]),
         ("SYSTEM", [
@@ -4375,8 +4632,8 @@ def show_tips():
     section("SYSTEM")
     blank()
     row("doctor",          "live health card — URLs, services, mode, mouse, task")
-    row("refresh",         "restart engine in-place — use when screen glitches")
-    row("kick",            "force-restart engine via supervisor loop (use when stuck/hung)")
+    row("refresh / reload","restart engine in place — use when screen glitches")
+    row("kick / restart",   "force-restart engine via supervisor loop (use when stuck/hung)")
     row("tts on / tts off","toggle voice — replies spoken aloud (saved across restarts)")
     row("tts",             "show current voice status")
     row("mouse remote",    "phone/RustDesk scrolling + taps")
@@ -4411,6 +4668,9 @@ def show_commands():
     """Simple first-screen command card for normal users."""
     rows = [
         ("Just type", "Ask for anything in plain English"),
+        ("hub / menu / home", "open the full command menu"),
+        ("help", "quick reference"),
+        ("tips", "practical command tips"),
         ("mode plan", "Think first. Nothing runs until you approve"),
         ("mode review", "Ask before each file edit or command"),
         ("mode auto", "Work faster. Safe blocks still apply"),
@@ -4425,8 +4685,8 @@ def show_commands():
         ("doctor", "Check services, models, URLs, and warnings"),
         ("copy chat", "Export this conversation"),
         ("help buckets", "Show the punctuation teaser"),
-        ("refresh", "Restart the screen/engine in place"),
-        ("kick", "Force restart if stuck"),
+        ("refresh / reload", "soft-reload the screen/engine"),
+        ("kick / restart", "force restart if stuck"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -6720,6 +6980,23 @@ def handle(user_text, history, image_path=None):
         history.append({"role": "assistant", "content": resp})
         return resp
 
+    if decision["route"] == "system_query":
+        # Deterministic file/port/service lookup — synth_reply contains a
+        # RUN: directive that process_reply parses and executes through the
+        # same path an LLM-emitted RUN: would use (mode-aware confirmation,
+        # action-failed chain abort, router metrics). No model call, no
+        # tokens, no waiting for the 7B brain to remember to use its tools.
+        synth = decision.get("synth_reply", "")
+        print(f"\n  {BC}[thinking: deterministic system query — running it directly]{X}")
+        print(f"  {M}Sensei:{X} {synth}\n", flush=True)
+        process_reply(synth, history, streamed=False)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": synth})
+        _router_metric("system_query_short_circuit",
+                       prompt=user_text[:200],
+                       directive=synth.split("RUN:", 1)[-1][:200] if "RUN:" in synth else "")
+        return synth
+
     if decision["route"] == "time_sensitive_warn":
         # Local brain's training data is frozen. Cloud AI (Groq, etc.)
         # ALSO has a training cutoff, so even 'fast:' would guess. The
@@ -7058,6 +7335,32 @@ def handle(user_text, history, image_path=None):
                 "Use CREATE to write a complete bash or Python generator on Desktop. Use ffmpeg to render "
                 "a 30-second MP4, verify the file exists, and open it or report the path. "
                 f"Match or exceed the quality of {_video_quality_anchor()} as the minimum bar."
+            )
+        })
+        result = None
+    elif (_is_system_state_question(low_user)
+          and reply
+          and not _reply_has_directive(reply)):
+        # Retry-on-prose. The user asked a system-state question (file/port/
+        # process/service/installed) and the model answered with prose
+        # instead of emitting RUN:/READ:. Re-prompt once with strict framing.
+        # The deterministic short-circuit caught the highest-value patterns
+        # earlier — this safety net catches the rest. If the retry still
+        # comes back without a directive, the existing repair_turn path at
+        # line 7070+ already protects against infinite loops (single retry).
+        print(_pill("REPAIR", f"{D}system-state question answered as prose — enforcing directive{X}"))
+        log(f"RETRY_ON_PROSE: enforcing directive for system-state question: {user_text[:120]!r}")
+        _router_metric("retry_on_prose", prompt=user_text[:200])
+        history.append({
+            "role": "user",
+            "content": (
+                "[Directive repair]\n"
+                "The user asked a system-state question about this machine "
+                "(file location, process status, port, service, installed package). "
+                "Respond with a single RUN: or READ: directive that resolves it on "
+                "disk right now. The first line of your output MUST start with "
+                "RUN: or READ: — no preamble, no markdown, no prose explanation. "
+                "Use absolute paths or $HOME / ~ where appropriate."
             )
         })
         result = None

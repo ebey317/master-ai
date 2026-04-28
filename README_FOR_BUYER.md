@@ -134,8 +134,8 @@ Inside Sensei (menu 4), type these at the prompt:
 | `log` | Shows recent Sensei engine log lines |
 | `clear cache` | Clears exact-response cache for fresh work |
 | `load summary` | Re-injects the last session summary |
-| `refresh` | Soft restart (preserves session) |
-| `kick` | Hard restart (tmux rebuild) |
+| `refresh / reload` | Soft restart (preserves session) |
+| `kick / restart` | Hard restart (tmux rebuild) |
 | `,` / `;` / `.` / `/` | Command buckets to explore |
 | `hub` / `help` / `tips` | Slideshow walkthroughs |
 | `help buckets` | Shows the punctuation teaser |
@@ -154,8 +154,8 @@ inside framed boxes.
 
 Default mouse profile is local-copy mode: `SENSEI_MOUSE=0`. That leaves mouse
 selection to the terminal, so normal drag-select copy works without Shift. For
-phone/RustDesk scrolling, type `mouse remote` and then `refresh`. To go back,
-type `mouse local` and `refresh`.
+phone/RustDesk scrolling, type `mouse remote` and then `refresh / reload`. To go back,
+type `mouse local` and `refresh / reload`.
 
 Useful shortcuts:
 
@@ -217,7 +217,7 @@ Now your phone and your desktop share the same Sensei + Pupil instance. Same mem
 |---|---|
 | Pupil says "Ollama offline" | `systemctl start ollama` in a terminal |
 | Sensei won't start | Menu option 7 (Force rebuild) |
-| Drag-copy needs Shift | In Sensei, type `mouse local`, then `refresh` |
+| Drag-copy needs Shift | In Sensei, type `mouse local`, then `refresh / reload` |
 | Preview opens an old note | Type `preview`; it now prefers `.html` / `.htm` product files |
 | Lost the template panel in Pupil | Type `menu` or `back` inside a lesson — panel returns |
 | Keys not syncing between menu 11 and Pupil | Make sure you opened Pupil via `http://localhost:8080/pupil.html`, not `file://` — only the served version syncs |

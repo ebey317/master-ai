@@ -612,7 +612,7 @@ PY
             vresp=$(python3 -c "import json; print(json.load(open('$SANDBOX/logs/vision.json')).get('response',''))" 2>/dev/null)
             record_info "vision: ${vis_el}s · response='${vresp:0:60}'"
             [ -n "$vresp" ] && record_pass "llava answered vision prompt" || record_fail "llava returned empty"
-            if [ "$vis_el" -le 60 ]; then
+            if [ "$vis_el" -le 90 ]; then
                 record_pass "vision latency ${vis_el}s (acceptable)"
             else
                 record_warn "vision latency ${vis_el}s (slow — cold cpu)"
@@ -653,7 +653,7 @@ if [ "$stt_up" = "1" ]; then
     done
 
     # /project_summary requires a name param and runs Ollama — treat soft
-    code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 "http://localhost:8080/project_summary?name=Master%20AI" 2>/dev/null)
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 90 "http://localhost:8080/project_summary?name=Master%20AI" 2>/dev/null)
     if [ "$code" = "200" ]; then
         record_pass "/project_summary?name=Master%20AI → 200 (briefing ready)"
     else

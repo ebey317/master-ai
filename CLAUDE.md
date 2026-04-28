@@ -1,8 +1,28 @@
 # Claude Code Handoff — Master AI
 
-Last updated: 2026-04-26
+Last updated: 2026-04-27
 
 This repo is Elijah's local-first AI agent stack. Treat it as a local Claude Code / Codex-style computer agent, not a generic chatbot or greenfield app.
+
+## Recent Uncommitted Changes (2026-04-27)
+
+Two work units landed on disk; not yet committed.
+
+### Phase 1: deterministic system-query short-circuit + retry-on-prose
+
+Root cause being fixed: the local 7B model writes prose for "where is X / find X / what's on port N / is X running / is X installed" instead of emitting `RUN:`/`READ:` directives, even though the Modelfile teaches them. Architecture-level fix in three layers (in execution order):
+
+1. **Deterministic short-circuit in `master_ai.py`** — new helpers `_system_query_short_circuit`, `_is_system_state_question`, `_reply_has_directive`, `_build_filename_glob`. New route `system_query` in `orchestrate()` (placed after explicit prefixes so `local:`/`fast:`/`deep:` still win). Matches: file-find (`where is / find / locate / do I have / show me`), port (`what's on port N / using port N / port N`), service (`is X running/up/active`, `check service X`, `X service status`), installed package (`is X installed`, `do I have X installed`), list-files (`ls X`, `list files in X`, `what's in X`), open-file (`open file <path>`). Emits a synthesized `RUN:`/`READ:` line that flows through `process_reply()` — same dispatch path the LLM's directives would take, so mode-aware confirmation, action-failed chain abort, and router metrics all still apply. False-positive guards: glue-word filter, ≤6-word target, abstract first-word stop list, case-preserved path matching for `ls`/`open file`. Logs to router metrics as `system_query_short_circuit`.
+
+2. **Retry-on-prose in `handle()`** — when `_is_system_state_question(low_user)` is true and the model's `reply` has no directive (`_reply_has_directive` checks RUN/RUNTERM/READ/CREATE/EDIT with backtick-parity, matching `process_reply`'s parser), a `[Directive repair]` message is appended to history and `result = None`, which triggers the existing repair loop at line ~7070+. Single retry only — the existing infrastructure already prevents loops. Logs as `retry_on_prose`.
+
+3. **Modelfile-master-ai rebuild** — added `SYSTEM-STATE QUESTIONS` section as an explicit exception to `REASON FIRST`, with 7 hard few-shot examples (field-manual find, LibreOffice templates, port 8080, ollama running, libreoffice installed, list templates, check service rustdesk). Model rebuilt via `ollama create master-ai -f /home/elijah/scripts/Modelfile-master-ai` — new layer `sha256:2d26fc57...`.
+
+Tests passing: `py_compile master_ai.py harvest.py` ✓, `test_master_ai_parser.py` 9/9 ✓, `bash -n` on shell scripts ✓, helper unit tests 23/23 + 11/11 + 19/19 ✓, `orchestrate()` smoke 5/5 ✓, end-to-end find locates `/home/elijah/off_grid_kit/biovega_field_manual.md`. `pack_for_sale.sh` blocks on dirty git tree (expected).
+
+### Menu duplicates cleanup in `sensei_tui.py`
+
+User-facing duplication only — dispatch tuples in `master_ai.py` keep all aliases for muscle-memory compatibility (typing `menu`, `reload`, `kick`, `home`, `health`, `open preview`, `task list` still works, just no autocomplete suggestion). Removed from `COMMAND_MENU_HINTS`: `menu`, `home`, `reload`, `task list`, `open preview`, `health`, `kick`. Canonicals kept: `hub`, `restart`, `refresh`, `tasks`, `preview`, `doctor`. Removed from `,` group: same set. Cross-group fix: `.` group is now pure scroll (`up`/`down`/`top`/`bottom`/`last`) — `cache`, `approved`, `log`, `health`, `doctor` removed from `.` (still present in `,`).
 
 ## Current Positioning
 

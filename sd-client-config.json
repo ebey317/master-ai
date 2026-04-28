@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1:7860",
+  "base_url": "http://127.0.0.1:7860",
+  "proxy_path": "/sdcpp",
+  "service": "sd-server"
+}

@@ -385,7 +385,10 @@ body{display:flex;flex-direction:column;height:var(--app-height);overflow:hidden
 <!-- CHAT PANE -->
 <div class="pane active" id="pane-chat">
   <div class="template-panel" id="template-panel">
-    <div class="template-panel-title">Start a new session as:</div>
+    <div class="template-panel-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <span>Start a fresh session as:</span>
+      <button class="sess-btn" type="button" onclick="startFreshSession()" title="clear the live chat and show the full command menu">↻ fresh</button>
+    </div>
     <div class="template-grid" id="main-templates">
       <div class="template-card" onclick="selectTemplate('brainstorm')">
         <div class="template-card-icon">🧠</div>
@@ -1587,6 +1590,7 @@ const ONE_QUESTION_RULE = "3Q intake rule: ask only ONE question per assistant m
 function selectTemplate(key) {
   const t = TEMPLATES[key];
   if (!t) return;
+  resetLiveConversation();
   activeTemplate = key;
   // Hide the template panel — replaced by the chat area.
   const panel = document.getElementById('template-panel');
@@ -1617,6 +1621,7 @@ async function selectProject(name) {
   // Enter Projects mode seeded with the picked project name.
   // Fetches /project_summary for a pre-computed briefing — cached summaries
   // come back fast; a cold miss spends ~30-60s generating one.
+  resetLiveConversation();
   activeTemplate = 'projects';
   const panel = document.getElementById('template-panel');
   if (panel) panel.classList.add('hidden');
@@ -1726,6 +1731,7 @@ async function refreshBriefing(name) {
 
 function openBashTutor() {
   // Inline lesson — don't push the user to a terminal. Drop them on Class 1.
+  resetLiveConversation();
   activeTemplate = 'lesson_bash';
   window._sessionPrompt = '';
   const panel = document.getElementById('template-panel');
@@ -1734,6 +1740,7 @@ function openBashTutor() {
 }
 
 function openPythonPath() {
+  resetLiveConversation();
   activeTemplate = 'lesson_python';
   window._sessionPrompt = '';
   const panel = document.getElementById('template-panel');
@@ -2353,6 +2360,26 @@ function showTemplatePanelIfFresh() {
 
 function hideTemplatePanel() {
   document.getElementById('template-panel')?.classList.add('hidden');
+}
+
+function resetLiveConversation() {
+  stopStream();
+  hideIdleBubble();
+  history = [];
+  pendingUploads = [];
+  _autoSessionId = null;
+  _lessonState = null;
+  activeTemplate = null;
+  window._sessionPrompt = '';
+  scrollLocked = false;
+  const chatArea = document.getElementById('chat-area');
+  if (chatArea) chatArea.innerHTML = '';
+  renderUploadStrip();
+}
+
+function startFreshSession() {
+  resetLiveConversation();
+  showTemplatePanelIfFresh();
 }
 
 // ── CANONICAL VOICE (shared with Sensei) ──────────────────────

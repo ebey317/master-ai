@@ -61,8 +61,6 @@ HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
 COMMAND_MENU_HINTS = {
     "hub": "open full command menu",
-    "menu": "open full command menu",
-    "home": "return to main command menu",
     "help": "quick reference",
     "tips": "show practical command tips",
     "model": "pick active model",
@@ -78,7 +76,6 @@ COMMAND_MENU_HINTS = {
     "forget:": "type keyword after the colon",
     "task": "task command help",
     "task add": "type task text after this",
-    "task list": "show active tasks",
     "task done": "mark a task complete",
     "task clear": "clear tasks",
     "tasks": "show active tasks",
@@ -88,7 +85,6 @@ COMMAND_MENU_HINTS = {
     "transcript": "save transcript",
     "log": "show log path",
     "preview": "open latest preview",
-    "open preview": "open latest preview",
     "clear": "clear screen",
     "clear history": "clear input history",
     "clear cache": "clear answer cache",
@@ -96,11 +92,8 @@ COMMAND_MENU_HINTS = {
     "clear chats": "clear saved chats",
     "chats": "browse saved chats",
     "doctor": "system health",
-    "health": "system health",
     "refresh": "soft reload",
-    "reload": "soft reload",
     "restart": "restart Sensei",
-    "kick": "force supervisor respawn",
     "up": "scroll chat up",
     "down": "scroll chat down",
     "top": "jump to oldest chat",
@@ -145,11 +138,11 @@ COMMAND_MENU_HINTS = {
 
 COMMAND_MENU_GROUPS = {
     ",": [
-        "hub", "menu", "home", "help", "tips",
-        "refresh", "reload", "restart", "kick",
+        "hub", "help", "tips",
+        "refresh", "restart",
         "save session", "load summary", "load session", "transcript", "log",
-        "preview", "open preview", "clear", "clear history", "clear cache",
-        "clear approved", "clear chats", "chats", "doctor", "health",
+        "preview", "clear", "clear history", "clear cache",
+        "clear approved", "clear chats", "chats", "doctor",
         "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
         "cache", "perms", "tutorial", "project",
         "go", "cancel", "e", "only",
@@ -164,7 +157,6 @@ COMMAND_MENU_GROUPS = {
     ],
     ".": [
         "up", "down", "top", "bottom", "last",
-        "cache", "approved", "log", "health", "doctor",
     ],
     "/": [
         "remember:", "forget:", "task add", "git commit",
