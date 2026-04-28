@@ -57,12 +57,12 @@ else
 fi
 
 echo
-echo "[4/5] Refreshing Sensei"
-if [ -x "$SCRIPTS_DIR/master_ai_refresh.sh" ]; then
-    bash "$SCRIPTS_DIR/master_ai_refresh.sh" || true
-else
-    echo "  skipped: master_ai_refresh.sh missing"
-fi
+echo "[4/5] Refreshing Sensei (deferred until update completes)"
+# Defer the SIGTERM so this script — which Sensei dispatched — finishes
+# cleanly before its parent dies. Without this, pkill kills the running
+# Sensei mid-dispatch and the user sees "Terminated" + exit 1 on the
+# very command they ran.
+trap '(nohup bash -c "sleep 2 && pkill -TERM -f \"python3.*master_ai.py\"" >/dev/null 2>&1 &) || true' EXIT
 
 echo
 echo "[5/5] Health check"
