@@ -4723,6 +4723,60 @@ BLOCKED_PATTERNS = [
 def is_blocked(cmd):
     return any(b in cmd for b in BLOCKED_PATTERNS)
 
+_CLEANUP_PROTECTED_PATHS = (
+    "~/Downloads", "$HOME/Downloads", "/home/elijah/Downloads",
+    "~/Desktop", "$HOME/Desktop", "/home/elijah/Desktop",
+    "~/Documents", "$HOME/Documents", "/home/elijah/Documents",
+    "~/Pictures", "$HOME/Pictures", "/home/elijah/Pictures",
+    "~/Videos", "$HOME/Videos", "/home/elijah/Videos",
+    "~/Music", "$HOME/Music", "/home/elijah/Music",
+    "~/scripts", "$HOME/scripts", "/home/elijah/scripts",
+    "~/.ollama", "$HOME/.ollama", "/home/elijah/.ollama",
+    "~/master_ai_loki_fork", "/home/elijah/master_ai_loki_fork",
+)
+
+_CLEANUP_SAFE_DELETE_HINTS = (
+    "/.cache/", "/Trash/", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", "node_modules/.cache", "/tmp/", "/var/tmp/",
+    "Cache", "GPUCache", "ShaderCache", "GrShaderCache",
+)
+
+def _cleanup_safety_issue(cmd):
+    """Return a refusal reason for broad cleanup deletes that risk user data.
+
+    Cleanup requests invite commands like `rm -rf ~/Downloads/*` or
+    `find ~ -delete`. Those are too broad for Sensei: Downloads and project
+    folders can contain installers, source archives, unfinished work, or
+    buyer assets. Permit obvious cache/trash deletes; block protected
+    personal/project/model paths and home-wide delete sweeps.
+    """
+    low = (cmd or "").lower()
+    if not any(tok in low for tok in ("rm ", "rm\t", "find ", "trash-empty", "gio trash")):
+        return None
+    destructive_delete = (
+        re.search(r"(^|[;&|]\s*)rm\s+[^;&|]*-[^\s;&|]*r", low)
+        or "-delete" in low
+        or "trash-empty" in low
+    )
+    if not destructive_delete:
+        return None
+
+    # Home-wide delete sweeps must be narrowed to cache/trash paths first.
+    if re.search(r"(^|[;&|]\s*)find\s+(~|\$home|/home/elijah)(\s|/|$)", low) and "-delete" in low:
+        if not any(h.lower() in low for h in _CLEANUP_SAFE_DELETE_HINTS):
+            return "home-wide cleanup delete needs a narrowed cache/trash path"
+
+    for path in _CLEANUP_PROTECTED_PATHS:
+        p = path.lower()
+        if p in low:
+            # Exception: deleting explicit cache folders under a protected tree
+            # is okay; deleting the protected folder itself or wildcard contents
+            # is not.
+            if any(h.lower() in low for h in _CLEANUP_SAFE_DELETE_HINTS):
+                continue
+            return f"cleanup delete touches protected path: {path}"
+    return None
+
 # ── DESTRUCTIVE HEURISTIC ────────────────────────────────────
 # In auto mode the explicit policy is "flow like Claude Code — let it go
 # when I'm present, I'll watch" (Elijah, 2026-04-19). Low-risk commands
@@ -5573,6 +5627,14 @@ def confirm_run(cmd):
         print(_pill("BLOCKED", f"{D}dangerous command refused: {cmd[:60]}{X}"))
         log(f"BLOCKED: {cmd}")
         _audit("RUN-BLOCK", cmd)
+        return None
+
+    cleanup_issue = _cleanup_safety_issue(cmd)
+    if cleanup_issue:
+        print(_pill("BLOCKED", f"{D}{cleanup_issue}{X}"))
+        print(f"  {D}Audit first, preserve Downloads/personal/project files, and delete only named cache/trash paths.{X}")
+        log(f"BLOCKED-CLEANUP-SAFETY: {cleanup_issue}: {cmd}")
+        _audit("RUN-BLOCK-CLEANUP", cmd)
         return None
 
     # Sudo handoff — accept-every-time, never auto-run, never auto-approve.

@@ -1,12 +1,24 @@
 # Claude Code Handoff — Master AI
 
-Last updated: 2026-04-27
+Last updated: 2026-04-28
 
 This repo is Elijah's local-first AI agent stack. Treat it as a local Claude Code / Codex-style computer agent, not a generic chatbot or greenfield app.
 
-## Recent Uncommitted Changes (2026-04-27)
+## Recent Cleanup Safety Update (2026-04-28)
 
-Two work units landed on disk; not yet committed.
+Elijah asked Sensei to clean up/shrink the PC, then clarified the durable rule: Sensei must be able to clean safely without deleting necessary files or Downloads.
+
+Implemented in two layers:
+
+1. **Model instruction in `Modelfile-master-ai`** — new `CLEANUP SAFETY` rule. Cleanup must start with audit commands (`df -h`, `du`, large-file `find`, process checks). Safe targets are Trash, `~/.cache`, browser cache folders, package caches, `__pycache__`, verified old tool versions, and logs with retention. Preserve `~/Downloads`, `~/Desktop`, `~/Documents`, project folders, git repos, app folders, Ollama models, Stable Diffusion models, photos, videos, archives, installers, and personal files unless Elijah explicitly names the exact path.
+
+2. **Runtime guard in `master_ai.py`** — new `_cleanup_safety_issue(cmd)` blocks broad cleanup deletes that touch protected paths or use home-wide `find ~ ... -delete` without narrowing to cache/trash. It allows obvious cache/trash deletes such as `~/.cache`, Trash, and `__pycache__` cleanup. `confirm_run()` now refuses blocked cleanup commands before sudo/destructive approval paths.
+
+Verification: `python3 -m py_compile master_ai.py` ✓, targeted guard smoke test blocks `rm -rf ~/Downloads/*`, `rm -rf /home/elijah/Documents/old`, `find ~ -type f -size +100M -delete`, and `rm -rf /home/elijah/scripts/*`; allows cache/trash cleanup. `test_master_ai_parser.py` remains 9/9. Rebuilt Sensei model with `ollama create master-ai -f /home/elijah/scripts/Modelfile-master-ai`; current `master-ai:latest` ID is `54dce4dd38cd`.
+
+## Recent Committed Work (2026-04-27)
+
+Commit `2842240 Save system query fixes` saved these work units:
 
 ### Phase 1: deterministic system-query short-circuit + retry-on-prose
 
