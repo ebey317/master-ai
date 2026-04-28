@@ -6969,9 +6969,11 @@ def permissions_wizard():
 # ── STARTUP CHECK ─────────────────────────────────────────────
 def startup_check():
     errors = 0
-    print(f"\n{D}  ┌─────────────────────────────────────────────┐{X}")
-    print(f"{D}  │{X}  {C}⚙  System Check{X}")
-    print(f"{D}  └─────────────────────────────────────────────┘{X}\n")
+    tui_mode = _SENSEI_APP is not None
+    if not tui_mode:
+        print(f"\n{D}  ┌─────────────────────────────────────────────┐{X}")
+        print(f"{D}  │{X}  {C}⚙  System Check{X}")
+        print(f"{D}  └─────────────────────────────────────────────┘{X}\n")
 
     # Ollama — retry to survive boot race against ollama.service
     ollama_ok = False
@@ -6986,9 +6988,9 @@ def startup_check():
         except Exception:
             if attempt < 2:
                 time.sleep(1)
-    if ollama_ok:
+    if ollama_ok and not tui_mode:
         print(f"  {G}✅ Ollama       {C}running at {OLLAMA_URL}{X}")
-    else:
+    elif not ollama_ok:
         print(f"  {R}❌ Ollama       {C}not running — start with: ollama serve{X}")
         errors += 1
 
@@ -6998,22 +7000,33 @@ def startup_check():
             return len([l for l in f.read_text().splitlines() if l.strip()])
         except Exception:
             return 0
-    print(f"  {G}✅ Memory       {C}{_count(MEMORY_FILE)} facts | "
-          f"{_count(APPROVED_FILE)} auto-approved commands{X}")
+    if not tui_mode:
+        print(f"  {G}✅ Memory       {C}{_count(MEMORY_FILE)} facts | "
+              f"{_count(APPROVED_FILE)} auto-approved commands{X}")
 
     # Cloud keys
-    if any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter']):
+    cloud_ok = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'])
+    if cloud_ok and not tui_mode:
         print(f"  {G}✅ Cloud AI     {C}keys loaded (Groq / Fireworks / OpenAI / OpenRouter){X}")
-    else:
+    elif not cloud_ok:
         print(f"  {Y}⚠  Cloud AI     {C}no keys found — local Ollama only{X}")
 
     # Web search
+    web_ok = False
     try:
         import importlib
         importlib.import_module('duckduckgo_search')
-        print(f"  {G}✅ Web search   {C}duckduckgo_search available{X}")
+        web_ok = True
+        if not tui_mode:
+            print(f"  {G}✅ Web search   {C}duckduckgo_search available{X}")
     except ImportError:
         print(f"  {Y}⚠  Web search   {C}pip install duckduckgo-search to enable{X}")
+
+    if tui_mode:
+        cloud_text = "Cloud OK" if cloud_ok else "Local only"
+        web_text = "Web OK" if web_ok else "Web setup needed"
+        print(f"  {G}● system ready{X}  │  {C}Ollama {'OK' if ollama_ok else 'OFF'}{X}  │  {C}{cloud_text}{X}  │  {C}{web_text}{X}")
+        return errors
 
     print()
     if errors > 0:
@@ -7025,6 +7038,7 @@ def startup_check():
         print(f"  {G}  All systems ready.{X}")
         time.sleep(0.6)
     print()
+    return errors
 
 # ── STATUS BAR ───────────────────────────────────────────────
 def draw_status_bar():
@@ -8057,8 +8071,6 @@ def main():
         permissions_wizard()
         PERMS_FILE.touch()
 
-    startup_check()
-
     # ── Auto-resize tmux pane to match the actual client terminal dims ──
     if os.environ.get("TMUX"):
         mouse_pref = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
@@ -8084,24 +8096,35 @@ def main():
     else:
         cloud_status = "LOCAL ONLY"
 
-    # ── Clear screen so banner is always at TOP of the visible pane ─
-    # Classic mode owns the terminal and needs a full clear before the
-    # shell banner. TUI mode already wrote System Check into the chat box;
-    # clearing here would erase the status the customer expects to see.
+    # ── Clear once, then build the branded login screen in the scrollback ─
+    # The banner is the product brand, so TUI mode should show it in the
+    # chat scroll just like a login/welcome screen, not hide it in chrome.
     if _SENSEI_APP is None:
         os.system('clear')
+    else:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
     _clear_tmux_scrollback("startup")
 
-    # ── Use the SAME banner as master.sh main menu in classic mode ─
-    # TUI mode already has a full-width header/frame. The shell banner is
-    # fixed-width, so rendering it inside the TUI leaves an 80-column block
-    # on wide terminals and makes the screen look like it failed to resize.
+    # ── Branded login splash ─
+    # Full banner in classic/wide terminals. Compact brand splash in the
+    # 80x24 TUI so the first screen shows brand + system status together.
     try:
+        banner_cmd = "banner_master_ai"
+        if _SENSEI_APP is not None and shutil.get_terminal_size((80, 24)).columns < 100:
+            banner_cmd = "banner_compact"
         if _SENSEI_APP is not None:
-            pass
+            banner = subprocess.run(
+                f"source ~/scripts/brand.sh && {banner_cmd}",
+                shell=True, executable="/bin/bash", check=False,
+                capture_output=True, text=True,
+            )
+            print(banner.stdout, end="")
         else:
             subprocess.run(
-                "source ~/scripts/brand.sh && banner_master_ai",
+                f"source ~/scripts/brand.sh && {banner_cmd}",
                 shell=True, executable="/bin/bash", check=False,
             )
     except Exception:
@@ -8109,6 +8132,9 @@ def main():
         print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
         print(f"{BC}  ║  🥷  MASTER  AI  — ready                  ║{X}")
         print(f"{BC}  ╚══════════════════════════════════════════╝{X}")
+
+    startup_check()
+
     print(f"  {G}● engine ONLINE  │  {cloud_status}  │  {mem_count} facts{X}")
     print()
 

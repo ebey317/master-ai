@@ -141,7 +141,7 @@ COMMAND_MENU_HINTS = {
 COMMAND_MENU_GROUPS = {
     ",": [
         "hub", "help", "tips",
-        "update", "refresh", "restart",
+        "update", "master update", "refresh", "restart",
         "save session", "load summary", "load session", "transcript", "log",
         "preview", "clear", "clear history", "clear cache",
         "clear approved", "clear chats", "chats", "doctor",
