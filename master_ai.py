@@ -761,6 +761,8 @@ SURVIVAL_WORDS = {
 # multi-word intents like "refresh your memory" don't get tokenized away.
 TOOL_REQUIRED_PHRASES = (
     "refresh your memory", "refresh memory",
+    "master update", "update master ai", "update master-ai",
+    "update sensei", "sensei update",
     "update my project", "update the project", "update project",
     "save the conversation", "save this conversation", "save this chat",
     "write to ", "write a file", "edit the file", "edit this file",
@@ -774,6 +776,12 @@ TOOL_REQUIRED_PHRASES = (
     "delete the file",
     "run this", "run the command", "execute this", "execute the",
 )
+
+PRODUCT_UPDATE_COMMANDS = {
+    "update", "upgrade",
+    "master update", "update master", "update master ai", "update master-ai",
+    "sensei update", "update sensei",
+}
 
 ROUTER_METRICS_FILE = Path.home() / ".master_ai_router_metrics.jsonl"
 ROUTER_METRICS_MAX_SCAN = 500
@@ -4683,6 +4691,7 @@ def show_commands():
         ("project ~/path", "Use a folder as context"),
         ("remember: <fact>", "Save something to memory"),
         ("doctor", "Check services, models, URLs, and warnings"),
+        ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
         ("help buckets", "Show the punctuation teaser"),
         ("refresh / reload", "soft-reload the screen/engine"),
@@ -8056,6 +8065,17 @@ def main():
             continue
         if lo == "mode":
             show_mode_status()
+            continue
+
+        # Product updater. Customer installs are not necessarily git repos,
+        # so update intent must never fall through to a model-chosen
+        # `git fetch --all`. Route directly to the customer-safe updater.
+        if lo in PRODUCT_UPDATE_COMMANDS:
+            updater = str(Path.home() / "scripts" / "update_master_ai.sh")
+            if os.path.exists(updater):
+                confirm_run(f"bash {shlex.quote(updater)}")
+            else:
+                print(f"  {Y}Updater missing: {updater}{X}")
             continue
 
         # ── Plan demo ─────────────────────────────────────────

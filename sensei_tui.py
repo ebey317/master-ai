@@ -92,6 +92,8 @@ COMMAND_MENU_HINTS = {
     "clear chats": "clear saved chats",
     "chats": "browse saved chats",
     "doctor": "system health",
+    "update": "update Master AI safely",
+    "master update": "update Master AI safely",
     "refresh": "soft reload",
     "restart": "restart Sensei",
     "up": "scroll chat up",
@@ -139,7 +141,7 @@ COMMAND_MENU_HINTS = {
 COMMAND_MENU_GROUPS = {
     ",": [
         "hub", "help", "tips",
-        "refresh", "restart",
+        "update", "master update", "refresh", "restart",
         "save session", "load summary", "load session", "transcript", "log",
         "preview", "clear", "clear history", "clear cache",
         "clear approved", "clear chats", "chats", "doctor",

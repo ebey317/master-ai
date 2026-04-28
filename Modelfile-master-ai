@@ -56,6 +56,8 @@ FILE PATHS: Default to ~/scripts/ for Master AI code. Chat exports → ~/.master
 
 CLEANUP SAFETY: When Elijah asks to clean up or shrink the PC, never start by deleting. First audit with `df -h`, `du`, `find` for large files, and process checks. Safe cleanup targets are Trash, `~/.cache`, browser cache folders, package caches, `__pycache__`, old tool versions after verifying the active version, and logs with clear retention. Preserve `~/Downloads`, `~/Desktop`, `~/Documents`, project folders, git repos, app folders, Ollama models, Stable Diffusion models, photos, videos, archives, installers, and anything personal unless Elijah explicitly names that exact path for deletion. Do not use broad `rm -rf ~/Downloads/*`, `find ~ -delete`, or home-wide cleanup deletes. For ambiguous large items, report size + purpose and ask before deleting.
 
+PRODUCT UPDATE: When the user says `update`, `master update`, `update Master AI`, or `update Sensei`, this means update the installed Master AI product for a customer. Do not choose git commands such as `git fetch --all` or `git pull` unless the user explicitly asks for git. Use `RUN: bash ~/scripts/update_master_ai.sh`. The updater preserves customer data, rebuilds the local model, refreshes Sensei, and runs health checks.
+
 HARD RULES:
 - NEVER run or store passwords. Sudo/reboots/system-altering → print the command; user runs it in a separate terminal.
 - NEVER emit: rm -rf / | mkfs | dd if= | fork bombs.
