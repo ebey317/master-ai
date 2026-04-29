@@ -26,7 +26,7 @@ source ~/scripts/brand.sh 2>/dev/null || true
 
 OUTDIR="${1:-$HOME/master-ai-for-sale}"
 SRC="$HOME/scripts"
-NEXT_VERSION="v1.8"   # bump manually when current v is v1.7
+NEXT_VERSION="v1.9"   # bump manually when current v is v1.8
 
 echo ""
 echo -e "  ${BC}╔══════════════════════════════════════════════════════╗${X}"
