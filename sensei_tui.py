@@ -693,10 +693,15 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
-        # Keep the bottom chrome quiet. Commands still work; they should
-        # not be advertised across the footer during normal use.
-        current_mode = getattr(self, "_mode", "plan").upper()
-        return FormattedText([("class:legend", f"MODE:{current_mode}")])
+        return FormattedText([
+            ("class:legend", ","),
+            ("class:sep", " · "),
+            ("class:legend", "."),
+            ("class:sep", " · "),
+            ("class:legend", "/"),
+            ("class:sep", " · "),
+            ("class:legend", ";"),
+        ])
 
     def _render_tip(self):
         """Tip line has three states:
