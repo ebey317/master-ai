@@ -757,12 +757,26 @@ const TEXT_ATTACHMENT_TOTAL_CHARS = 140000;
 function isTextLikeFile(file) {
   const name = (file.name || '').toLowerCase();
   const type = (file.type || '').toLowerCase();
+  const textExt = [
+    'txt','text','md','markdown','rst','adoc','csv','tsv','json','jsonc','jsonl',
+    'xml','xhtml','html','htm','css','scss','sass','less','js','jsx','mjs','cjs',
+    'ts','tsx','py','pyw','sh','bash','zsh','fish','ps1','bat','cmd','go','rs',
+    'c','h','cc','hh','cpp','hpp','cxx','hxx','java','kt','kts','rb','php','lua',
+    'swift','scala','cs','fs','fsx','vb','r','m','mm','pl','pm','dart','ex',
+    'exs','erl','hrl','clj','cljs','edn','hs','lhs','elm','zig','nim','jl','sql',
+    'graphql','gql','yaml','yml','toml','ini','conf','cfg','config','env','log',
+    'gitignore','gitattributes','dockerfile','makefile','mk','gradle','properties',
+    'lock','patch','diff'
+  ];
+  const base = name.split('/').pop() || name;
+  const ext = base.includes('.') ? base.split('.').pop() : base;
   return (
     type.startsWith('text/') ||
     type.includes('json') ||
     type.includes('xml') ||
     type.includes('csv') ||
-    /\.(txt|md|markdown|csv|json|jsonc|xml|html|htm|css|js|jsx|ts|tsx|py|sh|bash|zsh|yaml|yml|toml|ini|conf|log|sql)$/i.test(name)
+    textExt.includes(ext) ||
+    /(^|\/)(readme|license|licence|changelog|copying|authors|contributors|dockerfile|makefile)$/i.test(base)
   );
 }
 // ── PROFILE NAMESPACE ──

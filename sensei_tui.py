@@ -518,8 +518,8 @@ class SenseiApp:
             content=root,
             floats=[
                 Float(
-                    left=2,
-                    bottom=7,
+                    xcursor=True,
+                    ycursor=True,
                     content=CompletionsMenu(max_height=8, display_arrows=True),
                 ),
             ],
