@@ -693,36 +693,10 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
-        # Legend's mode slot is now word-for-word identical to what
-        # the TOP status line shows: uppercase "MODE:SAFE" / "MODE:PLAN"
-        # / "MODE:AUTO". When you toggle with `mode X`, BOTH update.
-        # Elijah 2026-04-19: "don't look at the color look at the
-        # words" — match the literal string exactly.
+        # Keep the bottom chrome quiet. Commands still work; they should
+        # not be advertised across the footer during normal use.
         current_mode = getattr(self, "_mode", "plan").upper()
-        width = _term_size().columns
-        if width < 56:
-            words = [f"MODE:{current_mode}", "comma", "semi", "period", "slash"]
-        elif width < 84:
-            words = [f"MODE:{current_mode}", "comma", "semicolon", "period", "slash"]
-        else:
-            words = []
-            for w in LEGEND_WORDS:
-                if w == "mode plan":
-                    words.append(f"MODE:{current_mode}")
-                else:
-                    words.append(w)
-        parts = []
-        used = 0
-        for i, w in enumerate(words):
-            sep = " · " if i else ""
-            if used + len(sep) + len(w) > max(8, width - 4):
-                break
-            if i:
-                parts.append(("class:sep", sep))
-                used += len(sep)
-            parts.append(("class:legend", w))
-            used += len(w)
-        return FormattedText(parts)
+        return FormattedText([("class:legend", f"MODE:{current_mode}")])
 
     def _render_tip(self):
         """Tip line has three states:
