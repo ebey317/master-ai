@@ -2671,6 +2671,88 @@ def _plan_grounding(user_text):
             + "\n\n".join(sections) + "\n")
 
 
+def _ollama_ps():
+    """Return list of dicts from /api/ps (loaded runners). [] on any error."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=2) as r:
+            return (json.loads(r.read().decode()) or {}).get("models") or []
+    except Exception:
+        return []
+
+
+def _ollama_unload_one(name):
+    """Tell Ollama to unload `name` by issuing a 0-token generate with
+    keep_alive=0. Returns (ok: bool, err: str|None)."""
+    body = json.dumps({"model": name, "keep_alive": 0,
+                       "prompt": "", "stream": False}).encode()
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/generate",
+        data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def _ollama_runner_pid(name):
+    """Find PID of the runner process for model `name`. None if not found."""
+    try:
+        out = subprocess.run(["pgrep", "-af", "ollama"],
+                             capture_output=True, text=True, timeout=2).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if "runner" in line and name.split(":")[0] in line:
+            parts = line.split(None, 1)
+            if parts and parts[0].isdigit():
+                return int(parts[0])
+    return None
+
+
+def cmd_unload_local_models():
+    """User-facing 'unload' / 'cooldown' / 'free memory' command.
+    Drains all loaded Ollama runners, prints a green-check report, and
+    if any runner stays stuck prints the exact sudo line for Elijah to
+    paste into his other terminal — never auto-runs sudo."""
+    loaded = _ollama_ps()
+    if not loaded:
+        print(f"  {G}● ollama already idle — no runners loaded.{X}")
+        return
+    names = [m.get("name") or m.get("model") or "?" for m in loaded]
+    print(f"  {BC}draining {len(names)} runner(s):{X} {', '.join(names)}")
+    failures = []
+    for n in names:
+        ok, err = _ollama_unload_one(n)
+        if not ok:
+            failures.append((n, err))
+    time.sleep(1.0)
+    after = _ollama_ps()
+    after_names = {(m.get("name") or m.get("model") or "?") for m in after}
+    freed = [n for n in names if n not in after_names]
+    stuck = [n for n in names if n in after_names]
+    for n in freed:
+        print(f"  {G}✅ unloaded {n}{X}")
+    if not stuck and not failures:
+        print(f"  {G}● ollama drained — RAM should recover within a few seconds.{X}")
+        return
+    if stuck:
+        print(f"  {Y}⚠ stuck runner(s):{X} {', '.join(stuck)}")
+        for n in stuck:
+            pid = _ollama_runner_pid(n)
+            if pid:
+                print(f"  {Y}   {n} pid={pid}{X}")
+                print(f"  {BC}   paste in your other terminal:{X}")
+                print(f"     sudo kill -TERM {pid}")
+                print(f"  {D}   only if it stays stuck after a few seconds:{X}")
+                print(f"     sudo kill -KILL {pid}")
+            else:
+                print(f"  {Y}   {n} — pid not found via pgrep; "
+                      f"try: ps -ef | grep ollama{X}")
+    for n, err in failures:
+        print(f"  {R}✗ {n}: {err}{X}")
+
+
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
@@ -2679,7 +2761,7 @@ def ask_local(messages, model=None, image_path=None):
     # for reasoning. Keeps non-streaming calls (briefings, memory recall)
     # from blocking the input loop for minutes on CPU.
     payload = {"model": model, "messages": messages, "stream": False,
-               "keep_alive": "30m",
+               "keep_alive": "5m",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:
@@ -2884,7 +2966,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     log(f"LOCAL_STREAM [{model}]")
     _t0 = time.time()
     payload = {"model": model, "messages": messages, "stream": True,
-               "keep_alive": "30m",
+               "keep_alive": "5m",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:
@@ -7210,7 +7292,7 @@ def _loop_ai(prompt, history, max_tokens=600):
             "messages": msgs,
             "stream": False,
             "options": {"num_predict": max_tokens, "temperature": 0.2},
-            "keep_alive": "30m",
+            "keep_alive": "5m",
         }).encode()
         req = urllib.request.Request("http://localhost:11434/api/chat",
             data=body, headers={"Content-Type": "application/json"})
@@ -8344,6 +8426,17 @@ def main():
             # Exit 99 tells the supervisor this was a deliberate quit.
             # Any other exit code triggers auto-restart.
             sys.exit(99)
+
+        # ── Unload local models / free RAM ────────────────────
+        # Drains every loaded Ollama runner via keep_alive=0. If any
+        # runner stays stuck (master-ai pinning CPU at 97% mid-stop has
+        # happened), prints the exact sudo kill line for Elijah's other
+        # terminal — never runs sudo from here.
+        if lo in ("unload", "cooldown", "free memory", "free ram",
+                  "free", "drain", "drain models", "unload models",
+                  "stop models"):
+            cmd_unload_local_models()
+            continue
 
         # ── How We Work — print ~/scripts/howwework.txt on demand ─
         # Same content menu option 10 shows from master.sh, accessible
