@@ -48,6 +48,11 @@ else
     tmux send-keys -t "$SESSION" "$SUPERVISOR" Enter
 fi
 
+# Keep this session auto-synced with whichever client is active.
+tmux set-hook -t "$SESSION" client-attached "resize-window -A" 2>/dev/null || true
+tmux set-hook -t "$SESSION" client-resized "resize-window -A" 2>/dev/null || true
+tmux set-hook -t "$SESSION" window-resized "resize-window -A" 2>/dev/null || true
+
 # Switch if already inside tmux, otherwise attach
 if [ -n "$TMUX" ]; then
     tmux switch-client -t "$SESSION"

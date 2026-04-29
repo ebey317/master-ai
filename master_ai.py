@@ -89,7 +89,7 @@ try:
         "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
         "commands", "?",
         "tts on", "tts off", "tts",
-        "hints", "project", "attach ", "search ", "dl ", "gdrive ", "git", "git status",
+        "hints", "project", "attach ", "search ", "dl ", "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
         "how", "how we work", "hww",
     ]
@@ -466,6 +466,13 @@ _QUERY_QUEUE = queue.Queue(maxsize=3)
 _WORKER_BUSY = threading.Event()
 _WORKER_LOCK = threading.Lock()
 
+# ── Tmux auto-resize state ────────────────────────────────────
+_TMUX_RESIZE_LOCK = threading.Lock()
+_TMUX_RESIZE_PULSE = threading.Event()
+_TMUX_RESIZE_STOP = threading.Event()
+_TMUX_RESIZE_THREAD = None
+_TMUX_LAST_CLIENT_DIMS = ""
+
 # ── CONFIRM-PROMPT STDIN CHANNEL (two-channel stdin, 2026-04-21) ─
 # When a confirm_run/confirm_create/confirm_edit/confirm_runterm is awaiting
 # a 1/2/3/4 keystroke, any OTHER text the user types (type-ahead of the next
@@ -546,17 +553,24 @@ def _clear_runtime_cache(reason="startup"):
         log(f"CACHE_CLEAR_ERROR [{reason}]: {e}")
         return False
 
-def _tmux_resize_to_client():
-    """Keep the Sensei tmux window matched to the latest attached client."""
-    if not os.environ.get("TMUX"):
-        return None
+def _tmux_current_session_name():
+    if not os.environ.get("TMUX") or not shutil.which("tmux"):
+        return ""
     try:
-        subprocess.run(["tmux", "kill-pane", "-a"], check=False, capture_output=True)
-        subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
-                       check=False, capture_output=True)
-        subprocess.run(["tmux", "set-window-option", "-g", "window-size", "latest"],
-                       check=False, capture_output=True)
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "#S"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
 
+
+def _tmux_latest_client_dims():
+    """Return latest client dims as 'WxH', else ''."""
+    if not os.environ.get("TMUX") or not shutil.which("tmux"):
+        return ""
+    try:
         r = subprocess.run(
             ["tmux", "list-clients", "-F", "#{client_activity} #{client_width}x#{client_height}"],
             capture_output=True, text=True, timeout=2, check=False,
@@ -564,34 +578,124 @@ def _tmux_resize_to_client():
         clients = []
         for line in (r.stdout or "").splitlines():
             parts = line.strip().split(None, 1)
-            if len(parts) == 2 and "x" in parts[1]:
-                try:
-                    clients.append((int(parts[0]), parts[1]))
-                except ValueError:
-                    pass
-        dims = max(clients, default=(0, ""))[1]
-
-        if not dims:
-            r = subprocess.run(
-                ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
-                capture_output=True, text=True, timeout=2, check=False,
-            )
-            dims = (r.stdout or "").strip()
-
+            if len(parts) != 2 or "x" not in parts[1]:
+                continue
+            w, h = parts[1].split("x", 1)
+            if not (w.isdigit() and h.isdigit() and int(w) > 0 and int(h) > 0):
+                continue
+            try:
+                activity = int(parts[0])
+            except ValueError:
+                activity = 0
+            clients.append((activity, f"{int(w)}x{int(h)}"))
+        if clients:
+            return max(clients, default=(0, ""))[1]
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "#{client_width}x#{client_height}"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        dims = (r.stdout or "").strip()
         if "x" in dims:
             w, h = dims.split("x", 1)
             if w.isdigit() and h.isdigit() and int(w) > 0 and int(h) > 0:
-                subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
-                               check=False, capture_output=True)
-                subprocess.run(["tmux", "refresh-client", "-S"],
-                               check=False, capture_output=True)
-                return dims
+                return f"{int(w)}x{int(h)}"
+    except Exception:
+        pass
+    return ""
 
-        subprocess.run(["tmux", "resize-window", "-A"], check=False, capture_output=True)
-        return "auto"
-    except Exception as e:
-        log(f"RESIZE_ERROR: {e}")
+
+def _tmux_resize_to_client(kill_others=False, preferred_dims=""):
+    """Keep Sensei tmux window matched to the latest attached client."""
+    global _TMUX_LAST_CLIENT_DIMS
+    if not os.environ.get("TMUX") or not shutil.which("tmux"):
         return None
+    with _TMUX_RESIZE_LOCK:
+        try:
+            if kill_others:
+                subprocess.run(["tmux", "kill-pane", "-a"], check=False, capture_output=True)
+            subprocess.run(["tmux", "set-window-option", "-g", "aggressive-resize", "on"],
+                           check=False, capture_output=True)
+            subprocess.run(["tmux", "set-window-option", "-g", "window-size", "latest"],
+                           check=False, capture_output=True)
+
+            dims = (preferred_dims or "").strip() or _tmux_latest_client_dims()
+            if "x" in dims:
+                w, h = dims.split("x", 1)
+                if w.isdigit() and h.isdigit() and int(w) > 0 and int(h) > 0:
+                    w, h = str(int(w)), str(int(h))
+                    subprocess.run(["tmux", "resize-window", "-x", w, "-y", h],
+                                   check=False, capture_output=True)
+                    subprocess.run(["tmux", "refresh-client", "-S"],
+                                   check=False, capture_output=True)
+                    _TMUX_LAST_CLIENT_DIMS = f"{w}x{h}"
+                    return _TMUX_LAST_CLIENT_DIMS
+
+            subprocess.run(["tmux", "resize-window", "-A"], check=False, capture_output=True)
+            _TMUX_LAST_CLIENT_DIMS = ""
+            return "auto"
+        except Exception as e:
+            log(f"RESIZE_ERROR: {e}")
+            return None
+
+
+def _tmux_install_auto_resize_hooks():
+    """Install tmux hooks so attach/resize events keep window dimensions synced."""
+    if not os.environ.get("TMUX") or not shutil.which("tmux"):
+        return False
+    session = _tmux_current_session_name()
+    if not session:
+        return False
+    hooks = ("client-attached", "client-resized", "window-resized")
+    ok = False
+    for name in hooks:
+        # Prefer session-scoped hooks; fallback to global if session target fails.
+        r = subprocess.run(
+            ["tmux", "set-hook", "-t", session, name, "resize-window -A"],
+            check=False, capture_output=True, text=True, timeout=2,
+        )
+        if r.returncode != 0:
+            scoped_cmd = f"if -F '#{{==:#S,{session}}}' 'resize-window -A' ''"
+            r = subprocess.run(
+                ["tmux", "set-hook", "-g", name, scoped_cmd],
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+        ok = ok or (r.returncode == 0)
+    return ok
+
+
+def _tmux_auto_resize_loop():
+    """Background watcher: keep tmux window in sync with client size changes."""
+    while not _TMUX_RESIZE_STOP.is_set():
+        try:
+            dims = _tmux_latest_client_dims()
+            if dims and dims != _TMUX_LAST_CLIENT_DIMS:
+                _tmux_resize_to_client(kill_others=False, preferred_dims=dims)
+        except Exception as e:
+            log(f"TMUX_RESIZE_WATCH_ERROR: {e}")
+        _TMUX_RESIZE_PULSE.wait(timeout=1.0)
+        _TMUX_RESIZE_PULSE.clear()
+
+
+def _start_tmux_auto_resize_watcher():
+    global _TMUX_RESIZE_THREAD
+    if not os.environ.get("TMUX") or not shutil.which("tmux"):
+        return False
+    if _TMUX_RESIZE_THREAD and _TMUX_RESIZE_THREAD.is_alive():
+        return True
+    _TMUX_RESIZE_STOP.clear()
+    _TMUX_RESIZE_PULSE.clear()
+    _TMUX_RESIZE_THREAD = threading.Thread(target=_tmux_auto_resize_loop, daemon=True)
+    _TMUX_RESIZE_THREAD.start()
+    _TMUX_RESIZE_PULSE.set()
+    return True
+
+
+def _nudge_tmux_auto_resize():
+    if os.environ.get("TMUX"):
+        _TMUX_RESIZE_PULSE.set()
 
 def _clear_tmux_scrollback(reason="refresh"):
     """Clear tmux history so old visual context is gone after fresh starts."""
@@ -730,7 +834,7 @@ _DESKTOP_APP_ALIASES = {
 _DESKTOP_APP_COMMANDS = {
     "xdg-open", "gio", "libreoffice", "soffice",
     "google-chrome", "chrome", "chromium", "chromium-browser",
-    "firefox", "nautilus",
+    "firefox", "nautilus", "discord", "gtk-launch",
 }
 _DESKTOP_DOC_SUFFIXES = {
     ".odt", ".ods", ".odp", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
@@ -776,6 +880,27 @@ def _desktop_launch_from_command(cmd):
         args.append(os.path.expanduser(p))
     return [first, *args]
 
+
+def _resolve_discord_launch_argv():
+    """Best-effort launcher for Discord across package variants."""
+    if shutil.which("discord"):
+        return ["discord"]
+    if shutil.which("flatpak"):
+        try:
+            r = subprocess.run(
+                ["flatpak", "info", "com.discordapp.Discord"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            if r.returncode == 0:
+                return ["flatpak", "run", "com.discordapp.Discord"]
+        except Exception:
+            pass
+    if shutil.which("gtk-launch"):
+        return ["gtk-launch", "discord.desktop"]
+    if shutil.which("xdg-open"):
+        return ["xdg-open", "discord://"]
+    return None
+
 def _try_desktop_open_intent(user_text):
     """Deterministic launcher for browser URLs, local documents, and GUI apps.
 
@@ -785,11 +910,21 @@ def _try_desktop_open_intent(user_text):
     if not user_text:
         return None
     text = user_text.strip()
-    m = re.match(r'^open\s+(.+?)[\s.!?]*$', text, re.IGNORECASE)
+    m = re.match(r'^(open|which)\s+(.+?)[\s.!?]*$', text, re.IGNORECASE)
     if not m:
         return None
-    target = re.sub(r'^(my|the)\s+', '', m.group(1).strip(), flags=re.IGNORECASE)
+    verb = (m.group(1) or "").lower()
+    target = re.sub(r'^(my|the)\s+', '', m.group(2).strip(), flags=re.IGNORECASE)
     low = target.lower()
+    if low in {"discord", "discord app"}:
+        argv = _resolve_discord_launch_argv()
+        if argv:
+            return (argv, "discord")
+        return None
+    # Voice-to-text often turns "open X" into "which X". Only reinterpret
+    # that form for known desktop aliases; keep real shell probes intact.
+    if verb == "which" and low not in _DESKTOP_APP_ALIASES:
+        return None
     if low in _DESKTOP_APP_ALIASES:
         return (_DESKTOP_APP_ALIASES[low], low)
     expanded = Path(os.path.expanduser(target))
@@ -1144,6 +1279,22 @@ _FILE_TARGET_ABSTRACT_FIRST = {
     "out", "around",
 }
 
+_FILE_LOCAL_CONTEXT_PHRASES = (
+    "on my computer", "on this computer", "on my machine", "on this machine",
+    "on my system", "on disk", "on the disk", "in my files", "in files",
+    "in my folders", "in folders", "in my directory", "in my directories",
+    "in my home", "under ~", "under /home", "in desktop", "in downloads",
+    "in documents", "in scripts", "file path", "path to",
+)
+
+_FILEISH_WORD_HINTS = {
+    "file", "files", "folder", "folders", "dir", "directory", "directories",
+    "path", "paths", "readme", "license", "makefile", "dockerfile",
+    "requirements", "pyproject", "package.json", "config", "settings",
+    "log", "logs", "script", "scripts", "desktop", "downloads",
+    "documents", "templates",
+}
+
 def _build_filename_glob(target):
     parts = re.findall(r"[a-zA-Z0-9_-]+", target)
     drop = {"file", "files", "folder", "folders", "directory", "dir", "the", "my", "a", "an", "some"}
@@ -1151,6 +1302,47 @@ def _build_filename_glob(target):
     if not parts:
         return None
     return "*" + "*".join(p.lower() for p in parts) + "*"
+
+
+def _normalize_file_target(target):
+    target = (target or "").strip().rstrip(".!?,")
+    target = re.sub(
+        r"\s+(?:located|saved|stored|kept)\s+(?:on\s+)?(?:my|the)?\s*"
+        r"(?:computer|machine|system|disk|drive)?\s*$",
+        "", target,
+    ).strip()
+    target = re.sub(
+        r"\s+on\s+(?:my|the|this)\s+(?:computer|machine|system|disk|drive)$",
+        "", target,
+    ).strip()
+    return target
+
+
+def _has_local_file_context(low_text):
+    return any(p in (low_text or "") for p in _FILE_LOCAL_CONTEXT_PHRASES)
+
+
+def _looks_path_or_filename(target):
+    t = (target or "").strip()
+    low_t = t.lower()
+    if not t:
+        return False
+    if t.startswith(("~", "/", "./", "../")):
+        return True
+    if "/" in t or "\\" in t:
+        return True
+    if re.search(r"\.[a-z0-9]{1,8}\b", low_t):
+        return True
+    if "*" in t or "_" in t:
+        return True
+    words = set(re.findall(r"[a-z0-9_.-]+", low_t))
+    if words & _FILEISH_WORD_HINTS:
+        return True
+    return False
+
+
+def _file_query_is_local_machine_intent(low_text, target):
+    return _has_local_file_context(low_text) or _looks_path_or_filename(target)
 
 _TARGET_GLUE_WORDS = {
     "to", "for", "that", "with", "from", "about", "before", "after", "while",
@@ -1279,17 +1471,12 @@ def _system_query_short_circuit(text, low, words):
         m = pat.match(t)
         if not m:
             continue
-        target = m.group(1).strip().rstrip(".!?,")
-        target = re.sub(
-            r"\s+(?:located|saved|stored|kept)\s+(?:on\s+)?(?:my|the)?\s*"
-            r"(?:computer|machine|system|disk|drive)?\s*$",
-            "", target,
-        ).strip()
-        target = re.sub(
-            r"\s+on\s+(?:my|the|this)\s+(?:computer|machine|system|disk|drive)$",
-            "", target,
-        ).strip()
+        target = _normalize_file_target(m.group(1))
         if not target or len(target) < 3 or "," in target:
+            return None
+        # Ambiguous nouns like "atlantis" should NOT auto-run local `find`.
+        # Only short-circuit when user wording clearly signals local files.
+        if not _file_query_is_local_machine_intent(t, target):
             return None
         first = target.split()[0].lower()
         if first in _FILE_TARGET_STOP or first in _FILE_TARGET_ABSTRACT_FIRST:
@@ -1353,9 +1540,21 @@ def _is_system_state_question(low):
         return True
     if re.match(r"^[a-z][a-z0-9_.-]{1,40}\s+service(\s+status)?$", t):
         return True
-    starts = (
+    file_starts = (
         "where is ", "where are ", "where's ", "wheres ",
         "find ", "find me ", "locate ", "do i have ", "show me ",
+    )
+    if any(t.startswith(k) for k in file_starts):
+        for pat in _FILE_INTENT_PATTERNS:
+            m = pat.match(t)
+            if not m:
+                continue
+            target = _normalize_file_target(m.group(1))
+            if _file_query_is_local_machine_intent(t, target):
+                return True
+        return False
+
+    starts = (
         "is there a ", "list files", "list the files", "what files",
         "ls ", "ls\t",
         "check if ", "check the file", "check the folder",
@@ -4855,7 +5054,6 @@ def show_help():
         ("SYSTEM", [
             ("keys",                 "show API key status"),
             ("perms",                "re-run permissions wizard"),
-            ("gdrive <query>",       "route query to Google Drive via Claude CLI"),
             ("tts on / tts off",     "toggle voice replies"),
             ("hints on / off",       "toggle contextual tips"),
             ("tutorial",             "replay the feature walkthrough"),
@@ -5317,8 +5515,8 @@ def _is_informational_cmd(cmd):
     Plans like 'check status, then start service' need the chain to
     advance past the status step instead of aborting at it.
 
-    Conservative today: only systemctl inspection commands. Widen later
-    if grep/test/which surface the same chain-abort symptom."""
+    Conservative today: systemctl inspection + command-probe checks
+    (`which`, `command -v`)."""
     if not cmd:
         return False
     s = cmd.strip().lstrip()
@@ -5332,6 +5530,10 @@ def _is_informational_cmd(cmd):
                    "systemctl is-enabled", "systemctl is-failed"):
         if s == prefix or s.startswith(prefix + " ") or s.startswith(prefix + "\t"):
             return True
+    if s == "which" or s.startswith("which ") or s.startswith("which\t"):
+        return True
+    if s.startswith("command -v ") or s.startswith("command -V "):
+        return True
     return False
 
 
@@ -5430,6 +5632,7 @@ def _pill(kind, detail=""):
     """Return a colored pill badge + optional trailing detail."""
     badges = {
         "RAN":     f"{BTN_G} RAN     {X}",
+        "FOUND":   f"{BTN_G} FOUND   {X}",
         "CREATED": f"{BTN_G} CREATED {X}",
         "EDITED":  f"{BTN_G} EDITED  {X}",
         "DONE":    f"{BTN_G} DONE    {X}",
@@ -5461,6 +5664,46 @@ def _action_ok(result):
     if hasattr(result, "ok"):
         return bool(result.ok)
     return result is not None
+
+
+def _extract_path_lines(output):
+    """Best-effort parse of path-like lines from shell output."""
+    out = output or ""
+    paths = []
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("/", "~/", "./", "../")):
+            paths.append(line)
+    return paths
+
+
+def _print_run_success_summary(cmd, output):
+    """Human-readable result summary for common discovery commands."""
+    c = (cmd or "").strip()
+    low = c.lower()
+    paths = _extract_path_lines(output)
+
+    # File discovery should read like an app result, not just raw terminal text.
+    if low.startswith("find ") or re.search(r"(^|[;&|]\s*)find\s", low):
+        if paths:
+            n = len(paths)
+            if n == 1:
+                print(_pill("FOUND", f"{D}1 match · {paths[0][:140]}{X}"))
+            else:
+                print(_pill("FOUND", f"{D}{n} matches · first: {paths[0][:120]}{X}"))
+        else:
+            print(_pill("WARN", f"{D}no matches{X}"))
+        return
+
+    # Executable location checks.
+    if low.startswith("which ") or low.startswith("command -v "):
+        if paths:
+            print(_pill("FOUND", f"{D}{paths[0][:140]}{X}"))
+        else:
+            print(_pill("WARN", f"{D}not installed / not in PATH{X}"))
+
 
 _INTERACTIVE_RUN_WORDS = {
     "less", "more", "man", "nano", "vim", "vi", "emacs", "top", "htop",
@@ -5658,11 +5901,16 @@ def run_command(cmd):
         if output:
             print(f"{G}{output}{X}")
         if result.returncode == 0:
+            _print_run_success_summary(shell_cmd, output)
             print(_pill("RAN", f"{D}{shell_cmd[:70]}{X}"))
         elif result.returncode == 141:
             print(_pill("SIGPIPE", f"{D}exit 141 · {shell_cmd[:60]}{X}"))
         else:
-            print(_pill("ERROR", f"{D}exit {result.returncode} · {shell_cmd[:60]}{X}"))
+            if _is_informational_cmd(shell_cmd):
+                _print_run_success_summary(shell_cmd, output)
+                print(_pill("WARN", f"{D}informational exit {result.returncode} · {shell_cmd[:60]}{X}"))
+            else:
+                print(_pill("ERROR", f"{D}exit {result.returncode} · {shell_cmd[:60]}{X}"))
         log(f"PC_CMD: {shell_cmd}")
         _router_metric("execution", action="run", ok=chain_ok,
                        exit_code=result.returncode,
@@ -8256,7 +8504,9 @@ def main():
                        check=False, capture_output=True)
         subprocess.run(["tmux", "set-window-option", "-g", "mouse", tmux_mouse],
                        check=False, capture_output=True)
-        _tmux_resize_to_client()
+        _tmux_install_auto_resize_hooks()
+        _tmux_resize_to_client(kill_others=True)
+        _start_tmux_auto_resize_watcher()
 
     # ── Collect boot status silently (no heavy output yet) ────────
     # Count loaded cloud KEYS — skip usage counters / metadata (names with '_')
@@ -8369,6 +8619,10 @@ def main():
     if _SENSEI_APP is None:
         signal.signal(signal.SIGTERM, _exit_save)
         signal.signal(signal.SIGHUP, _exit_save)   # fires when terminal window closes
+        if os.environ.get("TMUX") and hasattr(signal, "SIGWINCH"):
+            def _sigwinch(_s, _f):
+                _nudge_tmux_auto_resize()
+            signal.signal(signal.SIGWINCH, _sigwinch)
 
     # NOTE: v1.7.11 reverted the async query worker — it raced with
     # interactive RUN/CREATE/EDIT confirmation prompts for stdin, causing
@@ -9013,7 +9267,8 @@ def main():
         # ── Resize: snap tmux pane to attached-client dims (full-screen fix) ──
         if lo in ("resize", "maximize", "fit"):
             if os.environ.get("TMUX"):
-                dims = _tmux_resize_to_client()
+                dims = _tmux_resize_to_client(kill_others=False)
+                _nudge_tmux_auto_resize()
                 if dims and dims != "auto":
                     print(f"  {G}✅ pane snapped to latest client dims: {dims}{X}")
                 elif dims == "auto":
@@ -9031,7 +9286,8 @@ def main():
                 before = subprocess.run(["tmux", "list-panes"], capture_output=True, text=True)
                 n = len([l for l in (before.stdout or "").splitlines() if l.strip()])
                 if n > 1:
-                    _tmux_resize_to_client()
+                    _tmux_resize_to_client(kill_others=True)
+                    _nudge_tmux_auto_resize()
                     print(f"  {G}✅ killed {n-1} other pane(s) — Sensei is alone now.{X}")
                 else:
                     print(f"  {D}already the only pane.{X}")
@@ -9487,13 +9743,14 @@ def main():
                 print(f"  {R}❌ mesh error: {e}{X}")
             continue
 
-        # ── gdrive ────────────────────────────────────────────
+        # Legacy alias retained for compatibility, now dependency-free.
         if lo.startswith("gdrive "):
             query = cmd[7:].strip()
-            if shutil.which("claude"):
-                subprocess.run(["claude", query], check=False)
+            if not query:
+                print(f"  {W}usage: gdrive <query>{X}")
             else:
-                print(f"  {R}❌ Claude CLI not found. Is Claude Code installed?{X}")
+                print(f"  {Y}gdrive relay is disabled in standalone mode.{X}")
+                print(f"  {D}Use: search {query}{X}")
             continue
 
         image_path = None
@@ -9927,9 +10184,24 @@ def _run_with_tui():
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
+    old_sigwinch = None
+    if os.environ.get("TMUX") and hasattr(signal, "SIGWINCH"):
+        try:
+            old_sigwinch = signal.getsignal(signal.SIGWINCH)
+            def _sigwinch(_s, _f):
+                _nudge_tmux_auto_resize()
+            signal.signal(signal.SIGWINCH, _sigwinch)
+        except Exception:
+            old_sigwinch = None
+
     try:
         _SENSEI_APP.run(on_submit=_on_submit)
     finally:
+        if old_sigwinch is not None and hasattr(signal, "SIGWINCH"):
+            try:
+                signal.signal(signal.SIGWINCH, old_sigwinch)
+            except Exception:
+                pass
         sys.stdout = _orig_stdout
         sys.stderr = _orig_stderr
         builtins.input = _orig_input

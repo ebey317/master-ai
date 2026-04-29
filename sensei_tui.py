@@ -350,15 +350,14 @@ class SenseiApp:
         self._status = ""
         self._output_chunks: List[str] = []
         self._output_lock = threading.Lock()
-        # Micro-cache for _render_output. prompt_toolkit calls the text
-        # getter multiple times per frame (line-count then get_line); if
-        # the chunks grow between those calls the returned fragment list
-        # shrinks/grows and triggers "list index out of range" inside
-        # FormattedTextControl. Caching for one render tick (~50ms) makes
-        # every getter call within a single frame return identical
-        # content. Frame interval is 1s, so 50ms is safe.
+        # Output render cache keyed by a monotonic write-version.
+        # prompt_toolkit calls the text getter multiple times per frame;
+        # if output mutates between calls, line fetch can race and throw.
+        # Re-render only when output actually changed.
         self._output_render_cache = None
-        self._output_render_cache_ts = 0.0
+        self._output_render_cache_version = -1
+        self._output_render_lines = 0
+        self._output_version = 0
         self._tip_cycle = itertools.cycle(IDLE_TIPS)
         self._tip = next(self._tip_cycle)
         self._tip_last = time.time()
@@ -540,7 +539,7 @@ class SenseiApp:
             # bottom and lets gnome-terminal handle native click-drag copy.
             # Opt-in with SENSEI_MOUSE=1 if you want wheel scroll inside the app.
             mouse_support=os.environ.get("SENSEI_MOUSE", "0") == "1",
-            refresh_interval=1.0,
+            refresh_interval=0.25,
             style=self._build_style("plan"),
             # Force 24-bit truecolor so hex values like #ef4444 / #dc143c
             # render exactly instead of being quantized to the nearest of
@@ -548,6 +547,9 @@ class SenseiApp:
             # yours" — the issue was prompt_toolkit defaulting to 256
             # mode even though COLORTERM=truecolor.
             color_depth=ColorDepth.DEPTH_24_BIT,
+            # Faster UI cadence so scrolling/typing feel native.
+            min_redraw_interval=0.02,
+            max_render_postpone_time=0.03,
         )
 
     # ── mode-aware theming ────────────────────────────────────
@@ -615,28 +617,22 @@ class SenseiApp:
         """Return the FULL output as ANSI — scroll is handled by positioning
         an invisible cursor that Window tracks (see _get_output_cursor).
 
-        Per-frame micro-cache: prompt_toolkit calls this getter multiple
-        times per render cycle (height measure → then per-line fetch). If
-        a background thread appends between calls, the fragment lists
-        have different lengths and FormattedTextControl trips on `list
-        index out of range` (controls.py:413). Caching locks the content
-        to one consistent snapshot per frame; the line count is cached
-        alongside so _get_output_cursor can't report a y beyond the
-        cached fragments.
+        Cache is keyed to output write-version, not time. This avoids
+        reparsing the full chat history on every idle repaint while still
+        keeping render snapshots consistent across line-measure calls.
         """
-        now = time.time()
-        if self._output_render_cache is not None and (now - self._output_render_cache_ts) < 0.05:
-            return self._output_render_cache
         with self._output_lock:
+            version = self._output_version
+            if (
+                self._output_render_cache is not None
+                and self._output_render_cache_version == version
+            ):
+                return self._output_render_cache
             text = "".join(self._output_chunks)
         rendered = ANSI(text)
         self._output_render_cache = rendered
-        self._output_render_cache_ts = now
-        # Line count matched to the rendered snapshot. Using count("\n")
-        # here may differ from fragment-list length by 1 (trailing empty
-        # split), so we subtract one defensively — better to under-report
-        # the cursor y than over-report and trip IndexError.
-        self._output_render_lines = max(0, text.count("\n") - 1)
+        self._output_render_cache_version = version
+        self._output_render_lines = max(0, text.count("\n"))
         return rendered
 
     def _get_output_cursor(self):
@@ -942,6 +938,7 @@ class SenseiApp:
             if self._scroll_offset > 0:
                 self._scroll_offset += add_lines
             self._output_chunks.append(str(text))
+            self._output_version += 1
         try: self._app.invalidate()
         except Exception: pass
 
@@ -949,6 +946,7 @@ class SenseiApp:
         with self._output_lock:
             self._output_chunks.clear()
             self._scroll_offset = 0
+            self._output_version += 1
         try: self._app.invalidate()
         except Exception: pass
 

@@ -1,8 +1,22 @@
-# Claude Code Handoff — Master AI
+# Master AI Runtime Notes
 
 Last updated: 2026-04-29
 
-This repo is Elijah's local-first AI agent stack. Treat it as a local Claude Code / Codex-style computer agent, not a generic chatbot or greenfield app.
+This repo is Elijah's local-first AI agent stack. It runs standalone on this machine and does not require Claude/Codex relay wiring for normal operation.
+
+## Screen Auto-Adjust + Standalone Mode (2026-04-29)
+
+Sensei terminal auto-resize is now continuous, not one-shot:
+
+- Startup still snaps to client dimensions.
+- Runtime now keeps following active client size changes (watcher + tmux hooks).
+- `resize` = resync dimensions without killing panes.
+- `only` = intentionally kill other panes, then resync.
+
+Standalone runtime rule:
+
+- No external Claude CLI handoff is required.
+- Keep execution local-first; optional cloud model keys are independent and user-controlled.
 
 ## v1.9 Tag — Banner words for voice-to-text (2026-04-29)
 
