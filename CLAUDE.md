@@ -1,8 +1,31 @@
 # Claude Code Handoff — Master AI
 
-Last updated: 2026-04-28
+Last updated: 2026-04-29
 
 This repo is Elijah's local-first AI agent stack. Treat it as a local Claude Code / Codex-style computer agent, not a generic chatbot or greenfield app.
+
+## v1.9 Tag — Banner words for voice-to-text (2026-04-29)
+
+Tag `v1.9` cut on commit `b7828a3 Banner reads in plain words for phone voice-to-text`. Latest tags before this: v1.8, v1.7.11. `pack_for_sale.sh` already had `NEXT_VERSION=v1.9` from `4e7ce85`, so the tag matches the buyer-bundle version.
+
+Driver: Elijah uses voice-to-text on his phone to read Sensei. Symbols (`│`, `·`, bare `, . / ;`) read as silent pauses. The banner and legend are now spelled out as words so TTS speaks them.
+
+Changes in commit `b7828a3` (`master_ai.py` + `sensei_tui.py`):
+
+1. **Status banner separator** — `master_ai.py:draw_status_bar()` line 7249. `"  │  ".join(parts)` → `"  and  ".join(parts)`. Wide-form banner reads `MODE:AUTO  and  MODEL:AUTO+CLOUD  and  MEM:243`.
+
+2. **Narrow-truncation bug** — `sensei_tui.py:_render_status` was rewriting `MODEL:AUTO+CLOUD` → `MODEL:CLOUD` on terminals < 82 cols, which reads like cloud is pinned when it's actually auto-routing. Now drops the `+CLOUD` modifier and keeps the actual selection (`MODEL:AUTO`). Narrow-form banner: `MODE:AUTO and MODEL:AUTO and MEM:243`.
+
+3. **Bottom legend** — `sensei_tui.py:_render_legend()` line 702. Was `MODE:<X> · , · . · / · ;` (separators + bare key labels). Now `MODE:<X>  and  comma  and  dot  and  slash  and  semicolon`. The keyboard triggers (`,` `.` `/` `;`) are unchanged in `COMMAND_MENU_GROUPS` — only the on-screen labels were spelled out so TTS can speak them.
+
+4. **Docstring example** — `sensei_tui.py:17` `app.set_status("MODE:SAFE  │  MODEL:AUTO  │  MEM:42")` → `app.set_status("MODE:AUTO  and  MODEL:AUTO  and  MEM:42")`. `SAFE` was retired earlier; modes are `plan` / `review` / `auto`. Internal animation variable `_A_SAFE` (master_ai.py:3937) is still used for `review` mode and was not renamed in this commit — that's an internal name, not user-visible. Polish-pass candidate, not a v1.9 blocker.
+
+Tests run before tag: `python3 -m py_compile master_ai.py sensei_tui.py` ✓, `python3 ~/scripts/test_master_ai_parser.py` 19/19 ✓.
+
+Things NOT touched by this commit but worth knowing for v1.9 surface review:
+- Stoplight chrome accents (`SenseiApp._MODE_ACCENT` at sensei_tui.py:568) are untouched. Plan=`#cc0000`, Review=`#c7761a`, Auto=`#1a7a3a`. Do NOT re-tune.
+- `_show_tui_credit_roll()` at master_ai.py:7191 still doesn't print MODE/MODEL — by intent, it's the brand login screen. Adding mode/model there was discussed and dropped in favor of the live status bar.
+- `MODE_FILE` / `_load_saved_mode()` chain unchanged — chrome syncs to persisted mode at startup via `_SENSEI_APP.set_mode(MODE)` at master_ai.py:211.
 
 ## Recent Cleanup Safety Update (2026-04-28)
 
