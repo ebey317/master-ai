@@ -14,7 +14,7 @@ ALWAYS right after the ninja.
 Public API (used by master_ai.py):
     app = SenseiApp()
     app.set_label("thread-name")
-    app.set_status("MODE:SAFE  │  MODEL:AUTO  │  MEM:42")
+    app.set_status("MODE:AUTO  and  MODEL:AUTO  and  MEM:42")
     app.write(text_with_ansi)          # append to output region
     app.run(on_submit=handler)         # blocks until user exits
     app.run_in_terminal(lambda: ...)   # suspend for classic input()
@@ -661,8 +661,15 @@ class SenseiApp:
         width = max(10, _term_size().columns - 2)
         status = self._status or ""
         if width < 82:
-            status = status.replace("  │  ", " | ").replace(" │ ", " | ")
-            status = status.replace("MODEL:AUTO+CLOUD", "MODEL:CLOUD")
+            # Narrow form keeps the word "and" (no symbols) — Elijah
+            # 2026-04-29: "the punctuation needs words not symbols".
+            # Just collapse the double-space padding so it fits.
+            status = status.replace("  and  ", " and ")
+            # Narrow-terminal truncation drops the "+CLOUD" modifier, NOT
+            # the "AUTO" selection — "MODEL:CLOUD" reads like cloud is
+            # pinned when actually auto-routing is on with cloud keys
+            # available. Keep the actual selection visible.
+            status = status.replace("MODEL:AUTO+CLOUD", "MODEL:AUTO")
         return FormattedText([("class:status", f" {_fit_text(status, width - 2)} ")])
 
     def _render_header(self):
@@ -693,17 +700,21 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
+        # Action keys named literally — punctuation as words. `,` is the
+        # comma key, `.` the dot key, etc. Symbols read as silent pauses
+        # on phone voice-to-text; the spelled-out names speak.
+        # Elijah 2026-04-29: "make my action punctuation words not symbols".
         current_mode = getattr(self, "_mode", "plan").upper()
         return FormattedText([
             ("class:legend", f"MODE:{current_mode}"),
-            ("class:sep", " · "),
-            ("class:legend", ","),
-            ("class:sep", " · "),
-            ("class:legend", "."),
-            ("class:sep", " · "),
-            ("class:legend", "/"),
-            ("class:sep", " · "),
-            ("class:legend", ";"),
+            ("class:sep", "  and  "),
+            ("class:legend", "comma"),
+            ("class:sep", "  and  "),
+            ("class:legend", "dot"),
+            ("class:sep", "  and  "),
+            ("class:legend", "slash"),
+            ("class:sep", "  and  "),
+            ("class:legend", "semicolon"),
         ])
 
     def _render_tip(self):

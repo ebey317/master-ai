@@ -7246,7 +7246,10 @@ def draw_status_bar():
         task_short = ACTIVE_TASK[:40] + ("…" if len(ACTIVE_TASK) > 40 else "")
         parts.append(f"TASK:{task_short}")
 
-    content = "  │  ".join(parts)
+    # Separator is the word "and" — symbols like │ don't read out loud on
+    # phone voice-to-text; words do. Elijah 2026-04-29: "the punctuation
+    # needs words not symbols".
+    content = "  and  ".join(parts)
     # Status line is ninja-free — the header already carries the brand
     # ninja. Two ninjas across the top row reads as clutter (Elijah
     # 2026-04-20: "🥷 MASTER AI — SENSEI … 🥷 MODE:SAFE … too much").
