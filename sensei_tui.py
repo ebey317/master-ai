@@ -693,7 +693,10 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
+        current_mode = getattr(self, "_mode", "plan").upper()
         return FormattedText([
+            ("class:legend", f"MODE:{current_mode}"),
+            ("class:sep", " · "),
             ("class:legend", ","),
             ("class:sep", " · "),
             ("class:legend", "."),
