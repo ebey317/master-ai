@@ -5756,6 +5756,70 @@ def show_doctor():
     task_count = active_task_count()
     cloud_count = sum(1 for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'] if KEYS.get(k))
     tts_pref = "ON" if TTS_ENABLED else "OFF"
+    probe_rows = []
+
+    def add_probe(label, ok, detail):
+        probe_rows.append((label, ok, detail))
+        if not ok:
+            warnings.append(f"{label} probe failed: {detail}")
+
+    # Terminal exec roundtrip.
+    try:
+        term = subprocess.run(["echo", "ok"], capture_output=True, text=True, check=True)
+        add_probe("Terminal", term.stdout.strip() == "ok", f"echo -> {term.stdout.strip()!r}")
+    except Exception as e:
+        add_probe("Terminal", False, str(e))
+
+    # File read/write roundtrip.
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            probe_file = Path(td) / "doctor-probe.txt"
+            marker = "sensei-file-probe"
+            probe_file.write_text(marker)
+            read_back = probe_file.read_text()
+        add_probe("File read", read_back == marker, "temp file read/write")
+    except Exception as e:
+        add_probe("File read", False, str(e))
+
+    # Router classification roundtrip.
+    pinned_before = globals().get("PINNED_MODEL")
+    try:
+        globals()["PINNED_MODEL"] = None
+        code_route = detect_route("fix bug in app.py")
+        web_route = detect_route("what's the weather")
+        recall_route = orchestrate([], "remember that I like coffee")
+        route_ok = (
+            code_route[0] == "local"
+            and code_route[1] == MODELS["coder"]
+            and web_route[0] == "web"
+            and recall_route.get("route") == "recall_memory"
+        )
+        detail = f"code={code_route[0]}/{code_route[1]} web={web_route[0]} recall={recall_route.get('route')}"
+        add_probe("Router", route_ok, detail)
+    except Exception as e:
+        add_probe("Router", False, str(e))
+    finally:
+        globals()["PINNED_MODEL"] = pinned_before
+
+    # Memory save + recall roundtrip on a temporary copy.
+    try:
+        original_memory = MEMORY_FILE
+        with tempfile.TemporaryDirectory() as td:
+            probe_memory = Path(td) / "memory"
+            try:
+                probe_memory.write_text(original_memory.read_text() if original_memory.exists() else "")
+            except Exception:
+                probe_memory.write_text("")
+            token = f"doctor-memory-probe-{int(time.time() * 1000)}"
+            probe_memory.write_text(probe_memory.read_text() + token + "\n")
+            globals()["MEMORY_FILE"] = probe_memory
+            recalled = _memory_recall_payload("remember that I like coffee") or ""
+            memory_ok = token in probe_memory.read_text() and token in recalled
+            add_probe("Memory", memory_ok, "save + recall token recovered")
+    except Exception as e:
+        add_probe("Memory", False, str(e))
+    finally:
+        globals()["MEMORY_FILE"] = original_memory
 
     crash = ""
     crash_file = Path.home() / "scripts" / "master.crash.log"
@@ -5779,6 +5843,8 @@ def show_doctor():
     print(f"{BC}  ║{X}  {state(not missing_models, 'required models present' if not missing_models else 'missing ' + ', '.join(missing_models))}")
     print(f"{BC}  ║{X}  {state(thoughts_code == 200 and b'elijah_verbatim' in thoughts_body, f'/thoughts voice file ({thoughts_label})')}")
     print(f"{BC}  ║{X}  {state(tts_open, f'TTS :5050  service:{tts_service}  preference:{tts_pref}')}")
+    for label, ok, detail in probe_rows:
+        print(f"{BC}  ║{X}  {state(ok, f'{label}: {detail}')}")
     print(f"{BC}  ╠════════════════════════════════════════════════════════════╣{X}")
     print(f"{BC}  ║{X}  {C}Phone URL:{X} http://{tailscale_ip}:8080/pupil.html")
     print(f"{BC}  ║{X}  {C}Mode:{X} {MODE}   {C}Model:{X} {PINNED_MODEL or 'auto'}   {C}Cloud keys:{X} {cloud_count}")
