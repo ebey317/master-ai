@@ -1504,6 +1504,153 @@ def _system_query_short_circuit(text, low, words):
     return None
 
 
+_WEATHER_WORD_RE = r"(?:weather|weathr|wether)"
+_FORECAST_WORD_RE = r"(?:forecast|forcast)"
+_WEATHER_TERM_RE = rf"(?:{_WEATHER_WORD_RE}|{_FORECAST_WORD_RE})"
+_WEATHER_LEADING_RE = (
+    r"(?:(?:first|please|pls|can\s+you|could\s+you|would\s+you|"
+    r"show\s+me|give\s+me|pull\s+up(?:\s+the)?|pull|show|give|get|"
+    r"check|checking|cheack|cheacking|tell\s+me)\s+)*"
+)
+_WEATHER_LOCATION_RE = re.compile(
+    rf"\b{_WEATHER_TERM_RE}\s+(?:in|for|at)\s+(.+)$",
+    re.IGNORECASE,
+)
+_WEATHER_DAYS_RE = re.compile(
+    rf"\b(?P<days>\d+|one|two|three|four|five|six|seven)(?:-|\s+)?days?\s+{_WEATHER_TERM_RE}\b",
+    re.IGNORECASE,
+)
+_WEATHER_FORMAT_RE = re.compile(
+    r"^(?:try\s+|use\s+|show\s+)?format\s+\?(?P<format>[0-9a-z]+)\s*$",
+    re.IGNORECASE,
+)
+_CLEAR_CACHE_RE = re.compile(r"\bclear\s+(?:the\s+)?cache\b", re.IGNORECASE)
+
+def _looks_weather_request(low, word_set):
+    """True when the user is asking for terminal weather, not web results."""
+    if not low:
+        return False
+    if any(p in low for p in (
+        "weather underground", "weather.com", "weather channel",
+        "weather app", "weather service",
+    )):
+        return False
+    if _WEATHER_FORMAT_RE.match(low):
+        return True
+    if _WEATHER_DAYS_RE.search(low):
+        return True
+    if re.match(
+        rf"^{_WEATHER_LEADING_RE}(?:(?:what(?:'s|\s+is)|whats)\s+(?:the\s+)?{_WEATHER_WORD_RE}|(?:the\s+)?{_WEATHER_TERM_RE})(?:\b|$)",
+        low,
+    ):
+        return True
+    if re.match(rf"^{_WEATHER_TERM_RE}\s*$", low):
+        return True
+    if re.match(rf"^{_WEATHER_TERM_RE}\s+(?:today|tomorrow|tonight|now|please|near\s+me|outside|here)\b", low):
+        return True
+    if _WEATHER_LOCATION_RE.search(low):
+        return True
+    return any(p in low for p in (
+        "is it raining", "rain near me", "rain coming",
+        "rain radar", "weather radar", "temperature outside",
+        "temp outside",
+    ))
+
+def _weather_location_from_text(text):
+    """Extract an explicit place for wttr.in, else empty for auto-location."""
+    m = _WEATHER_LOCATION_RE.search(text or "")
+    if not m:
+        return ""
+    loc = m.group(1).strip().rstrip(".?!,;:")
+    loc = _WEATHER_DAYS_RE.sub("", loc).strip(" ,")
+    loc = re.sub(
+        r"\b(?:today|tomorrow|tonight|right\s+now|now|please|pls)\b.*$",
+        "",
+        loc,
+        flags=re.IGNORECASE,
+    ).strip(" ,")
+    if loc.lower() in {"me", "near me", "here", "outside", "my area", "this area"}:
+        return ""
+    return loc
+
+def _weather_query_suffix_from_text(text):
+    m = _WEATHER_FORMAT_RE.match((text or "").strip())
+    if m:
+        return f"?{m.group('format')}"
+    return "?2"
+
+_WEATHER_DATE_CMD_FORMAT = "+%m/%d/%Y %I:%M:%S %p %z %Z"
+
+def _weather_url(location, query):
+    import urllib.parse as _up
+    loc_path = _up.quote(location, safe='') if location else ""
+    return f"https://wttr.in/{loc_path}?{query}"
+
+def _weather_time_cmd(location):
+    tz_url = shlex.quote(_weather_url(location, "format=%Z"))
+    fallback_url = shlex.quote(_weather_url(location, "format=Local+time:+%T+%Z"))
+    date_fmt = shlex.quote(_WEATHER_DATE_CMD_FORMAT)
+    return (
+        f"tz=$(curl -fsS {tz_url} 2>/dev/null | awk '{{print $NF}}'); "
+        f"if [ -n \"$tz\" ]; then printf 'Local time: '; TZ=\"$tz\" date {date_fmt}; "
+        f"else curl -fsS {fallback_url} 2>/dev/null; printf '\\n'; fi"
+    )
+
+def _weather_dynamic_time_cmd(path_expr):
+    date_fmt = shlex.quote(_WEATHER_DATE_CMD_FORMAT)
+    return (
+        f"tz=$(curl -fsS \"https://wttr.in/{path_expr}?format=%Z\" 2>/dev/null | awk '{{print $NF}}'); "
+        f"if [ -n \"$tz\" ]; then printf 'Local time: '; TZ=\"$tz\" date {date_fmt}; "
+        f"else curl -fsS \"https://wttr.in/{path_expr}?format=Local+time:+%T+%Z\" 2>/dev/null; printf '\\n'; fi"
+    )
+
+def _weather_auto_location_cmd(suffix):
+    fallback_url = shlex.quote(f"https://wttr.in/{suffix}")
+    return (
+        "loc=$(curl -fsS https://ipinfo.io/loc 2>/dev/null | tr -d '\\r\\n'); "
+        f"if [ -n \"$loc\" ]; then "
+        f"{_weather_dynamic_time_cmd('${loc}')}; curl \"https://wttr.in/${{loc}}{suffix}\"; "
+        f"else {_weather_time_cmd('')}; curl {fallback_url}; fi"
+    )
+
+def _weather_short_circuit(text):
+    """Return a synthesized RUN directive for weather, or None."""
+    stripped = (text or "").strip()
+    low = stripped.lower()
+    words = set(re.findall(r"[a-z0-9']+", low))
+    if not _looks_weather_request(low, words):
+        return None
+
+    loc = _weather_location_from_text(stripped)
+    suffix = _weather_query_suffix_from_text(stripped)
+    if loc:
+        import urllib.parse as _up
+        url = f"https://wttr.in/{_up.quote(loc, safe='')}{suffix}"
+        cmd = f"{_weather_time_cmd(loc)}; curl {shlex.quote(url)}"
+    else:
+        cmd = _weather_auto_location_cmd(suffix)
+    return (
+        "Checking weather with wttr.in terminal view.\n"
+        f"RUN: {cmd}"
+    )
+
+def _clear_cache_weather_short_circuit(text):
+    """Handle combined 'clear cache, weather' without handing weather to a model."""
+    stripped = (text or "").strip()
+    if not _CLEAR_CACHE_RE.search(stripped):
+        return None
+    weather_text = _CLEAR_CACHE_RE.sub("", stripped).strip(" ,;:&+")
+    weather_synth = _weather_short_circuit(weather_text)
+    if not weather_synth:
+        return None
+    cache_cmd = f"rm -f {shlex.quote(str(CACHE_FILE))}"
+    return (
+        "Clearing Master AI response cache, then checking weather.\n"
+        f"RUN: {cache_cmd}\n"
+        f"{weather_synth}"
+    )
+
+
 _DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT")
 
 def _reply_has_directive(reply):
@@ -1950,6 +2097,18 @@ def orchestrate(history, user_text, image_path=None):
                 "stripped_text": stripped[prefix_len:].strip(),
                 "reason": "explicit local/private → local 7b"}
 
+    cache_weather_synth = _clear_cache_weather_short_circuit(stripped)
+    if cache_weather_synth:
+        return {"route": "weather",
+                "synth_reply": cache_weather_synth,
+                "reason": "clear cache + weather request → deterministic RUN directives"}
+
+    weather_synth = _weather_short_circuit(stripped)
+    if weather_synth:
+        return {"route": "weather",
+                "synth_reply": weather_synth,
+                "reason": "weather request → wttr.in terminal curl"}
+
     # 2c. Deterministic system-query short-circuit. Catches "where is X",
     #     "find X", "what's on port N", "is X running/installed", "list files
     #     in X", "open file X" and synthesizes a RUN: directive directly —
@@ -2231,8 +2390,6 @@ _TIME_PHRASES = (
     "as of today", "as of now",
     "who is the president", "who is the ceo of",
     "stock price of", "current stock", "stock market today",
-    "weather in", "what's the weather", "whats the weather",
-    "rain radar", "weather radar", "is it raining", "rain near me", "rain coming", "show radar",
     "news today", "today's news", "todays news", "latest news",
     "breaking news", "headlines today",
     "playoff games", "playoff game tonight", "games tonight", "games today",
@@ -6297,15 +6454,15 @@ def show_doctor():
     try:
         globals()["PINNED_MODEL"] = None
         code_route = detect_route("fix bug in app.py")
-        web_route = detect_route("what's the weather")
+        weather_route = orchestrate([], "what's the weather")
         recall_route = orchestrate([], "remember that I like coffee")
         route_ok = (
             code_route[0] == "local"
             and code_route[1] == MODELS["coder"]
-            and web_route[0] == "web"
+            and weather_route.get("route") == "weather"
             and recall_route.get("route") == "recall_memory"
         )
-        detail = f"code={code_route[0]}/{code_route[1]} web={web_route[0]} recall={recall_route.get('route')}"
+        detail = f"code={code_route[0]}/{code_route[1]} weather={weather_route.get('route')} recall={recall_route.get('route')}"
         add_probe("Router", route_ok, detail)
     except Exception as e:
         add_probe("Router", False, str(e))
@@ -8154,19 +8311,20 @@ def handle(user_text, history, image_path=None):
         history.append({"role": "assistant", "content": resp})
         return resp
 
-    if decision["route"] == "system_query":
-        # Deterministic file/port/service lookup — synth_reply contains a
+    if decision["route"] in ("system_query", "weather"):
+        # Deterministic terminal task — synth_reply contains a
         # RUN: directive that process_reply parses and executes through the
         # same path an LLM-emitted RUN: would use (mode-aware confirmation,
         # action-failed chain abort, router metrics). No model call, no
         # tokens, no waiting for the 7B brain to remember to use its tools.
         synth = decision.get("synth_reply", "")
-        print(f"\n  {BC}[thinking: deterministic system query — running it directly]{X}")
+        label = "terminal weather" if decision["route"] == "weather" else "deterministic system query"
+        print(f"\n  {BC}[thinking: {label} — running it directly]{X}")
         print(f"  {M}Sensei:{X} {synth}\n", flush=True)
         process_reply(synth, history, streamed=False)
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": synth})
-        _router_metric("system_query_short_circuit",
+        _router_metric(f"{decision['route']}_short_circuit",
                        prompt=user_text[:200],
                        directive=synth.split("RUN:", 1)[-1][:200] if "RUN:" in synth else "")
         return synth
