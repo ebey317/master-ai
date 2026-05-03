@@ -5737,7 +5737,16 @@ def _hallucination_warn(cmd):
     still let Elijah override after seeing the warning; Auto mode blocks
     the command because there is no reason to execute a known-missing
     binary in a buyer-facing build.
+
+    Compound shell expressions get a pass: substitutions, pipes,
+    conditionals, multi-command sequences. The first-token PATH lookup
+    can't reason about `loc=$(curl -fsS ...)` or `cmd1 && cmd2`; without
+    the carve-out, the env-var skip loop lands on flags (`-fsS`) instead
+    of binaries and false-positives legitimate commands. Bash will
+    surface a real missing binary at runtime if one slips through.
     """
+    if any(m in cmd for m in ("$(", "`", "&&", "||", ";", "|")):
+        return True
     import shlex, shutil as _shutil
     try:
         tokens = shlex.split(cmd, posix=True)
