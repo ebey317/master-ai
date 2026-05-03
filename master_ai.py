@@ -215,6 +215,7 @@ LAST_MODEL           = ""      # model name used by the most recent handle() —
 PENDING_PLAN_TEXT    = ""
 PENDING_PLAN_REQUEST = ""
 PENDING_USER_NOTE    = ""
+_LAST_BLOCKED_ACTION = {}  # safeguard-blocked directive; consumed in process_reply to feed the BLOCKED back to the LLM next turn
 HINTS                = 0 if HINTS_FILE.exists() else 1
 ACTIVE_PROJECT       = ""
 _SETTINGS            = Path.home() / ".master_ai_settings"
@@ -6369,6 +6370,8 @@ def confirm_run(cmd):
         print(_pill("BLOCKED", f"{D}auto-flow refused missing command: {cmd[:60]}{X}"))
         log(f"BLOCKED-MISSING-CMD-AUTO: {cmd}")
         _audit("RUN-BLOCK-MISSING", cmd)
+        global _LAST_BLOCKED_ACTION
+        _LAST_BLOCKED_ACTION = {"kind": "run", "command": cmd, "reason": "missing top-level command in Auto mode"}
         return None
 
     if cmd in load_approved():
@@ -7243,6 +7246,27 @@ def process_reply(reply, history, streamed=False):
             if isinstance(result, RunResult) and _is_informational_cmd(cmd):
                 log(f"CHAIN_CONTINUE: informational nonzero exit on {cmd}")
                 continue
+            # Feed safeguard-blocked directives back into history so the next
+            # model turn sees the BLOCKED instead of hallucinating that the
+            # command ran. Without this the LLM (esp. cloud lanes) would
+            # answer the next user turn assuming success.
+            blocked = globals().get("_LAST_BLOCKED_ACTION") or {}
+            if blocked:
+                history.append({
+                    "role": "user",
+                    "content": (
+                        "[TOOL BLOCKED]\n"
+                        f"RUN command was refused by Sensei before execution.\n"
+                        f"Command: {blocked.get('command', cmd)}\n"
+                        f"Reason: {blocked.get('reason', 'safeguard refused')}.\n"
+                        "Choose an already-installed alternative, or propose a "
+                        "minimal install for only the missing tool. Do not assume "
+                        "the command succeeded."
+                    ),
+                })
+                globals()["_LAST_BLOCKED_ACTION"] = {}
+                log(f"CHAIN_BLOCKED_FEEDBACK: appended [TOOL BLOCKED] for: {cmd}")
+                return None
             print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
             return reply
