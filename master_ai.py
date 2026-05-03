@@ -1215,7 +1215,7 @@ def detect_route(text, has_image=False):
             return "cloud", "gemini", f"pinned → Gemini"
         return "local", PINNED_MODEL, f"pinned → {PINNED_MODEL}"
 
-    if has_image or (any(w in t for w in VISION_WORDS) and not _looks_app_shaped(t, words)):
+    if has_image or _is_explicit_vision_request(text):
         return "vision", MODELS["kimi"], "vision → kimi-k2.5 (1T) · llava locally in local mode"
     if words & CODE_WORDS:
         return "local", MODELS["coder"], f"code → {MODELS['coder']}"
@@ -1593,6 +1593,29 @@ _APP_SHAPE_WORDS = {
 def _looks_app_shaped(low, word_set):
     """True if the text looks like an app-build request (vs. a vision question)."""
     return len(word_set & _APP_SHAPE_WORDS) >= 2
+
+# Lookbehind (not \b) so leading / and ~ in absolute/home paths still match.
+_IMAGE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])[~/.\w\-]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)\b",
+    re.I,
+)
+_VISION_INTENT_RE = re.compile(
+    r"\b(?:describe|caption|analyze|annotate|ocr|read|what(?:'s| is)\s+in|show\s+me|look\s+at)\s+"
+    r"(?:this|that|the|my|a|an|these|those)?\s*"
+    r"(?:image|photo|picture|screenshot|snapshot|thumbnail)s?\b",
+    re.I,
+)
+
+def _is_explicit_vision_request(text: str) -> bool:
+    """Vision routes need an image-extension path or a verb+vision-noun phrase.
+    Soft words (see/show/look/read/describe) alone never qualify — they appear
+    in every code/edit/system request and were misrouting text turns to llava
+    ('so Groq sees it directly' burned 7+ minutes with no image attached)."""
+    if _IMAGE_PATH_RE.search(text):
+        return True
+    if _VISION_INTENT_RE.search(text):
+        return True
+    return False
 
 def _vision_vs_app_question(stripped):
     """Clarifying question when vision words appear without an image attached
@@ -1990,14 +2013,14 @@ def orchestrate(history, user_text, image_path=None):
             log(f"HARVEST_LOOKUP_ERROR: {e}")
 
     # 3. Vision — prefer local llava in local mode; cloud multimodal in connected mode
-    if image_path or (any(w in low for w in VISION_WORDS) and not _looks_app_shaped(low, word_set)):
+    if image_path or _is_explicit_vision_request(stripped):
         if run_mode == "peacetime" and any_cloud and have_gemini:
             return {"route": "cloud_vision", "model": "gemini",
                     "reason": "connected vision → Gemini 2.0 Flash"}
         # Local default: use local llava (no internet needed). Fall
         # through to kimi:cloud only when llava isn't pulled.
         return {"route": "local", "model": MODELS["vision"],
-                "reason": "local vision → llava (offline-capable)"}
+                "reason": "local vision → llava (image-confirmed)"}
 
     # 4. Ambiguous → ask the user
     amb = _is_ambiguous(stripped, words, history)
@@ -8090,7 +8113,13 @@ def handle(user_text, history, image_path=None):
         "using directives — do not explain or describe what you plan to do.\n\n"
         "SHELL ENVIRONMENT: bash on Ubuntu Linux. Always write standard bash — no PowerShell, "
         "no Windows paths. Use `sudo` when elevated permissions are needed. "
-        "Use full absolute paths where possible. Prefer `apt` for package installs.\n\n"
+        "Use full absolute paths where possible.\n\n"
+        "TOOL INSTALL POLICY: Read the prior tool result before proposing an install. "
+        "Exit 127 = command missing, not slow — install it, don't 'speed it up'. "
+        "Prefer user-local or upstream static binaries (e.g. ~/.local/bin, GitHub releases) "
+        "before `sudo apt`; apt often ships older or differently-named packages "
+        "(e.g. apt `yq` is Python kislyuk, not mikefarah Go). Don't default to `sudo apt update` "
+        "as a warmup for 'install a tool' — it adds a password step and installs nothing.\n\n"
         "DIRECTIVES — use these to act on the machine:\n\n"
         "RUN: <bash command>        — captured output (ls, git, pytest, apt, curl)\n"
         "RUNTERM: <bash command>    — spawns in a new graphical terminal (visual/TTY scripts)\n"
