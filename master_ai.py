@@ -3858,20 +3858,121 @@ def compact_history(history):
         history[:] = system + convo[-40:]
 
 # ── AUTO FILE INJECTION ───────────────────────────────────────
-def auto_inject_context(user_text):
-    """Scan message for file paths/names, inject up to 3 files as [AUTO-CONTEXT]."""
-    search_dirs = [Path.home() / "scripts", Path(os.getcwd())]
-    injected = []
+# Symbol-aware slicer caps (adjustable in one place).
+_SLICER_PRE_LINES         = 50
+_SLICER_POST_LINES        = 100
+_SLICER_MAX_CHARS         = 8000
+_WHOLE_FILE_THRESHOLD     = 200    # files <= this many lines, inject whole
+_WHOLE_FILE_MAX_CHARS     = 30000  # escape-hatch cap
+_WHOLE_FILE_CLOUD_BIAS_AT = 15000  # inject_chars > this triggers cloud bias if available
+_AUTO_CONTEXT_MAX_FILES   = 2
+_SYMBOL_MIN_LENGTH        = 4
+
+_SYMBOL_PATTERNS = [
+    re.compile(r'\b([A-Z][A-Z0-9_]{3,})\b'),                  # ALL_CAPS_NAMES
+    re.compile(r'\b([A-Z][a-zA-Z0-9]{3,})\b'),                # CamelCase
+    re.compile(r'(?:def|class)\s+([a-z_][a-zA-Z0-9_]{3,})'),  # def foo / class Bar
+    re.compile(r'`([a-zA-Z_][a-zA-Z0-9_]{3,})`'),             # `backtick`
+    re.compile(r'\b([a-z][a-z0-9_]{3,}_[a-z0-9_]+)\b'),       # snake_case (must contain _)
+]
+_WHOLE_FILE_PHRASES = (
+    "whole file", "entire file", "full file", "read all of",
+    "full review", "complete file", "all of the file",
+)
+
+
+def _extract_target_symbols(user_text: str) -> list:
+    """Pull candidate code identifiers from the user prompt.
+    Returns deduped list, ordered by appearance."""
     seen = set()
+    out = []
+    for pat in _SYMBOL_PATTERNS:
+        for m in pat.finditer(user_text):
+            s = m.group(1)
+            if len(s) < _SYMBOL_MIN_LENGTH:
+                continue
+            if s.lower() in seen:
+                continue
+            seen.add(s.lower())
+            out.append(s)
+    return out
+
+
+def _slice_around_symbol(content: str, symbol: str,
+                         pre_lines: int = _SLICER_PRE_LINES,
+                         post_lines: int = _SLICER_POST_LINES):
+    """Find symbol's definition (or first word-boundary fallback) and slice around it.
+
+    Two-pass: prefer a def/class line or a top-level assignment (`X = ...`,
+    `X: Type = ...`) over an incidental occurrence in a comment, docstring,
+    or string literal. Falls back to first word-boundary match if no
+    definition line exists. Returns (start_line_1indexed, end_line_1indexed,
+    slice_text) or None.
+    """
+    word_pat = re.compile(r'\b' + re.escape(symbol) + r'\b')
+    sym_esc = re.escape(symbol)
+    def_pat = re.compile(
+        r'^\s*(?:def\s+' + sym_esc + r'\b|class\s+' + sym_esc +
+        r'\b|' + sym_esc + r'\s*[:=])'
+    )
+    lines = content.splitlines()
+    match_idx = None
+    for idx, line in enumerate(lines):
+        if def_pat.search(line):
+            match_idx = idx
+            break
+    if match_idx is None:
+        for idx, line in enumerate(lines):
+            if word_pat.search(line):
+                match_idx = idx
+                break
+    if match_idx is None:
+        return None
+    start = max(0, match_idx - pre_lines)
+    end = min(len(lines), match_idx + post_lines + 1)
+    slice_text = "\n".join(lines[start:end])
+    if len(slice_text) > _SLICER_MAX_CHARS:
+        slice_text = slice_text[:_SLICER_MAX_CHARS] + f"\n... [TRUNCATED at {_SLICER_MAX_CHARS} chars] ..."
+    return (start + 1, end, slice_text)
+
+
+def _is_whole_file_request(user_text_low: str) -> bool:
+    return any(p in user_text_low for p in _WHOLE_FILE_PHRASES)
+
+
+def auto_inject_context(user_text):
+    """Scan message for file paths/names, inject relevant slices as [AUTO-CONTEXT].
+
+    Returns (injected_text, meta) where meta carries:
+      - 'big_file_no_symbol_match': list[Path] — files mentioned with no symbol match
+      - 'whole_file_requested': bool
+      - 'inject_chars': int (length of returned text)
+      - 'sliced': list of (path, symbol, start_line, end_line) — for the print line
+    """
+    meta = {
+        'big_file_no_symbol_match': [],
+        'whole_file_requested': False,
+        'inject_chars': 0,
+        'sliced': [],
+    }
+
+    search_dirs = [Path.home() / "scripts", Path(os.getcwd())]
+    user_text_low = (user_text or "").lower()
+    whole_file = _is_whole_file_request(user_text_low)
+    meta['whole_file_requested'] = whole_file
+    symbols = _extract_target_symbols(user_text or "")
 
     path_re = re.compile(
         r'(?:~/[\w/.\-]+\.[\w]+|\.\/[\w/.\-]+\.[\w]+|/[\w/.\-]+\.[\w]+|'
         r'[\w\-]+\.(?:py|sh|js|ts|html|css|json|txt|md|yaml|yml|conf|cfg|toml))'
     )
-    candidates = path_re.findall(user_text)
+    candidates = path_re.findall(user_text or "")
+
+    injected = []
+    seen = set()
 
     for c in candidates:
-        if len(injected) >= 3:
+        if len(injected) >= _AUTO_CONTEXT_MAX_FILES:
             break
         expanded = os.path.expanduser(c)
         if expanded in seen:
@@ -3884,23 +3985,75 @@ def auto_inject_context(user_text):
         else:
             fname = Path(c).name
             for d in search_dirs:
-                candidate = d / fname
-                if candidate.is_file():
-                    path = candidate
+                cand = d / fname
+                if cand.is_file():
+                    path = cand
                     break
+        if not path:
+            continue
 
-        if path:
-            try:
-                content = path.read_text(errors='replace')[:3000]
-                injected.append(f"--- {path} ---\n{content}")
-            except Exception:
-                pass
+        try:
+            content = path.read_text(errors='replace')
+        except Exception:
+            continue
+
+        line_count = content.count('\n') + (0 if content.endswith('\n') else 1) if content else 0
+
+        # Whole-file escape hatch (explicit user phrase)
+        if whole_file:
+            body = content[:_WHOLE_FILE_MAX_CHARS]
+            if len(content) > _WHOLE_FILE_MAX_CHARS:
+                body += f"\n... [TRUNCATED at {_WHOLE_FILE_MAX_CHARS} chars] ..."
+            injected.append(f"--- {path} ({line_count} lines, FULL) ---\n{body}")
+            continue
+
+        # Small file: inject whole, capped
+        if line_count <= _WHOLE_FILE_THRESHOLD:
+            body = content[:_SLICER_MAX_CHARS]
+            injected.append(f"--- {path} ({line_count} lines) ---\n{body}")
+            continue
+
+        # Big file: try symbol slice
+        slice_result = None
+        matched_symbol = None
+        for sym in symbols:
+            slice_result = _slice_around_symbol(content, sym)
+            if slice_result:
+                matched_symbol = sym
+                break
+
+        if slice_result:
+            start, end, slice_text = slice_result
+            injected.append(
+                f"--- {path} @ {matched_symbol} L{start}-{end} ({end - start + 1}/{line_count} lines) ---\n{slice_text}"
+            )
+            meta['sliced'].append((path, matched_symbol, start, end))
+        else:
+            # Big file, no symbol match — marker only, no body. Caller (handle) ASKs.
+            injected.append(
+                f"--- {path} ({line_count} lines) — name mentioned but no symbol matched. "
+                f"Mention a symbol like 'CLOUD_SYSTEM' or 'orchestrate' to scope, or say 'whole file' to inject all. ---"
+            )
+            meta['big_file_no_symbol_match'].append(path)
 
     if not injected:
-        return ""
-    labels = ", ".join(str(Path(s.split('\n')[0].strip('- ')).name) for s in injected)
-    print(f"  {D}[auto-context: {labels}]{X}")
-    return "\n\n[AUTO-CONTEXT — files mentioned in your message]\n" + "\n\n".join(injected)
+        return ("", meta)
+
+    label_parts = []
+    for entry in injected:
+        first = entry.split('\n', 1)[0].strip('- ').rstrip(' -').strip()
+        try:
+            head_path_str = first.split(' (')[0].split(' @')[0]
+            fname = Path(head_path_str).name
+            tail = first[len(head_path_str):]
+            label_parts.append((fname + tail).strip())
+        except Exception:
+            label_parts.append(first)
+    print(f"  {D}[auto-context: {' | '.join(label_parts)}]{X}")
+
+    text = "\n\n[AUTO-CONTEXT — files mentioned in your message]\n" + "\n\n".join(injected)
+    meta['inject_chars'] = len(text)
+    return (text, meta)
 
 # ── MEMORY ────────────────────────────────────────────────────
 def load_memory():
@@ -7914,8 +8067,52 @@ def handle(user_text, history, image_path=None):
             print(f"  {R}✗ Couldn't open browser: {e}{X}")
             # fall through to normal handling
 
-    # ── Smart orchestrator: short-circuit special routes before model dispatch ─
-    decision = orchestrate(history, user_text, image_path=image_path)
+    # ── Pre-flight slicer (auto-context + meta). Moved up from a prior post-routing
+    # location so its meta can short-circuit big-file-no-symbol cases to ASK and
+    # bias whole-file escape requests to cloud (heavy local CPU prefill cost).
+    inject_ctx, ctx_meta = auto_inject_context(user_text)
+
+    # ── Slicer guardrail: big file mentioned, no symbol matched, nothing useful
+    # to feed the model. Ask deterministically; never feed a marker-only context
+    # to the model (cloud would just guess faster, local would chew CPU).
+    if ctx_meta['big_file_no_symbol_match'] and not inject_ctx.strip():
+        _slicer_path = Path(ctx_meta['big_file_no_symbol_match'][0]).name
+        decision = {
+            "route": "ask_user",
+            "question": (
+                f"You mentioned {_slicer_path}. Which function, class, or constant "
+                f"should I read? Or say 'whole file' to inject all of it."
+            ),
+            "reason": "slicer guardrail: big-file mention with no symbol named",
+            "candidates": [],
+            "model": None,
+            "score": None,
+        }
+    else:
+        # ── Smart orchestrator: short-circuit special routes before model dispatch ─
+        decision = orchestrate(history, user_text, image_path=image_path)
+
+    # ── Whole-file escape (>15k chars injected) on local route → cloud bias if
+    # cloud is available. Heavy local prefill is the slow case; opportunistic
+    # upgrade only when actual useful context is attached.
+    if (decision.get('route') == 'local'
+            and ctx_meta.get('whole_file_requested')
+            and ctx_meta.get('inject_chars', 0) > _WHOLE_FILE_CLOUD_BIAS_AT):
+        try:
+            _keys_now = load_keys()
+            _any_cloud_now = any((_keys_now.get(k) or '').strip()
+                                 for k in ('groq', 'fireworks', 'openrouter', 'gemini'))
+        except Exception:
+            _keys_now, _any_cloud_now = {}, False
+        if _any_cloud_now and _read_run_mode() == "peacetime":
+            _cloud_model = "groq" if (_keys_now.get('groq') or '').strip() else "fireworks"
+            decision = {
+                "route": "cloud_fast",
+                "model": _cloud_model,
+                "reason": f"whole-file escape ({ctx_meta['inject_chars']} chars) → cloud prefill",
+                "candidates": decision.get("candidates", []),
+                "score": decision.get("score"),
+            }
     log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason','')}")
     _router_metric("route_decision",
                    route=decision.get("route"),
@@ -8205,8 +8402,7 @@ def handle(user_text, history, image_path=None):
         else:
             history.insert(0, {"role": "system", "content": CLOUD_SYSTEM})
 
-    # Auto-inject file content if user mentions filenames
-    inject_ctx = auto_inject_context(user_text)
+    # inject_ctx already computed in pre-flight slicer above (cached, not re-run)
     # For local: prepend directive hint so vanilla qwen2.5:7b emits CREATE:/EDIT:/RUN:
     # instead of describing changes in prose. Plus active project context when set.
     # master-ai has the Modelfile-baked SYSTEM that already knows the directive
