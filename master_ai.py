@@ -3082,6 +3082,10 @@ LOCAL_DIRECTIVE_HINT = (
     "Pick runterm when the script clears the screen, animates, reads keyboard, or needs\n"
     "a real TTY. Pick run for everything else. For chat or explanation, reply as plain\n"
     "prose with no directive at all.\n\n"
+    "Result honesty: never state, paraphrase, or imply a command's result before the\n"
+    "dispatcher runs it. Reason about what you're checking, not what the output will be.\n"
+    "Never write 'Result:' or 'Output:' from a guess. The actual machine output is\n"
+    "authoritative once it arrives.\n\n"
     "User: "
 )
 
@@ -8158,6 +8162,12 @@ def handle(user_text, history, image_path=None):
         "OWN line at column 0. The reasoning sentence must NEVER contain the literal strings\n"
         "'RUN:', 'RUNTERM:', 'CREATE:', 'EDIT:', 'READ:', 'ASK:', or 'DONE:' — the parser\n"
         "matches those verbatim and would fire a bogus directive.\n\n"
+        "RESULT HONESTY: Never state, paraphrase, or imply a command's result before "
+        "the dispatcher actually runs it and returns output. Reason about what you're "
+        "about to check, never write 'Result:' or 'Output:' lines from a guess. After "
+        "the directive runs, the machine output is authoritative — read it before "
+        "interpreting. If you're tempted to predict the result, just emit the directive "
+        "and wait for the dispatcher.\n\n"
         "PREFER CREATE: over 'bash -c \"echo ... > file\"' redirects — CREATE: writes the\n"
         "file via the directive parser (with auto-chmod on shebangs); redirects run inside\n"
         "bash -c where '$0' is 'bash' not the filename, which breaks self-deleting scripts.\n\n"
