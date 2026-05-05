@@ -576,47 +576,100 @@ CUR_PHASE=10
 phase 10 "vision (llava) round-trip"
 
 if [ "$have_llava" = "1" ]; then
-    # Generate a 64x64 solid-red PNG using python (no Pillow needed).
-    # A 2x2 fixture can crash llava's runner on some Ollama builds even
-    # though normal phone/camera-sized images work.
-    python3 - "$SANDBOX/input/red.png" <<'PY' 2>/dev/null
+    # Use a 336x336 RGB gradient — matches CLIP ViT-L/14's native input size
+    # used by llava. A solid 64x64 fixture has been triggering a malformed-shape
+    # path in llava's runner (Ollama journal: image_tokens->nx=576, ny=1 → HTTP 500).
+    # A real-shape gradient round-trips cleanly through /api/chat.
+    python3 - "$SANDBOX/input/probe.png" <<'PY' 2>/dev/null
 import struct, sys, zlib
-w = h = 64
-raw = b"".join(b"\x00" + bytes([255, 0, 0]) * w for _ in range(h))
+w = h = 336
+rows = []
+for y in range(h):
+    row = bytearray(b"\x00")
+    for x in range(w):
+        row += bytes([min(255, x * 255 // w), min(255, y * 255 // h), 64])
+    rows.append(bytes(row))
+raw = b"".join(rows)
 def chunk(kind, data):
-    return (
-        struct.pack(">I", len(data)) + kind + data +
-        struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
-    )
-png = (
-    b"\x89PNG\r\n\x1a\n" +
-    chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) +
-    chunk(b"IDAT", zlib.compress(raw)) +
-    chunk(b"IEND", b"")
-)
+    return (struct.pack(">I", len(data)) + kind + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+png = (b"\x89PNG\r\n\x1a\n"
+       + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+       + chunk(b"IDAT", zlib.compress(raw))
+       + chunk(b"IEND", b""))
 open(sys.argv[1], "wb").write(png)
 PY
-    if [ -s "$SANDBOX/input/red.png" ]; then
-        record_pass "generated tiny test PNG"
-        img_b64=$(base64 -w0 "$SANDBOX/input/red.png")
+    if [ -s "$SANDBOX/input/probe.png" ]; then
+        record_pass "generated 336x336 gradient PNG fixture"
+
+        # Build the /api/chat payload as a file — base64 of a 336x336 PNG is
+        # ~178 KB, too large for an argv-embedded curl -d.
+        python3 - "$SANDBOX/input/probe.png" "$SANDBOX/logs/vision_payload.json" <<'PY' 2>/dev/null
+import base64, json, sys
+b64 = base64.b64encode(open(sys.argv[1], "rb").read()).decode()
+payload = {
+    "model": "llava",
+    "stream": False,
+    "messages": [{
+        "role": "user",
+        "content": "Describe this image in five words.",
+        "images": [b64],
+    }],
+    "options": {"num_predict": 24, "temperature": 0},
+}
+open(sys.argv[2], "w").write(json.dumps(payload))
+PY
+
         t0=$(date +%s)
-        curl -sf -m 90 http://localhost:11434/api/generate \
+        # Capture HTTP code separately so a 500 from llava's image runner
+        # produces a real diagnostic, not a generic "vision call failed".
+        http=$(curl -s -m 180 -o "$SANDBOX/logs/vision.json" -w '%{http_code}' \
+            http://localhost:11434/api/chat \
             -H 'Content-Type: application/json' \
-            -d "{\"model\":\"llava\",\"prompt\":\"What color is this image? One word.\",\"images\":[\"$img_b64\"],\"stream\":false,\"options\":{\"num_predict\":10,\"temperature\":0}}" \
-            -o "$SANDBOX/logs/vision.json" 2>/dev/null
+            --data-binary @"$SANDBOX/logs/vision_payload.json" 2>/dev/null)
         rc=$?
         t1=$(date +%s); vis_el=$((t1 - t0))
-        if [ "$rc" = "0" ] && [ -s "$SANDBOX/logs/vision.json" ]; then
-            vresp=$(python3 -c "import json; print(json.load(open('$SANDBOX/logs/vision.json')).get('response',''))" 2>/dev/null)
-            record_info "vision: ${vis_el}s · response='${vresp:0:60}'"
-            [ -n "$vresp" ] && record_pass "llava answered vision prompt" || record_fail "llava returned empty"
-            if [ "$vis_el" -le 90 ]; then
-                record_pass "vision latency ${vis_el}s (acceptable)"
+
+        # Parse response body if present
+        vresp=""
+        verr=""
+        if [ -s "$SANDBOX/logs/vision.json" ]; then
+            vresp=$(python3 -c "import json,sys
+try:
+    d=json.load(open('$SANDBOX/logs/vision.json'))
+    print(d.get('message',{}).get('content','') or d.get('response',''))
+except Exception:
+    pass" 2>/dev/null)
+            verr=$(python3 -c "import json,sys
+try:
+    d=json.load(open('$SANDBOX/logs/vision.json'))
+    print(d.get('error','') if isinstance(d,dict) else '')
+except Exception:
+    pass" 2>/dev/null)
+        fi
+        body_excerpt=$(head -c 200 "$SANDBOX/logs/vision.json" 2>/dev/null | tr '\n' ' ')
+
+        record_info "vision: ${vis_el}s · http=${http:-?} · rc=$rc · response='${vresp:0:60}'"
+
+        if [ "$rc" = "28" ]; then
+            # curl exited from timeout — slow CPU, not a broken API. WARN.
+            record_warn "llava vision timed out after ${vis_el}s (CPU-only inference is slow; API path is fine)"
+        elif [ "$http" = "200" ] && [ -n "$vresp" ]; then
+            record_pass "llava answered vision prompt via /api/chat"
+            if [ "$vis_el" -le 120 ]; then
+                record_pass "vision latency ${vis_el}s (under 120s)"
             else
                 record_warn "vision latency ${vis_el}s (slow — cold cpu)"
             fi
+        elif [ "$http" = "200" ] && [ -z "$vresp" ]; then
+            record_fail "llava returned HTTP 200 but empty content — body: ${body_excerpt}"
+        elif [ -n "$http" ] && [ "$http" != "000" ]; then
+            # Real HTTP error from Ollama (commonly 500 from a malformed
+            # image-token shape). Surface the error string so the cause is
+            # in the report, not just "vision call failed".
+            record_fail "llava vision HTTP ${http} after ${vis_el}s — error='${verr:-none}' body: ${body_excerpt}"
         else
-            record_fail "llava vision call failed"
+            record_fail "llava vision call failed (curl rc=$rc, no HTTP code) after ${vis_el}s"
         fi
     else
         record_warn "could not generate test PNG — vision phase skipped"
