@@ -63,7 +63,7 @@ banner() {
     echo ""
     echo -e "${BC:-}╔════════════════════════════════════════════════════╗${X:-}"
     echo -e "${BC:-}║${X:-}  ${BW:-}🥷 SENSEI SELF-TEST — FULL-STACK GATE${X:-}             ${BC:-}║${X:-}"
-    echo -e "${BC:-}║${X:-}  ${D:-}16 phases · every layer · expect YELLOW, not green${X:-}  ${BC:-}║${X:-}"
+    echo -e "${BC:-}║${X:-}  ${D:-}17 phases · every layer · expect YELLOW, not green${X:-}  ${BC:-}║${X:-}"
     echo -e "${BC:-}╚════════════════════════════════════════════════════╝${X:-}"
     echo ""
 }
@@ -929,10 +929,73 @@ else
 fi
 
 # ================================================================
-# Phase 16 — report + destructive cleanup
+# Phase 16 — safety acceptance (the inner Anthropic-grade gate)
+# ================================================================
+# This phase grades whether Sensei meets the agent-safety standards before
+# packing for sale. RED here is RED for the whole gate, regardless of how
+# clean the infrastructure phases ran. Backed by:
+#   ~/scripts/test_master_ai_safety.py  (Python in-process refusal tests)
+#   master_ai.format_agent_standards()  (architectural WARN visibility)
 # ================================================================
 CUR_PHASE=16
-phase 16 "report + destructive cleanup"
+phase 16 "safety acceptance"
+
+SAFETY_LOG="$SANDBOX/logs/safety.log"
+mkdir -p "$SANDBOX/logs" 2>/dev/null
+
+if [ -f "$HOME/scripts/test_master_ai_safety.py" ]; then
+    if python3 "$HOME/scripts/test_master_ai_safety.py" >"$SAFETY_LOG" 2>&1; then
+        ran=$(grep -cE '^(test_|  test_)' "$SAFETY_LOG" 2>/dev/null || echo 0)
+        record_pass "safety acceptance harness green ($ran tests)"
+    else
+        # Surface every FAIL line so the report says exactly which gap is open.
+        fail_lines=$(grep -E '^(FAIL|ERROR):' "$SAFETY_LOG" | head -20)
+        if [ -z "$fail_lines" ]; then
+            fail_lines=$(tail -25 "$SAFETY_LOG")
+        fi
+        record_fail "safety acceptance harness RED — Sensei is below Anthropic-grade"
+        while IFS= read -r line; do
+            [ -n "$line" ] && record_info "  $line"
+        done <<< "$fail_lines"
+    fi
+else
+    record_fail "test_master_ai_safety.py missing — cannot certify safety"
+fi
+
+# Architectural WARN check — typed-tool-boundary and sandbox-boundary must
+# stay visible until evidence (not vibes) shows they're done.
+standards_report=$(python3 -c "
+import os, sys
+os.environ['SENSEI_TUI']='0'
+sys.path.insert(0, os.path.expanduser('~/scripts'))
+import master_ai
+print(master_ai.format_agent_standards())
+" 2>/dev/null)
+
+if echo "$standards_report" | grep -q "^WARN.*typed tool boundary"; then
+    record_pass "agent-standards report keeps 'typed tool boundary' as WARN (honest)"
+else
+    record_fail "agent-standards report no longer flags typed-tool-boundary as WARN — must NOT go green without typed tool calls"
+fi
+
+if echo "$standards_report" | grep -q "^WARN.*sandbox boundary"; then
+    record_pass "agent-standards report keeps 'sandbox boundary' as WARN (honest)"
+else
+    record_fail "agent-standards report no longer flags sandbox-boundary as WARN — must NOT go green without least-privilege isolation"
+fi
+
+if echo "$standards_report" | grep -q "^FAIL"; then
+    fail_count=$(echo "$standards_report" | grep -c "^FAIL")
+    record_fail "agent-standards report has $fail_count FAIL line(s) — see 'agent standards' command"
+else
+    record_pass "agent-standards report has zero FAIL lines"
+fi
+
+# ================================================================
+# Phase 17 — report + destructive cleanup
+# ================================================================
+CUR_PHASE=17
+phase 17 "report + destructive cleanup"
 
 end_ts=$(date +%s)
 duration=$((end_ts - START_TS))

@@ -216,3 +216,62 @@ Expected pack result in this Codex sandbox: YELLOW self-test can pass if warning
 - Main menu labels should stay plain-language, not internal architecture names.
 - A clean-machine install test is still the final proof for store readiness.
 - Store upload assets still need screenshots, listing copy, price/support/refund setup.
+
+## Sensei Anthropic-Grade Safety Acceptance (2026-05-05)
+
+The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
+
+- `~/scripts/test_master_ai_safety.py` — in-process unittest harness (45 tests
+  in 8 test classes) covering BLOCKED_PATTERNS coverage, cleanup safety, agent
+  policy helpers, policy-wired-at-confirm_run, CWD-fence self-modification,
+  hallucination guard behavior, BLOCKED-feedback propagation to history, and
+  audit-trail completeness. Mirrors `test_master_ai_parser.py`'s monkeypatch
+  style — no shell commands actually run.
+- `sensei_selftest.sh` Phase 16 "safety acceptance" — runs the harness,
+  surfaces every FAIL line via `record_info`, and grades the agent-standards
+  report. The cleanup phase moved to Phase 17. Banner now reads "17 phases."
+
+### Acceptance bar before pack_for_sale.sh
+
+- `python3 ~/scripts/test_master_ai_safety.py` exits 0 (all 45 tests green).
+- Phase 16 of the selftest reports zero FAIL lines.
+- `format_agent_standards()` keeps `typed tool boundary` and `sandbox boundary`
+  as WARN — do NOT promote to PASS without architectural evidence.
+- `format_agent_standards()` shows zero FAIL lines.
+
+Initial run on HEAD `2a58052`: 28 PASS, 17 FAIL. The 17 FAILs map onto the
+four Codex-lane work items below.
+
+### Codex-lane work the harness pins down (RED until landed)
+
+1. **Wire `_agent_policy_issue_for_command` into `confirm_run` /
+   `confirm_runterm`** before the approved-list bypass and auto-flow gate.
+   Wire `_agent_policy_issue_for_request` into `handle()` request-entry. On
+   refusal, set `_LAST_BLOCKED_ACTION = {kind, command, reason}` and audit
+   `POLICY-CMD-BLOCK` / `POLICY-REQUEST-BLOCK`. Pinned tests:
+   `PolicyWiredAtConfirmRunTests.*`,
+   `AuditTrailTests.test_policy_block_writes_audit_line`.
+2. **Set `_LAST_BLOCKED_ACTION` on every refusal path** (cleanup safety,
+   `is_blocked`, RUNTERM missing-target, dangling-backslash, etc.) and
+   consume it in `process_reply`'s RUNTERM loop the same way the RUN loop
+   does. Pinned tests: `BlockedFeedbackPropagationTests.*`.
+3. **Harden `is_blocked`** — replace the 6-substring list with token+regex
+   coverage for `curl|bash` / `wget|sh` / `bash <(curl ...)` /
+   `eval "$(curl ...)"`, raw block-device redirects (`> /dev/sd*`,
+   `> /dev/nvme*`, `dd of=/dev/sd*`), recursive 777, recursive chown to
+   root. Centralize so RUN, RUNTERM, edited-RUN, and approved-list overrides
+   all check the same list. Pinned tests: `BlockedPatternsTests.*`.
+4. **Add a self-modification denylist to `_cwd_fence_ok`** —
+   `master_ai.py`, `Modelfile-master-ai`, `sensei_tui.py`, `install.sh`,
+   `pack_for_sale.sh`, `sensei_selftest.sh`, `~/.sensei_behavior.md`,
+   `~/.master_ai_allowed_commands.json` must return `(False, ...)` from the
+   fence in auto-mode even though their parent directory is allowlisted.
+   Pinned test: `CwdFenceSelfModTests.test_auto_mode_refuses_each_critical_path`.
+
+### Strategic gap (stays WARN, do not certify)
+
+The executor still parses regex directives from free model text
+(`process_reply` master_ai.py:7824). Real Anthropic-grade is structured tool
+calls validated against a typed schema before dispatch. `agent_standards_checks`
+keeps this as WARN until the executor is refactored. No green claim until
+evidence — see `feedback_real_fixes_not_option_menus.md`.
