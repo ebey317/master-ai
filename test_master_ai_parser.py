@@ -7,6 +7,7 @@ open terminals, or write requested CREATE/EDIT targets.
 import os
 import sys
 import unittest
+from pathlib import Path
 
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
@@ -230,6 +231,68 @@ class DirectiveParserTests(unittest.TestCase):
         argv, label = master_ai._try_desktop_open_intent("open libre office")
         self.assertEqual(argv, ["libreoffice"])
         self.assertEqual(label, "libre office")
+
+    def test_auto_context_codex_md_alias_reads_claude_handoff(self):
+        inject_ctx, meta = master_ai.auto_inject_context("read whole file Codex.md")
+        self.assertIn("/home/elijah/scripts/CLAUDE.md", inject_ctx)
+        self.assertTrue(meta["whole_file_requested"])
+
+    def test_local_read_target_resolves_codex_possessive_md(self):
+        target = master_ai._resolve_local_text_target("codex's md")
+        self.assertEqual(str(target), "/home/elijah/scripts/CLAUDE.md")
+
+    def test_local_read_target_resolves_codex_memory_alias(self):
+        target = master_ai._resolve_local_text_target("~/scripts/codex_memory.md")
+        self.assertEqual(str(target), "/home/elijah/scripts/CLAUDE.md")
+
+    def test_matrix_credit_screen_is_tool_required(self):
+        self.assertTrue(master_ai._is_tool_required("make a matrix credit screen"))
+
+    def test_matrix_credit_screen_routes_to_local_tool_lane(self):
+        decision = master_ai.orchestrate([], "make a matrix credit screen")
+        self.assertEqual(decision["route"], "local")
+        self.assertEqual(decision["model"], master_ai.MODELS["master"])
+        self.assertIn("tool-required", decision["reason"])
+
+    def test_imaginative_terminal_build_is_tool_required(self):
+        self.assertTrue(master_ai._is_tool_required("make a neon dragon fly across the terminal"))
+
+    def test_imaginative_game_build_routes_to_local_tool_lane(self):
+        decision = master_ai.orchestrate([], "create an interactive gravity toy")
+        self.assertEqual(decision["route"], "local")
+        self.assertEqual(decision["model"], master_ai.MODELS["master"])
+        self.assertIn("tool-required", decision["reason"])
+
+    def test_plain_non_code_make_request_is_not_tool_required(self):
+        self.assertFalse(master_ai._is_tool_required("make me a list of dinner ideas"))
+
+    def test_big_markdown_without_scope_asks_before_model(self):
+        orig_auto_context = master_ai.auto_inject_context
+        orig_orchestrate = master_ai.orchestrate
+        try:
+            master_ai.auto_inject_context = lambda *args, **kwargs: (
+                "\n\n[AUTO-CONTEXT]\n--- /tmp/big.md (250 lines) -- name mentioned ---",
+                {
+                    "big_file_no_symbol_match": [Path("/tmp/big.md")],
+                    "whole_file_requested": False,
+                    "inject_chars": 72,
+                    "sliced": [],
+                },
+            )
+
+            def _unexpected_orchestrate(*args, **kwargs):
+                raise AssertionError("large unscoped file should ask before model routing")
+
+            master_ai.orchestrate = _unexpected_orchestrate
+            history = []
+            result = master_ai.handle("read big.md", history)
+        finally:
+            master_ai.auto_inject_context = orig_auto_context
+            master_ai.orchestrate = orig_orchestrate
+
+        self.assertIn("Which heading", result)
+        self.assertIn("whole file", result)
+        self.assertEqual(history[-1]["content"], result)
 
 
 if __name__ == "__main__":

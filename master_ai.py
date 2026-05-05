@@ -1028,11 +1028,45 @@ TOOL_REQUIRED_PHRASES = (
     "make a video", "create a video", "generate a video",
     "make a clip", "create a clip", "generate a clip",
     "make a movie", "create a movie", "generate a movie",
+    "make a screen", "create a screen", "generate a screen",
+    "make a credit screen", "create a credit screen",
+    "matrix credit screen", "matrix credits", "credit roll",
     "complete bash script", "bash script at", "script at /",
     "script at ~", "chmod +x", "verify it exists",
     "delete the file",
     "run this", "run the command", "execute this", "execute the",
 )
+
+_CODE_SYNTHESIS_VERBS = {
+    "make", "build", "create", "generate", "write", "code", "program",
+    "draw", "animate", "render", "simulate", "design",
+}
+_CODE_SYNTHESIS_ARTIFACT_WORDS = {
+    "animation", "effect", "screen", "screensaver", "credit", "credits",
+    "roll", "game", "toy", "demo", "dashboard", "interface", "ui",
+    "visual", "visualizer", "simulation", "simulator", "scene", "sprite",
+    "terminal", "ascii", "curses", "tui", "cli", "browser", "web", "webpage",
+    "page", "canvas", "html", "script", "tool", "app", "program", "video",
+    "clip", "movie", "intro", "outro", "logo", "title", "particles",
+}
+_NON_CODE_SYNTHESIS_HINTS = {
+    "joke", "story", "poem", "song", "recipe", "list", "plan", "summary",
+    "report", "email", "message", "caption", "name", "names",
+}
+
+def _looks_code_synthesis_request(stripped_low):
+    words = set(re.findall(r"[a-z0-9_-]+", stripped_low or ""))
+    if not (words & _CODE_SYNTHESIS_VERBS):
+        return False
+    if words & _NON_CODE_SYNTHESIS_HINTS and not (words & _CODE_SYNTHESIS_ARTIFACT_WORDS):
+        return False
+    if words & _CODE_SYNTHESIS_ARTIFACT_WORDS:
+        return True
+    return bool(re.search(
+        r"\b(make|build|create|generate|write|code|program|draw|animate|render|simulate|design)\b"
+        r".*\b(on screen|in terminal|in the terminal|as code|as a file|on my desktop)\b",
+        stripped_low or "",
+    ))
 
 PRODUCT_UPDATE_COMMANDS = {
     "update", "upgrade",
@@ -1251,7 +1285,9 @@ _GREETINGS = {"hi", "hello", "hey", "yo", "sup", "howdy", "hola",
 def _is_tool_required(stripped_low):
     if any(p in stripped_low for p in TOOL_REQUIRED_PHRASES):
         return True
-    if re.search(r'\b(create|write|make|build|generate)\b.*\b(script|file|html|app|page|demo|animation|effect|video|clip|movie)\b', stripped_low):
+    if _looks_code_synthesis_request(stripped_low):
+        return True
+    if re.search(r'\b(create|write|make|build|generate)\b.*\b(script|file|html|app|page|demo|animation|effect|screen|screensaver|credits?|video|clip|movie)\b', stripped_low):
         return True
     if re.search(r'\b(chmod|bash|python3?|node|npm|pytest|ls)\b\s+[^&;\n]*(/home/|~/|\.sh\b|\.py\b|\.html\b)', stripped_low):
         return True
@@ -1303,6 +1339,96 @@ def _build_filename_glob(target):
     if not parts:
         return None
     return "*" + "*".join(p.lower() for p in parts) + "*"
+
+
+_AUTO_CONTEXT_FILE_ALIASES = {
+    # Users ask for the "Codex md" handoff, but the repo's real handoff file
+    # is still named CLAUDE.md for cross-agent continuity.
+    "codex.md": "CLAUDE.md",
+    "codes.md": "CLAUDE.md",
+    "codex_memory.md": "CLAUDE.md",
+    "codex-memory.md": "CLAUDE.md",
+}
+
+def _find_auto_context_file(fname, search_dirs):
+    names = [fname]
+    alias = _AUTO_CONTEXT_FILE_ALIASES.get((fname or "").lower())
+    if alias and alias not in names:
+        names.append(alias)
+
+    for name in names:
+        for d in search_dirs:
+            cand = d / name
+            if cand.is_file():
+                return cand
+
+    for name in names:
+        low_name = name.lower()
+        for d in search_dirs:
+            try:
+                for cand in d.iterdir():
+                    if cand.is_file() and cand.name.lower() == low_name:
+                        return cand
+            except Exception:
+                continue
+    return None
+
+
+def _local_text_target_candidates(raw):
+    target = (raw or "").strip().strip("'\"`")
+    if not target:
+        return []
+
+    candidates = [target]
+    normalized = target.replace("’", "'")
+    normalized = re.sub(r"'s\b", "", normalized, flags=re.IGNORECASE)
+    parts = [
+        p.lower()
+        for p in re.findall(r"[A-Za-z0-9_-]+", normalized)
+        if p.lower() not in {"the", "my", "a", "an", "file", "read"}
+    ]
+    if not parts:
+        return candidates
+
+    if "codex" in parts and any(p in parts for p in {"md", "markdown", "memory"}):
+        candidates.extend(["codex.md", "codex_memory.md", "codex-memory.md"])
+    if "claude" in parts and any(p in parts for p in {"md", "markdown", "memory"}):
+        candidates.append("claude.md")
+
+    ext_words = {"md": "md", "markdown": "md", "txt": "txt", "text": "txt"}
+    if parts[-1] in ext_words and len(parts) >= 2:
+        ext = ext_words[parts[-1]]
+        stem_parts = parts[:-1]
+        candidates.append("_".join(stem_parts) + "." + ext)
+        candidates.append("-".join(stem_parts) + "." + ext)
+        if len(stem_parts) == 1:
+            candidates.append(stem_parts[0] + "." + ext)
+
+    out = []
+    seen = set()
+    for c in candidates:
+        key = c.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def _resolve_local_text_target(raw, search_dirs=None):
+    search_dirs = search_dirs or [
+        Path.home() / "scripts",
+        Path(os.getcwd()),
+        Path.home() / "Desktop",
+        Path.home(),
+    ]
+    for candidate in _local_text_target_candidates(raw):
+        expanded = Path(os.path.expanduser(candidate)).expanduser()
+        if expanded.is_file():
+            return expanded
+        found = _find_auto_context_file(expanded.name, search_dirs)
+        if found:
+            return found
+    return None
 
 
 def _normalize_file_target(target):
@@ -4141,11 +4267,7 @@ def auto_inject_context(user_text):
             path = Path(expanded)
         else:
             fname = Path(c).name
-            for d in search_dirs:
-                cand = d / fname
-                if cand.is_file():
-                    path = cand
-                    break
+            path = _find_auto_context_file(fname, search_dirs)
         if not path:
             continue
 
@@ -7396,6 +7518,10 @@ def process_reply(reply, history, streamed=False):
             or "terminal animation" in text
             or "matrix style" in text
             or "matrix-style" in text
+            or "matrix credit" in text
+            or "matrix credits" in text
+            or "credit screen" in text
+            or "credit roll" in text
         )
 
     def _html_demo_expected():
@@ -8241,13 +8367,14 @@ def handle(user_text, history, image_path=None):
     # ── Slicer guardrail: big file mentioned, no symbol matched, nothing useful
     # to feed the model. Ask deterministically; never feed a marker-only context
     # to the model (cloud would just guess faster, local would chew CPU).
-    if ctx_meta['big_file_no_symbol_match'] and not inject_ctx.strip():
+    if ctx_meta['big_file_no_symbol_match'] and not ctx_meta.get('whole_file_requested'):
         _slicer_path = Path(ctx_meta['big_file_no_symbol_match'][0]).name
         decision = {
             "route": "ask_user",
             "question": (
-                f"You mentioned {_slicer_path}. Which function, class, or constant "
-                f"should I read? Or say 'whole file' to inject all of it."
+                f"You mentioned {_slicer_path}. Which heading, function, class, "
+                f"constant, or keyword should I read? Or say 'whole file' to "
+                f"inject all of it."
             ),
             "reason": "slicer guardrail: big-file mention with no symbol named",
             "candidates": [],
@@ -8589,6 +8716,8 @@ def handle(user_text, history, image_path=None):
                 local_prefix += (
                     "Tool task. Use only real directive blocks, no markdown fences, no prose-only plan. "
                     "For files, emit CREATE with <<<CONTENT and >>>CONTENT. "
+                    "Do not call nonexistent helper scripts or template generators; synthesize the requested code directly. "
+                    "For imaginative builds, infer a reasonable software form from the request and create an original working implementation. "
                     "For a single-file HTML demo, inline CSS in <style> and JavaScript in <script>. "
                     "For video/clip/movie requests with no source footage, generate an original local MP4 "
                     "using bash+ffmpeg or Python frames+ffmpeg; do not ask for a source URL unless the "
@@ -10207,7 +10336,7 @@ def main():
             threading.Thread(target=speak, args=(f"Here are the search results for {q}",), daemon=True).start()
             continue
 
-        # ── Read URL — pull a page's full markdown via Firecrawl ────
+        # ── Read URL/local text — Firecrawl only for real URLs ──────
         # Different from `search`: search returns snippets from many pages,
         # `read:` fetches ONE page's full clean content. Prints the markdown
         # inline and saves to history so follow-up questions ("summarize
@@ -10216,18 +10345,27 @@ def main():
             raw = cmd[5:].strip() if lo.startswith("read ") else cmd[5:].strip()
             # Allow `read: http...` too
             if raw.startswith(':'): raw = raw[1:].strip()
-            url = raw
-            if not url:
-                print(f"  {Y}usage: read: <url>{X}")
+            target = raw
+            if not target:
+                print(f"  {Y}usage: read <local text file>  OR  read: <url>{X}")
                 continue
-            print(f"\n  {C}🔗 Fetching page via Firecrawl...{X}")
-            content = firecrawl_fetch(url)
-            if content:
-                print(f"\n{content}\n")
-                history.append({"role": "user", "content": f"read: {url}"})
-                history.append({"role": "assistant", "content": content})
+            if target.startswith(("http://", "https://")):
+                print(f"\n  {C}🔗 Fetching page via Firecrawl...{X}")
+                content = firecrawl_fetch(target)
+                if content:
+                    print(f"\n{content}\n")
+                    history.append({"role": "user", "content": f"read: {target}"})
+                    history.append({"role": "assistant", "content": content})
+                else:
+                    print(f"  {R}Firecrawl returned nothing.{X}")
             else:
-                print(f"  {R}Firecrawl returned nothing.{X}")
+                local_target = _resolve_local_text_target(target)
+                if local_target:
+                    print(f"\n  {C}📄 Reading local file:{X} {Y}{local_target}{X}")
+                    _attach_text_file(str(local_target), history)
+                else:
+                    print(f"  {R}local text file not found: {target}{X}")
+                    print(f"  {D}Use an exact path, or use `read: https://...` for a webpage.{X}")
             continue
 
         # ── Image ─────────────────────────────────────────────
