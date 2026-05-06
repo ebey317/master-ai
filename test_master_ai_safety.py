@@ -7,6 +7,7 @@ actually run; everything is in-process. Each test case anchors one of the
 five gaps in the 2026-05-05 Anthropic-grade audit. RED until each gap closes.
 """
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -401,6 +402,105 @@ class StandardsReportSurfacesGapsTests(_Base):
         self.assertTrue(
             warn_block,
             "sandbox boundary must remain a WARN until least-privilege isolation lands",
+        )
+
+    def test_read_path_fence_stays_warn(self):
+        report = master_ai.format_agent_standards()
+        warn_block = [
+            line
+            for line in report.splitlines()
+            if line.startswith("WARN") and "read path fence" in line
+        ]
+        self.assertTrue(
+            warn_block,
+            "read path fence must remain a WARN until READ has an allowlist + secret-path/symlink denial",
+        )
+
+    def test_output_caps_stays_warn(self):
+        report = master_ai.format_agent_standards()
+        warn_block = [
+            line
+            for line in report.splitlines()
+            if line.startswith("WARN") and "output caps" in line
+        ]
+        self.assertTrue(
+            warn_block,
+            "output caps must remain a WARN until READ/tool output is byte-capped",
+        )
+
+    def test_approval_expiry_stays_warn(self):
+        report = master_ai.format_agent_standards()
+        warn_block = [
+            line
+            for line in report.splitlines()
+            if line.startswith("WARN") and "approval expiry" in line
+        ]
+        self.assertTrue(
+            warn_block,
+            "approval expiry must remain a WARN until approved-list entries have TTL/cwd scope",
+        )
+
+
+class WeightedScoreTests(_Base):
+    """agent_standards_score() is the named score API (master_ai.py:7227).
+    Weights: PASS=1.0, WARN=0.5, FAIL=0.0; rounded int 0-100. These tests
+    pin the contract against silent re-weighting and prevent the score from
+    being hand-rolled higher by deleting WARN entries instead of shipping
+    the underlying gates."""
+
+    def test_score_returns_int(self):
+        score = master_ai.agent_standards_score()
+        self.assertIsInstance(score, int)
+
+    def test_score_zero_when_all_fail(self):
+        synthetic = [("FAIL", f"check_{i}", "x") for i in range(4)]
+        self.assertEqual(master_ai.agent_standards_score(synthetic), 0)
+
+    def test_score_one_hundred_when_all_pass(self):
+        synthetic = [("PASS", f"check_{i}", "x") for i in range(4)]
+        self.assertEqual(master_ai.agent_standards_score(synthetic), 100)
+
+    def test_score_weighted_warn_is_half_pass(self):
+        synthetic = [("PASS", "p", "x"), ("WARN", "w", "x")]
+        self.assertEqual(master_ai.agent_standards_score(synthetic), 75)
+
+    def test_score_in_audit_target_band(self):
+        score = master_ai.agent_standards_score()
+        self.assertGreaterEqual(
+            score,
+            80,
+            "Sensei must clear the 80% bar Elijah set on 2026-05-05.",
+        )
+        self.assertLessEqual(
+            score,
+            90,
+            "Score above 90 means a remaining-work WARN was promoted without "
+            "evidence; check that read-path-fence/output-caps/approval-expiry "
+            "actually shipped before claiming Anthropic-grade.",
+        )
+
+    def test_score_not_rendered_as_fail_line(self):
+        report = master_ai.format_agent_standards()
+        for line in report.splitlines():
+            if line.startswith("FAIL"):
+                self.assertNotIn("score", line.lower())
+                self.assertNotIn("/100", line)
+
+
+class ScoreLineShapeTests(_Base):
+    """Phase 16 of sensei_selftest.sh greps `^FAIL` to grade the report,
+    and the score line's literal prefix is what tells humans-with-voice-
+    to-text that the number isn't a failure flag. Pin both."""
+
+    SCORE_LINE_RE = re.compile(r"^SCORE  \d+/100$")
+
+    def test_score_line_format(self):
+        report = master_ai.format_agent_standards()
+        matches = [line for line in report.splitlines() if self.SCORE_LINE_RE.match(line)]
+        self.assertEqual(
+            len(matches),
+            1,
+            f"expected exactly one 'SCORE  N/100' line (two spaces, no colon); got: {matches}",
         )
 
 
