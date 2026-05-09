@@ -7182,7 +7182,7 @@ def confirm_edit(filepath, find_text, replace_text):
         return False
 
 # ── REPLY PROCESSOR ──────────────────────────────────────────
-def process_reply(reply, history, streamed=False):
+def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
     raw_lines = reply.splitlines()
@@ -7685,6 +7685,27 @@ def process_reply(reply, history, streamed=False):
         runterm_cmds.extend(visual_parts)
     run_cmds = normalized_run_cmds
 
+    def _format_tool_result(kind, cmd, result):
+        ok = _action_ok(result)
+        exit_code = getattr(result, "exit_code", None)
+        if exit_code is None:
+            exit_code = 0 if ok else "unknown"
+        output = str(result or "").strip()
+        if not output:
+            output = "[no output]"
+        max_chars = 12000
+        if len(output) > max_chars:
+            omitted = len(output) - max_chars
+            output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
+        return (
+            f"[{kind} RESULT]\n"
+            f"Command: {cmd}\n"
+            f"Exit: {exit_code}\n"
+            f"Output:\n{output}"
+        )
+
+    tool_result_feedback = []
+
     for cmd in run_cmds:
         result = confirm_run(cmd)
         chain_ok = _action_ok(result)
@@ -7719,11 +7740,27 @@ def process_reply(reply, history, streamed=False):
             print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
             return reply
+        if continue_after_tools:
+            tool_result_feedback.append(_format_tool_result("RUN", cmd, result))
 
     # RUNTERM: runs after RUN: — if the model pairs "build output" (RUN:) with
     # "now open the demo" (RUNTERM:), the demo spawns after the build finishes.
     for cmd in runterm_cmds:
-        confirm_runterm(cmd)
+        result = confirm_runterm(cmd)
+        if continue_after_tools and _action_ok(result):
+            tool_result_feedback.append(_format_tool_result("RUNTERM", cmd, result))
+
+    if tool_result_feedback:
+        history.append({
+            "role": "user",
+            "content": (
+                "\n\n".join(tool_result_feedback)
+                + "\n\nContinue from the tool output. If the task is complete, "
+                  "give the final answer. If more inspection is needed, emit the next directive."
+            ),
+        })
+        log(f"CHAIN_CONTINUE_AFTER_TOOL_RESULT: {len(tool_result_feedback)} tool result(s)")
+        return None
 
     if globals().get("MODE", "plan") == "auto":
         opened = any("xdg-open" in c or "open " in c.lower() for c in (run_cmds + runterm_cmds))
@@ -8865,9 +8902,8 @@ def handle(user_text, history, image_path=None):
         # process/service/installed) and the model answered with prose
         # instead of emitting RUN:/READ:. Re-prompt once with strict framing.
         # The deterministic short-circuit caught the highest-value patterns
-        # earlier — this safety net catches the rest. If the retry still
-        # comes back without a directive, the existing repair_turn path at
-        # line 7070+ already protects against infinite loops (single retry).
+        # earlier — this safety net catches the rest. The bounded continuation
+        # loop below prevents infinite repair turns.
         print(_pill("REPAIR", f"{D}system-state question answered as prose — enforcing directive{X}"))
         log(f"RETRY_ON_PROSE: enforcing directive for system-state question: {user_text[:120]!r}")
         _router_metric("retry_on_prose", prompt=user_text[:200])
@@ -8885,25 +8921,39 @@ def handle(user_text, history, image_path=None):
         })
         result = None
     else:
-        result = process_reply(reply, history, streamed=streamed)
+        result = process_reply(reply, history, streamed=streamed, continue_after_tools=True)
 
-    # READ: was triggered — re-ask with injected file content
-    if result is None:
+    def _continue_model_turn(repair_turn=False):
+        if route in ("cloud", "web"):
+            _spin2 = local_thinking_start()
+            provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
+            try:
+                return ask_cloud(history, provider=provider), False
+            finally:
+                local_thinking_stop(_spin2)
+        if repair_turn:
+            return ask_local_stream(history, model=MODELS["master"]), True
+        return ask_local_stream(history, model=model), True
+
+    # READ:, directive repair, blocked-tool feedback, or tool output was injected
+    # into history — keep asking the same lane until it synthesizes an answer or
+    # hits the bounded continuation cap.
+    continuation_turns = 0
+    max_continuation_turns = 5
+    while result is None and continuation_turns < max_continuation_turns:
         repair_turn = bool(history and history[-1].get("role") == "user"
                            and str(history[-1].get("content", "")).startswith("[Directive repair]"))
-        if repair_turn:
-            reply2 = ask_local_stream(history, model=MODELS["master"])
-            streamed = True
-        elif route in ("cloud", "web"):
-            _spin2 = local_thinking_start()
-            reply2 = ask_cloud(history)
-            local_thinking_stop(_spin2)
-        else:
-            reply2 = ask_local_stream(history, model=model)
-            streamed = True
-        if reply2:
-            process_reply(reply2, history, streamed=streamed)
-            reply = reply2
+        reply2, streamed2 = _continue_model_turn(repair_turn=repair_turn)
+        if not reply2:
+            break
+        continuation_turns += 1
+        streamed = streamed2
+        reply = reply2
+        result = process_reply(reply2, history, streamed=streamed, continue_after_tools=True)
+
+    if result is None:
+        print(_pill("WARN", f"{D}continuation limit reached or model unavailable after tool output{X}"))
+        log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} route={route} model={model}")
 
     history.append({"role": "assistant", "content": reply})
 

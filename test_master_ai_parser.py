@@ -173,6 +173,30 @@ class DirectiveParserTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [("run-failed", "bash -c 'exit 9'")])
 
+    def test_successful_run_can_feed_result_back_for_continuation(self):
+        history = [{"role": "user", "content": "explain CLOUD_SYSTEM"}]
+        def _run(cmd):
+            self.calls.append(("run", cmd))
+            return master_ai.RunResult(
+                "9581:CLOUD_SYSTEM = (",
+                ok=True,
+                exit_code=0,
+                command=cmd,
+            )
+        master_ai.confirm_run = _run
+
+        result = master_ai.process_reply(
+            'RUN: grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py',
+            history,
+            streamed=False,
+            continue_after_tools=True,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(self.calls, [("run", 'grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py')])
+        self.assertIn("[RUN RESULT]", history[-1]["content"])
+        self.assertIn("9581:CLOUD_SYSTEM", history[-1]["content"])
+
     def test_pipefail_marks_pipeline_failure(self):
         result = master_ai.run_command("printf 'yes\\n' | grep no")
         self.assertFalse(result.ok)
@@ -352,6 +376,91 @@ class DirectiveParserTests(unittest.TestCase):
 
         self.assertEqual(result, "ok via Fireworks.")
         self.assertEqual(captured, ["fireworks"])
+
+    def test_cloud_lane_continues_run_read_then_synthesizes(self):
+        orig_orchestrate = master_ai.orchestrate
+        orig_detect_route = master_ai.detect_route
+        orig_ask_cloud = master_ai.ask_cloud
+        orig_thinking_start = master_ai.local_thinking_start
+        orig_thinking_stop = master_ai.local_thinking_stop
+        orig_git_context = master_ai.git_context
+        orig_load_memory = master_ai.load_memory
+        orig_load_behavior = master_ai.load_behavior
+        orig_auto_context = master_ai.auto_inject_context
+        probe = Path("/tmp/sensei-cloud-continuation-test.txt")
+        probe.write_text("CLOUD_SYSTEM injects directive grammar for cloud lanes.\n")
+        captured = []
+        replies = [
+            'RUN: grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py',
+            f"READ: {probe}",
+            "CLOUD_SYSTEM is injected into cloud-lane history before cloud calls.",
+        ]
+        try:
+            master_ai.orchestrate = lambda history, user_text, image_path=None: {
+                "route": "cloud_fast",
+                "model": "groq",
+                "reason": "test cloud continuation",
+            }
+            master_ai.detect_route = lambda text, has_image=False: (
+                "local",
+                master_ai.MODELS["master"],
+                "unused",
+            )
+            master_ai.confirm_run = lambda cmd: master_ai.RunResult(
+                "9581:CLOUD_SYSTEM = (",
+                ok=True,
+                exit_code=0,
+                command=cmd,
+            )
+            def _fake_cloud(messages, provider=None):
+                captured.append((provider, [dict(m) for m in messages]))
+                return replies.pop(0)
+            master_ai.ask_cloud = _fake_cloud
+            master_ai.local_thinking_start = lambda: None
+            master_ai.local_thinking_stop = lambda handle: None
+            master_ai.git_context = lambda: ""
+            master_ai.load_memory = lambda: ""
+            master_ai.load_behavior = lambda: ""
+            master_ai.auto_inject_context = lambda *args, **kwargs: (
+                "",
+                {
+                    "big_file_no_symbol_match": [],
+                    "whole_file_requested": False,
+                    "inject_chars": 0,
+                    "sliced": [],
+                },
+            )
+
+            history = []
+            result = master_ai.handle(
+                "route/context probe only: explain CLOUD_SYSTEM in master_ai.py",
+                history,
+            )
+        finally:
+            master_ai.orchestrate = orig_orchestrate
+            master_ai.detect_route = orig_detect_route
+            master_ai.ask_cloud = orig_ask_cloud
+            master_ai.local_thinking_start = orig_thinking_start
+            master_ai.local_thinking_stop = orig_thinking_stop
+            master_ai.git_context = orig_git_context
+            master_ai.load_memory = orig_load_memory
+            master_ai.load_behavior = orig_load_behavior
+            master_ai.auto_inject_context = orig_auto_context
+            try:
+                probe.unlink()
+            except FileNotFoundError:
+                pass
+
+        self.assertEqual(
+            result,
+            "CLOUD_SYSTEM is injected into cloud-lane history before cloud calls.",
+        )
+        self.assertEqual(len(captured), 3)
+        self.assertEqual([provider for provider, _ in captured], ["groq", "groq", "groq"])
+        self.assertEqual(captured[0][1][0]["role"], "system")
+        self.assertIn("DIRECTIVES", captured[0][1][0]["content"])
+        self.assertIn("[RUN RESULT]", captured[1][1][-1]["content"])
+        self.assertIn("[File contents]", captured[2][1][-1]["content"])
 
     def _mock_handle_deps(self):
         # Shared mock setup for cloud_deep routing tests. Returns a teardown
