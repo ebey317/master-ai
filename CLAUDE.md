@@ -1,8 +1,45 @@
 # Master AI Runtime Notes
 
-Last updated: 2026-04-29
+Last updated: 2026-05-03
 
 This repo is Elijah's local-first AI agent stack. It runs standalone on this machine and does not require Claude/Codex relay wiring for normal operation.
+
+## 2026-05-03 — Six-commit routing/policy hardening pass
+
+Five Claude commits + one Codex commit, all surgical, master_ai.py-only, zero overlap. Surgical-extract dance preserved the 20-file uncommitted rework pile throughout. Final stack on top of `9aa435c`:
+
+| Commit | Author | Summary |
+|--------|--------|---------|
+| `82d11d8` | Claude | Fix text→llava misroute (substring `VISION_WORDS` bug — `"see"`/`"show"`/`"look"`/`"read"`/`"describe"` triggered vision route on any text) + add `TOOL INSTALL POLICY` block to `CLOUD_SYSTEM`. New helper `_is_explicit_vision_request()` requires image-extension path or verb+vision-noun phrase. |
+| `45f6072` | Claude | Feed safeguard-blocked directives back to LLM history via synthetic `[TOOL BLOCKED]` user message. New global `_LAST_BLOCKED_ACTION` set in `confirm_run()`'s missing-command Auto-block, consumed in `process_reply()`'s chain-abort to append the message + return None. Without this, cloud lanes hallucinate success on the next turn. |
+| `5f75cb3` | Claude | Add `RESULT HONESTY` rule to `CLOUD_SYSTEM` and `LOCAL_DIRECTIVE_HINT`: never state/paraphrase/imply a command's result before the dispatcher returns it. Reason about what you're checking, not what the output will be. Models were emitting fake `Result: /usr/sbin/traceroute` lines before `which traceroute` ran. |
+| `94cd4f9` | Claude | Symbol-aware `auto_inject_context()` slicer + `handle()` pre-flight ASK guardrail. New helpers `_extract_target_symbols`, `_slice_around_symbol` (definition-preference: prefers `def X`/`class X`/`X = ` lines over docstring matches), `_is_whole_file_request`. Returns `(text, meta)` — no globals. handle() pre-flight asks deterministically when big file mentioned with no symbol match; whole-file escape on local route biases to cloud_fast if available. |
+| `bca5121` | Codex  | Add deterministic Sensei weather route (wttr.in short-circuit). Helpers `_looks_weather_request`, `_weather_location_from_text`, `_weather_query_suffix_from_text`. Fires on `"what's the weather"` and combined `"clear cache + weather"` requests. |
+| `88614d0` | Claude | Skip `_hallucination_warn` entirely when cmd contains `$(`, backticks, `&&`, `||`, `;`, or `|`. Codex's weather directive `loc=$(curl -fsS ...)` was being false-blocked because the env-var-skip loop landed on `-fsS` (curl flag) thinking that's the command. Bash will surface real missing binaries at runtime. Simple `ipconfig` hallucinations still BLOCKED. |
+
+### Cross-agent interaction notes worth flagging
+
+- **Codex's bca5121 was DOA on first deploy.** Its emitted directive tripped a Claude-domain bug (`_hallucination_warn`). Required a follow-on Claude commit (`88614d0`) to unblock. Pattern likely to recur: when one agent ships a feature that emits compound shell, the other agent's safety guards may need adjustment.
+- **Deterministic short-circuit routes don't use the BLOCKED-feedback retry chain (45f6072).** When a route bypasses the LLM (weather, system_query, etc.), there's no model turn to re-prompt — the directive fires and dies if blocked. Deterministic-route directives must be self-clean; can't rely on the model to recover. This is why 88614d0 was needed instead of "just let the retry handle it."
+- **The 20-file uncommitted rework pile is real and persistent.** Both agents have been committing FOCUSED changes around it via the surgical-extract dance (cp /tmp → checkout HEAD → re-apply only the focused edit → commit → restore /tmp). Wholesale `git add master_ai.py` from either agent would sweep all the rework into a misleading commit.
+
+### Working tree state at end of pass
+
+- 20 uncommitted files preserved (CLAUDE.md, Modelfile-master-ai, PROJECTS.md, master_ai.py rework lines, sensei_tui.py, install.sh, etc.)
+- HEAD = `88614d0`; each commit listed above is independently revertable.
+- Parser test (`test_master_ai_parser.py`) passes on full working tree but fails on HEAD-only state — known artifact of test-side updates living in the rework. Run on full working tree to validate any change.
+
+### Memory files updated/added (Claude side, propagated to Sensei via `~/scripts/sync_hard_limits.py`)
+
+- `feedback_cloud_lane_tool_feedback.md` (NEW) — cloud lanes hallucinate success when safeguards block silently
+- `feedback_no_edit_probe_phrases.md` (NEW) — test routing fixes with `route/context probe only:` prefix to avoid edit risk
+- `feedback_dual_agent_surgical_extract.md` (NEW) — surgical-extract dance for shared-repo commits, both Claude and Codex
+- `project_pending_routing_bug.md` (UPDATED) — added third routing-bug resolution (vision misroute)
+
+### Pending validation for next session
+
+- Slicer (94cd4f9) needs live re-test with three no-edit probes: `route/context probe only: explain CLOUD_SYSTEM in master_ai.py`, `route/context probe only: describe master_ai.py`, `route/context probe only: read whole file of howwework.txt`.
+- Weather route (88614d0 should unblock it) needs end-to-end re-test: `what's the weather` should now return forecast/time/date, not BLOCKED.
 
 ## Screen Auto-Adjust + Standalone Mode (2026-04-29)
 
@@ -133,22 +170,6 @@ Use this wording when describing it:
   - Installer adds `~/.local/bin` to `.bashrc`, `.profile`, and `.zshrc` when missing.
   - Installer exports the updated PATH during the current install session too.
 
-## Current In-Progress Changes
-
-Active side project: upstream Loki contribution in `~/master_ai_loki_fork/`.
-
-- Goal is not to fork Loki as a Master AI product. Improve Loki and contribute upstream to `gitlab.com/maik3531/LibreOffice_KI-Assistent`.
-- Do not move this work into `~/scripts/master_ai.py`; Master AI stays untouched for this lane.
-- Existing Loki chat dialog is the surface to polish. It is a hand-built non-modal UNO dialog in `main.py`, launched by the `Chat` command / AI Chat menu item.
-- Menu mapping in `Addons.xcu`: `M1` Extend selection, `M2` Edit/create text, `M3` Insert AI image, `M4` AI Chat, `M5` Settings.
-- Current local patch in `~/master_ai_loki_fork/main.py` adds chat tabs inside the existing chat dialog and a `Make Doc` button.
-- `Make Doc` uses Loki's configured backend through `call_chat_api()` and creates a Writer `.odt` document from the active chat. It extracts URLs and inserts QR images when the optional Python `qrcode` package is available.
-- Verification so far: `python3 -m py_compile ~/master_ai_loki_fork/main.py` passes.
-- Not yet verified: actual LibreOffice UNO dialog behavior and ODT save flow inside Writer.
-
-Important correction: Alt+C appears in Loki accelerator config/runtime installer, but do not assume it works or describe it as the primary user path. Anchor the feature on the existing AI Chat command/menu unless shortcut repair is explicitly requested.
-
-Parked idea: a separate Master-AI-specific Writer extension is not the immediate move.
 
 ## Current Sync Snapshot
 
@@ -217,6 +238,32 @@ Expected pack result in this Codex sandbox: YELLOW self-test can pass if warning
 - A clean-machine install test is still the final proof for store readiness.
 - Store upload assets still need screenshots, listing copy, price/support/refund setup.
 
+## Claude Handoff: Sensei Quality Bar
+
+Elijah is frustrated that Sensei feels like a toy. Treat that as valid product feedback, not venting.
+
+- Sensei does not currently meet Anthropic-grade agent standards.
+- Do not reintroduce Matrix-rain as a hardcoded shortcut, command shim, or hidden path workaround.
+- Terminal visuals should go through the normal local tool lane: create real shell, syntax-check it, then run with `RUNTERM`.
+- Prefer reusable capability design over one-off demo magic.
+- Before calling a feature "done", verify the actual execution path, not just the parser route.
+- Raise the bar toward typed tools, sandboxing, policy checks, auditability, and end-to-end tests.
+
+### Split Ownership
+
+Codex lane:
+
+- Keep removing one-off gimmick routes.
+- Add local standards checks that make gaps visible in the terminal.
+- Keep parser/runtime tests green while changing tool routing.
+
+Claude lane:
+
+- Audit Sensei against Anthropic-style agent expectations: policy gating, least privilege, sandboxing, typed tool calls, audit logs, prompt-injection handling, and end-to-end verification.
+- Turn the audit into a short prioritized remediation plan, not a broad essay.
+- Challenge any feature that depends on hidden PATH shims, pre-baked demo scripts, unverified command success, or parser luck.
+- Do not declare "Anthropic-grade" until the system has evidence, not vibes.
+
 ## Sensei Anthropic-Grade Safety Acceptance (2026-05-05)
 
 The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
@@ -275,3 +322,24 @@ The executor still parses regex directives from free model text
 calls validated against a typed schema before dispatch. `agent_standards_checks`
 keeps this as WARN until the executor is refactored. No green claim until
 evidence — see `feedback_real_fixes_not_option_menus.md`.
+
+### Codex pickup note — 2026-05-05
+
+Current state after Codex wiring pass:
+
+- `agent_standards_score()` is the named score API.
+- `format_agent_standards()` reports `SCORE  87/100` and `PASS=14 WARN=5 FAIL=0`.
+- Keep these remaining items as literal `WARN` line prefixes until implemented:
+  `typed tool boundary`, `sandbox boundary`, `read path fence`, `output caps`,
+  `approval expiry`.
+- `python3 -m unittest ~/scripts/test_master_ai_parser.py` passes: 67 tests.
+- `python3 ~/scripts/test_master_ai_safety.py` initially failed only because
+  the auto self-mod denylist protected current `~/.master_ai_approved` but not
+  the legacy pinned `~/.master_ai_allowed_commands.json`; Codex added the legacy
+  path to `_SELF_MOD_DENYLIST`; rerun now passes all 45 tests.
+- `bash ~/scripts/sensei_selftest.sh` rerun passes: 110 PASS, 0 WARN, 0 FAIL.
+  The prior llava/Ollama HTTP 500 was transient; rerun answered vision in 67s
+  under the 120s cap.
+
+Do not call this 100/100 or Anthropic-certified. The honest local readiness
+number is 87/100 until the five WARN items above land.

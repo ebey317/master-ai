@@ -10,7 +10,7 @@ TASK_FILE="$HOME/.master_ai_active_task"
 mkdir -p "$DEST"
 
 {
-echo "=== MASTER AI CONTEXT — $(date '+%Y-%m-%d %H:%M') ==="
+echo "=== MASTER AI CONTEXT — $(date '+%Y-%m-%d %I:%M %p') ==="
 echo ""
 echo "[WHO]"
 echo "Elijah | no mouse/no keyboard | voice input | light terminal (never use grey text)"
@@ -32,7 +32,7 @@ find "$HOME/scripts" -maxdepth 1 -name "*.sh" -o -name "*.py" -o -name "*.html" 
   | xargs ls -t 2>/dev/null \
   | head -8 \
   | while read -r f; do
-      mod=$(stat -c '%y' "$f" 2>/dev/null | cut -d'.' -f1)
+      mod=$(date -r "$f" '+%Y-%m-%d %I:%M %p' 2>/dev/null)
       echo "  $mod  ${f/#$HOME/~}"
     done
 echo ""
@@ -48,6 +48,13 @@ if [ -f "$HOME/.master_ai_memory" ] && [ -s "$HOME/.master_ai_memory" ]; then
     head -10 "$HOME/.master_ai_memory"
 else
     echo "  (empty)"
+fi
+echo ""
+echo "[TOPIC MARKERS]"
+if [ -f "$HOME/.master_ai_memory" ] && grep -q -i '^--- *new topic *---' "$HOME/.master_ai_memory" 2>/dev/null; then
+    grep -i '^--- *new topic *---' "$HOME/.master_ai_memory" | tail -5
+else
+    echo "  (none)"
 fi
 } > "$SNAP"
 

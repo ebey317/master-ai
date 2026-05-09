@@ -39,7 +39,9 @@ _(none — queue is empty as of 2026-04-19 evening)_
 ## Historical entries (resolved)
 
 - **2026-04-19** — `sudo bash ~/scripts/apply_ollama_cap.sh` — added
-  `OLLAMA_MAX_LOADED_MODELS=1` to the systemd drop-in. Applied same day.
+  `OLLAMA_MAX_LOADED_MODELS=2` to the systemd drop-in (the box later
+  moved from the original 1-model cap to the current 2-model residency).
+  Applied same day.
 - **2026-04-19** — `sudo bash ~/scripts/apply_user_linger.sh` — already on
   from an earlier session. Idempotent, verified.
 - **2026-04-19** — `sudo bash ~/scripts/apply_ufw_ports.sh` — ufw inactive

@@ -1,92 +1,90 @@
-#!/usr/bin/env bash
-# Matrix rain spelling MASTER AI. Ctrl-C to exit.
-exec python3 - <<'PYEOF'
-import os, sys, random, time, signal, shutil
+#!/bin/bash
 
-if not sys.stdout.isatty():
-    sys.stderr.write("matrix_rain.sh needs a real terminal.\n"
-                     "Open a shell window and run: ~/scripts/matrix_rain.sh\n")
-    sys.exit(2)
+# Matrix Rain Animation
+# Features: proper cleanup, hidden cursor, color variation, timed execution
 
-GREEN  = '\033[32m'
-BGREEN = '\033[1;32m'
-WHITE  = '\033[1;97m'
-RESET  = '\033[0m'
-HIDE   = '\033[?25l'
-SHOW   = '\033[?25h'
-CLEAR  = '\033[2J\033[H'
-BG_ON  = '\033[40m'
-BG_OFF = '\033[49m'
+# Terminal dimensions
+ROWS=$(tput lines)
+COLS=$(tput cols)
 
-LETTERS = {
-    'M': ["##     ##","###   ###","#### ####","## ### ##","##     ##","##     ##","##     ##"],
-    'A': ["   ###   ","  ## ##  "," ##   ## ","##     ##","#########","##     ##","##     ##"],
-    'S': [" ######  ","##    ## ","##       "," ######  ","      ## ","##    ## "," ######  "],
-    'T': ["#########","    #    ","    #    ","    #    ","    #    ","    #    ","    #    "],
-    'E': ["#########","##       ","##       ","#######  ","##       ","##       ","#########"],
-    'R': ["######## ","##     ##","##     ##","######## ","##   ##  ","##    ## ","##     ##"],
-    'I': ["####"," ## "," ## "," ## "," ## "," ## ","####"],
-    ' ': ["   ","   ","   ","   ","   ","   ","   "],
+# Color codes
+GREEN='\033[0;32m'
+BRIGHT_GREEN='\033[1;32m'
+DARK_GREEN='\033[0;90m'
+RESET='\033[0m'
+
+# Hide cursor
+echo -ne "\033[?25l"
+
+# Cleanup function to restore cursor and clear screen
+cleanup() {
+    echo -ne "\033[?25h"  # Show cursor
+    clear
+    exit 0
 }
-WORD = "MASTER AI"
-BANNER = [" ".join(LETTERS[c][r] for c in WORD) for r in range(7)]
-BH = len(BANNER)
-BW = len(BANNER[0])
 
-def cleanup(*_):
-    sys.stdout.write(SHOW + RESET + BG_OFF + CLEAR)
-    sys.stdout.flush()
-    sys.exit(0)
+# Set trap for cleanup on exit
+trap cleanup EXIT INT TERM
 
-signal.signal(signal.SIGINT,  cleanup)
-signal.signal(signal.SIGTERM, cleanup)
+# Matrix characters (Katakana, numbers, symbols)
+CHARS="ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-cols, rows = shutil.get_terminal_size((80, 24))
-b_top  = max(0, (rows - BH) // 2)
-b_left = max(0, (cols - BW) // 2)
+# Initialize rain columns
+declare -A rain
+for ((i=1; i<=COLS; i++)); do
+    rain[$i]=0
+done
 
-banner_mask = [[False]*cols for _ in range(rows)]
-for i, line in enumerate(BANNER):
-    rr = b_top + i
-    if rr >= rows: break
-    for j, ch in enumerate(line):
-        cc = b_left + j
-        if cc >= cols: break
-        if ch != ' ':
-            banner_mask[rr][cc] = True
+# Main animation loop
+start_time=$SECONDS
+end_time=$((start_time + 15))  # Run for 15 seconds
 
-heads  = [random.randint(-rows, 0) for _ in range(cols)]
-speeds = [random.choice([1, 1, 1, 2]) for _ in range(cols)]
-chars  = "abcdefghijklmnopqrstuvwxyz0123456789@#$%&*+=<>?/\\|"
-
-sys.stdout.write(BG_ON + HIDE + CLEAR)
-
-def draw_banner():
-    for i, line in enumerate(BANNER):
-        sys.stdout.write(f'\033[{b_top+i+1};{b_left+1}H{WHITE}{line}{RESET}{BG_ON}')
-
-try:
-    while True:
-        out = []
-        for c in range(cols):
-            head = heads[c]
-            tail = head - 12
-            if 0 <= tail < rows and not banner_mask[tail][c]:
-                out.append(f'\033[{tail+1};{c+1}H ')
-            body = head - 3
-            if 0 <= body < rows and not banner_mask[body][c]:
-                out.append(f'\033[{body+1};{c+1}H{GREEN}{random.choice(chars)}')
-            if 0 <= head < rows and not banner_mask[head][c]:
-                out.append(f'\033[{head+1};{c+1}H{BGREEN}{random.choice(chars)}')
-            heads[c] = head + speeds[c]
-            if heads[c] - 14 > rows:
-                heads[c] = random.randint(-8, 0)
-        sys.stdout.write(''.join(out))
-        draw_banner()
-        sys.stdout.flush()
-        time.sleep(0.06)
-except KeyboardInterrupt:
-    cleanup()
-finally:
-    cleanup()
-PYEOF
+while (( SECONDS < end_time )); do
+    # Clear screen
+    echo -ne "\033[H"
+    
+    # Draw rain columns
+    for ((col=1; col<=COLS; col++)); do
+        # Randomly start new rain columns
+        if (( rain[$col] == 0 && RANDOM % 100 < 3 )); then
+            rain[$col]=1
+        fi
+        
+        # Draw active rain columns
+        if (( rain[$col] > 0 )); then
+            # Head of the rain (bright)
+            if (( rain[$col] <= ROWS )); then
+                char=${CHARS:$((RANDOM % ${#CHARS})):1}
+                echo -ne "\033[${rain[$col]};${col}H${BRIGHT_GREEN}${char}${RESET}"
+            fi
+            
+            # Trail of the rain (varying intensity)
+            for ((i=1; i<5; i++)); do
+                if (( rain[$col] - i > 0 && rain[$col] - i <= ROWS )); then
+                    char=${CHARS:$((RANDOM % ${#CHARS})):1}
+                    if (( i == 1 )); then
+                        echo -ne "\033[$((rain[$col] - i));${col}H${GREEN}${char}${RESET}"
+                    else
+                        echo -ne "\033[$((rain[$col] - i));${col}H${DARK_GREEN}${char}${RESET}"
+                    fi
+                fi
+            done
+            
+            # Clear old tail
+            if (( rain[$col] - 5 > 0 && rain[$col] - 5 <= ROWS )); then
+                echo -ne "\033[$((rain[$col] - 5));${col}H "
+            fi
+            
+            # Move rain down
+            ((rain[$col]++))
+            
+            # Reset if rain goes off screen
+            if (( rain[$col] - 5 > ROWS )); then
+                rain[$col]=0
+            fi
+        fi
+    done
+    
+    # Control animation speed
+    sleep 0.08
+done

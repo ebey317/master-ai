@@ -28,7 +28,7 @@ DATE_SLUG=$(date +%Y-%m-%d_%H%M)
 REPORT="$REPORT_DIR/deep_clean_${DATE_SLUG}.md"
 
 mkdir -p "$REPORT_DIR"
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"; }
+log() { echo "[$(date '+%Y-%m-%d %I:%M:%S %p')] $1" | tee -a "$LOG"; }
 report() { echo "$1" | tee -a "$REPORT"; }
 
 # ── 1. Time-window gate ───────────────────────────────────────

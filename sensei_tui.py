@@ -65,6 +65,15 @@ COMMAND_MENU_HINTS = {
     "tips": "show practical command tips",
     "model": "pick active model",
     "model auto": "return model routing to automatic",
+    "model local": "select Sensei primary",
+    "model qwen": "select Master AI alias",
+    "model qwen2.5:3b": "select fast local model",
+    "model llava": "select local vision model",
+    "model groq": "select fast key-backed model",
+    "model deepseek-r1": "select reasoning key-backed model",
+    "model qwen3-coder": "select code key-backed model",
+    "model gemini": "select research key-backed model",
+    "model stats": "show individual model usage",
     "mode plan": "draft plans only",
     "mode review": "confirm each action",
     "mode auto": "run non-destructive work",
@@ -74,6 +83,9 @@ COMMAND_MENU_HINTS = {
     "memory": "show saved facts",
     "remember:": "type your text after the colon",
     "forget:": "type keyword after the colon",
+    "image:": "type an image prompt after the colon",
+    "image status": "fetch/show an image job result",
+    "image latest": "show latest generated image",
     "task": "task command help",
     "task add": "type task text after this",
     "task done": "mark a task complete",
@@ -122,6 +134,8 @@ COMMAND_MENU_HINTS = {
     "hints": "hint status",
     "project": "current project",
     "search": "web search route",
+    "max:": "max reasoning with mandatory self-critique",
+    "agent:": "plan/execute/critique task loop",
     "dl": "download helper",
     "gdrive": "Google Drive helper",
     "git": "git command help",
@@ -151,7 +165,9 @@ COMMAND_MENU_GROUPS = {
     ],
     ";": [
         "mode plan", "mode review", "mode auto", "mode local", "mode connected", "mode",
-        "model", "model auto",
+        "model", "model auto", "model local", "model qwen", "model qwen2.5:3b", "model llava",
+        "model groq", "model deepseek-r1", "model qwen3-coder", "model gemini",
+        "model stats", "keys",
         "tts on", "tts off", "tts",
         "hints on", "hints off", "hints",
         "mouse remote", "mouse local", "mouse status",
@@ -162,6 +178,7 @@ COMMAND_MENU_GROUPS = {
     ],
     "/": [
         "remember:", "forget:", "task add", "git commit",
+        "image:", "image status", "image latest", "max:", "agent:",
     ],
 }
 
@@ -242,6 +259,8 @@ IDLE_TIPS = [
     "'mode auto' runs commands without asking — destructive still pauses",
     "'fast: your prompt' routes through Groq (fast cloud, needs key)",
     "'deep: your prompt' routes to DeepSeek-R1 (deep reasoning)",
+    "'max: your prompt' runs the strongest planner/critic reasoning loop",
+    "'agent: your task' runs plan → execute → critique cycles",
     "'local: your prompt' forces local model explicitly",
     "'mode connected' switches the whole session to cloud-first",
     "on a pending plan — press 1 or Enter to accept, 4 to keep talking",
@@ -374,6 +393,7 @@ class SenseiApp:
         self._thinking_line = "Grinding..."
         self._thinking_last = 0.0
         self._thinking_interval = 1.8
+        self._thinking_started = 0.0
         self._scroll_offset = 0  # lines scrolled up from bottom
 
         # Three thought-states: IDLE (rotating hints), THINKING (AI working),
@@ -661,16 +681,18 @@ class SenseiApp:
             # 2026-04-29: "the punctuation needs words not symbols".
             # Just collapse the double-space padding so it fits.
             status = status.replace("  and  ", " and ")
-            # Narrow-terminal truncation drops the "+CLOUD" modifier, NOT
-            # the "AUTO" selection — "MODEL:CLOUD" reads like cloud is
-            # pinned when actually auto-routing is on with cloud keys
-            # available. Keep the actual selection visible.
+            # Keep the actual selected model visible on narrow terminals.
             status = status.replace("MODEL:AUTO+CLOUD", "MODEL:AUTO")
         return FormattedText([("class:status", f" {_fit_text(status, width - 2)} ")])
 
     def _render_header(self):
         width = max(10, _term_size().columns)
-        title = " MASTER AI - SENSEI " if width < 76 else " 🥷  MASTER  AI  —  SENSEI "
+        clock = time.strftime("%m/%d/%Y %I:%M:%S %p")
+        title = (
+            f" MASTER AI - SENSEI  {clock} "
+            if width < 76 else
+            f" 🥷  MASTER  AI  —  SENSEI  {clock} "
+        )
         return FormattedText([("class:header", _fit_text(title, width))])
 
     def _render_label(self):
@@ -727,7 +749,12 @@ class SenseiApp:
             if now - self._thinking_last >= self._thinking_interval:
                 self._thinking_line = next(self._thinking_cycle)
                 self._thinking_last = now
-            line = _fit_text(f"🥷 [thinking] {self._thinking_line}", _term_size().columns - 4)
+            elapsed = ""
+            if self._thinking_started:
+                total = max(0, int(now - self._thinking_started))
+                mm, ss = divmod(total, 60)
+                elapsed = f" [{mm}:{ss:02d}]"
+            line = _fit_text(f"🥷 [thinking]{elapsed} {self._thinking_line}", _term_size().columns - 4)
             return FormattedText([
                 ("class:thinking", line),
             ])
@@ -905,6 +932,7 @@ class SenseiApp:
     def start_thinking(self) -> None:
         """Switch the tip line into rotating [thinking] mode."""
         self._thinking = True
+        self._thinking_started = time.time()
         self._thinking_last = 0.0  # force immediate refresh
         try: self._app.invalidate()
         except Exception: pass
@@ -912,6 +940,7 @@ class SenseiApp:
     def stop_thinking(self) -> None:
         """Return the tip line to idle mode."""
         self._thinking = False
+        self._thinking_started = 0.0
         self._tip_last = 0.0  # force idle tip to refresh
         try: self._app.invalidate()
         except Exception: pass

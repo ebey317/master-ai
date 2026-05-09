@@ -13,14 +13,14 @@
 
 ---
 
-## [S01] Tell Ollama: only keep one AI brain awake at a time ✅ APPLIED 2026-04-19
+## [S01] Set Ollama residency for master-ai + llava ✅ APPLIED 2026-04-19
 
-**What this opens up:** the reasoning loop can run without freezing your computer.
+**What this opens up:** master-ai and llava can stay resident together without the first user turn paying a cold load.
 
-**Why it matters:** your computer has a set amount of fast memory (RAM). Each AI brain takes up a big chunk. If more than one brain is awake at the same time, fast memory fills up and your computer starts using slow memory instead. Slow memory is SO slow the whole machine locks up. That's what happened 2026-04-19. This tells Ollama: "no matter what, only one brain awake."
+**Why it matters:** the current local-first setup needs two resident models. If the cap stays at 1, master-ai evicts llava or vice versa and the next turn goes cold.
 
 **What it changes on your computer:**
-- Adds `Environment="OLLAMA_MAX_LOADED_MODELS=1"` to `/etc/systemd/system/ollama.service.d/keep-alive.conf`
+- Adds `Environment="OLLAMA_MAX_LOADED_MODELS=2"` to `/etc/systemd/system/ollama.service.d/keep-alive.conf`
 - Reloads systemd so it reads the new rule
 - Restarts Ollama so the rule takes effect
 
@@ -33,7 +33,7 @@ sudo bash ~/scripts/apply_ollama_cap.sh
 ```
 systemctl show ollama -p Environment
 ```
-You should see `OLLAMA_MAX_LOADED_MODELS=1` in the output.
+You should see `OLLAMA_MAX_LOADED_MODELS=2` in the output.
 
 ---
 

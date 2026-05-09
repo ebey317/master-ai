@@ -61,4 +61,4 @@ if [ -f "$HOME/.master_ai_where_were_we" ]; then
     } >> "$MEMORY_FILE"
 fi
 
-echo "[$(date '+%H:%M')] memory injected"
+echo "[$(date '+%I:%M %p')] memory injected"

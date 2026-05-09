@@ -21,6 +21,12 @@
 #       never slip into the current change.
 #     • Hobby → business framing. Functioning at the surface user will
 #       click is the bar; polish is cheap by comparison.
+#     • Presentation judgment: act directly on clear/safe asks; present
+#       numbered choices for destructive, broad, expensive, personal-data,
+#       backup, credential, or product-direction decisions; ask up to 4
+#       understanding questions when they improve the plan: goal, scope,
+#       constraints, and what finished should look like. Report action,
+#       verification evidence, and what was intentionally not touched.
 #
 # [2026-04-19] post-v1.7 in-testing — The Trifecta (fast/brain/eyes), dojo gate,
 #              chunker, portable cache, local-first routing, multi-user plumbing
@@ -124,9 +130,9 @@ Web / current info    → Gemini 2.0 Flash
 Cloud unavailable     → auto-fallback to local trifecta
 Local timeout         → cloud fallback (45s timeout)
 
-## RAM DISCIPLINE — OLLAMA_MAX_LOADED_MODELS=1
-Set via /etc/systemd/system/ollama.service.d/max-loaded.conf. Ensures only ONE
-model is resident at a time; router asks for another → Ollama swaps. No RAM war.
+## RAM DISCIPLINE — OLLAMA_MAX_LOADED_MODELS=2
+Set via /etc/systemd/system/ollama.service.d/keep-alive.conf. Keeps master-ai
+and llava resident together; qwen2.5:3b can still swap in when needed.
 
 ## DOJO GATE (menu 4)
 Before entering Sensei: pick a project from PROJECTS.md, pick a task.

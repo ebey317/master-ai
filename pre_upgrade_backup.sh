@@ -53,7 +53,7 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 : > "$LOG"
-log() { echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG"; }
+log() { echo "[$(date '+%I:%M:%S %p')] $1" | tee -a "$LOG"; }
 
 # ── 1. Personal Master AI state ──────────────────────────────
 log "=== 1. Master AI personal state ==="

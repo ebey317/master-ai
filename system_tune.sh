@@ -5,7 +5,7 @@
 # ============================================
 
 LOG="$HOME/scripts/master.log"
-TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+TIMESTAMP=$(date "+%Y-%m-%d %I:%M:%S %p")
 
 log() { echo "[$TIMESTAMP] $1" | tee -a "$LOG"; }
 

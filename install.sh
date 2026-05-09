@@ -25,7 +25,7 @@ SCRIPT_SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET="$HOME/scripts"
 mkdir -p "$HOME/.master_ai_approved_components" 2>/dev/null
 : > "$INSTALL_LOG"
-log() { echo "[$(date '+%H:%M:%S')] $1" >> "$INSTALL_LOG"; }
+log() { echo "[$(date '+%I:%M:%S %p')] $1" >> "$INSTALL_LOG"; }
 
 # ── OS detection ─────────────────────────────────────────────
 detect_os() {

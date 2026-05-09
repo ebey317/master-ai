@@ -29,7 +29,7 @@ Three tests you run when you're at the terminal. Each one verifies work that's a
 
 **If it freezes again:**
 - It's a DIFFERENT cause than today's. Power-off is safe — S01 didn't fix it.
-- Before retrying: `systemctl show ollama -p Environment | tr ' ' '\n'` — confirm `OLLAMA_MAX_LOADED_MODELS=1` is still there.
+- Before retrying: `systemctl show ollama -p Environment | tr ' ' '\n'` — confirm `OLLAMA_MAX_LOADED_MODELS=2` is still there.
 - Check `~/.master_ai_audit.log` — new file. If empty, the reasoning loop didn't touch confirm_run (expected). If populated with `DENY-NO-TTY`, that's the safeguard firing.
 
 ---

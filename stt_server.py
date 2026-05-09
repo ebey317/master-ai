@@ -47,6 +47,13 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # Bare / would show a directory listing of cwd (privacy leak); send to Pupil.
+        if self.path in ('/', ''):
+            self.send_response(302)
+            self.send_header('Location', '/pupil.html')
+            self.end_headers()
+            return
+
         # /sdcpp/* → reverse-proxy to local sd-server on 127.0.0.1:7860.
         # Keeps the image engine loopback-bound while letting Pupil reach it
         # from any host that can reach :8080 (LAN, Tailscale). Same-origin.

@@ -31,7 +31,7 @@ if git diff --cached --quiet 2>/dev/null; then
 fi
 
 LABEL="${1:-manual snapshot}"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+TIMESTAMP=$(date '+%Y-%m-%d %I:%M:%S %p')
 git commit -q -m "[$TIMESTAMP] $LABEL"
 
 HASH=$(git rev-parse --short HEAD 2>/dev/null)

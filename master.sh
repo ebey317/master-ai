@@ -8,7 +8,7 @@ mkdir -p "$SESSION_DIR" "$HOME/scripts"
 touch "$LOG_FILE"
 
 log() {
-    TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+    TIMESTAMP=$(date "+%Y-%m-%d %I:%M:%S %p")
     echo "[$TIMESTAMP] $1" | tee -a "$LOG_FILE"
 }
 
@@ -579,7 +579,7 @@ view_sessions() {
         for f in "${files[@]}"; do
             local base=$(basename "$f")
             local size=$(du -h "$f" | cut -f1)
-            local date=$(date -r "$f" "+%Y-%m-%d %H:%M" 2>/dev/null)
+            local date=$(date -r "$f" "+%Y-%m-%d %I:%M %p" 2>/dev/null)
             echo -e "  ${Y}$i)${W} $base  ${C}[$size]${W}  $date${X}"
             ((i++))
         done

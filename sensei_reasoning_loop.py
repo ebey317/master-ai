@@ -11,6 +11,7 @@ See ~/scripts/SENSEI_REASONING_LOOP.md for the full design spec.
 Standalone use:
   python3 sensei_reasoning_loop.py "your query"
   python3 sensei_reasoning_loop.py --mode deep "your query"
+  python3 sensei_reasoning_loop.py --mode max "your query"
   python3 sensei_reasoning_loop.py --planner qwen2.5:14b "your query"
 
 Programmatic use:
@@ -65,7 +66,7 @@ plan: work through each step, show your reasoning, and produce a complete
 proposed solution.
 
 Produce a JSON object with two keys:
-  reasoning     — step-by-step chain of thought; markdown allowed; thorough
+  reasoning     — concise working notes and rationale; markdown allowed
   raw_solution  — the proposed answer, complete but not yet polished
 
 Respond with ONLY the JSON object. No prose before or after."""
@@ -280,6 +281,7 @@ def run_reasoning_loop(query: str, *,
       'fast'     — planner → solver → finalizer (critic skipped)
       'standard' — all four stages (default)
       'deep'     — all four + a second solver-critic refinement pass
+      'max'      — all four + mandatory second solver-critic refinement pass
 
     models: optional override per stage, e.g.
       {'critic': 'qwen2.5:14b'}. Falls back to DEFAULT_MODELS.
@@ -298,8 +300,8 @@ def run_reasoning_loop(query: str, *,
         'stages_completed': [str, ...],
       }
     """
-    if mode not in ("fast", "standard", "deep"):
-        raise ValueError(f"mode must be fast|standard|deep (got {mode})")
+    if mode not in ("fast", "standard", "deep", "max"):
+        raise ValueError(f"mode must be fast|standard|deep|max (got {mode})")
     mdl = {**DEFAULT_MODELS, **(models or {})}
 
     def _say(msg: str) -> None:
@@ -361,10 +363,11 @@ def run_reasoning_loop(query: str, *,
             _say(f"    {critic['elapsed_s']}s · parsed={critic['parsed']} · "
                  f"{issues_n} issue{'s' if issues_n != 1 else ''} raised")
 
-            # Deep mode: run a second solver pass informed by the critic,
-            # then a second critique, then finalize.
-            if mode == "deep" and issues_n > 0:
-                _say(f"🧠 [deep] SOLVER pass 2 (refining from critic)...")
+            # Deep/max mode: run a second solver pass informed by the critic,
+            # then a second critique, then finalize. Deep only spends the
+            # extra pass when the critic found issues; max always spends it.
+            if mode in ("deep", "max") and (issues_n > 0 or mode == "max"):
+                _say(f"🧠 [{mode}] SOLVER pass 2 (refining from critic)...")
                 # Feed the prior solver output + critic corrections back as
                 # "prior" so the solver can refine.
                 refine_prior = {
@@ -379,7 +382,7 @@ def run_reasoning_loop(query: str, *,
                 result["stages_completed"].append("solver_refined")
                 _say(f"    {solver['elapsed_s']}s · parsed={solver['parsed']}")
 
-                _say(f"🧠 [deep] CRITIC pass 2...")
+                _say(f"🧠 [{mode}] CRITIC pass 2...")
                 critic = critique_stage(full_query, plan, solver, mdl["critic"])
                 result["stages"]["critic_refined"] = critic
                 result["stages_completed"].append("critic_refined")
@@ -423,7 +426,7 @@ def _main() -> int:
         description="Sensei Reasoning Loop — Planner/Solver/Critic/Finalizer"
     )
     ap.add_argument("query", nargs="+", help="the user question")
-    ap.add_argument("--mode", choices=("fast", "standard", "deep"),
+    ap.add_argument("--mode", choices=("fast", "standard", "deep", "max"),
                     default="standard")
     ap.add_argument("--planner",   default=DEFAULT_MODELS["planner"])
     ap.add_argument("--solver",    default=DEFAULT_MODELS["solver"])
