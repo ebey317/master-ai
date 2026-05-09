@@ -294,6 +294,65 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertIn("whole file", result)
         self.assertEqual(history[-1]["content"], result)
 
+    def test_plain_cloud_route_dispatches_to_orchestrator_provider(self):
+        # When orchestrate() returns route='cloud' + a specific provider model,
+        # handle() must honor it and call ask_cloud(provider=<that model>).
+        # Without this branch, detect_route() can override and route the turn
+        # through Ollama's qwen3.5:cloud lane — exactly the bug the orchestrator
+        # decision was trying to avoid.
+        orig_orchestrate = master_ai.orchestrate
+        orig_detect_route = master_ai.detect_route
+        orig_ask_cloud = master_ai.ask_cloud
+        orig_ask_local_stream = master_ai.ask_local_stream
+        orig_thinking_start = master_ai.local_thinking_start
+        orig_thinking_stop = master_ai.local_thinking_stop
+        orig_git_context = master_ai.git_context
+        orig_load_memory = master_ai.load_memory
+        orig_load_behavior = master_ai.load_behavior
+        orig_auto_context = master_ai.auto_inject_context
+        captured = []
+        try:
+            master_ai.orchestrate = lambda history, user_text, image_path=None: {
+                "route": "cloud",
+                "model": "fireworks",
+                "reason": "scored -> Fireworks",
+            }
+            master_ai.detect_route = lambda text, has_image=False: (
+                "local", master_ai.MODELS["qwen3"], "would have downgraded to qwen3.5:cloud",
+            )
+            master_ai.ask_local_stream = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("plain cloud route must NOT fall through to ask_local_stream"),
+            )
+            def _fake_cloud(messages, provider=None):
+                captured.append(provider)
+                return "ok via Fireworks."
+            master_ai.ask_cloud = _fake_cloud
+            master_ai.local_thinking_start = lambda: None
+            master_ai.local_thinking_stop = lambda handle: None
+            master_ai.git_context = lambda: ""
+            master_ai.load_memory = lambda: ""
+            master_ai.load_behavior = lambda: ""
+            master_ai.auto_inject_context = lambda *args, **kwargs: (
+                "", {"big_file_no_symbol_match": [], "whole_file_requested": False,
+                     "inject_chars": 0, "sliced": []},
+            )
+            history = []
+            result = master_ai.handle("explain this thing", history)
+        finally:
+            master_ai.orchestrate = orig_orchestrate
+            master_ai.detect_route = orig_detect_route
+            master_ai.ask_cloud = orig_ask_cloud
+            master_ai.ask_local_stream = orig_ask_local_stream
+            master_ai.local_thinking_start = orig_thinking_start
+            master_ai.local_thinking_stop = orig_thinking_stop
+            master_ai.git_context = orig_git_context
+            master_ai.load_memory = orig_load_memory
+            master_ai.load_behavior = orig_load_behavior
+            master_ai.auto_inject_context = orig_auto_context
+
+        self.assertEqual(result, "ok via Fireworks.")
+        self.assertEqual(captured, ["fireworks"])
+
 
 if __name__ == "__main__":
     unittest.main()

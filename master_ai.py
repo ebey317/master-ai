@@ -8556,6 +8556,13 @@ def handle(user_text, history, image_path=None):
     if decision["route"] == "cloud_fast":
         route, model, reason = "cloud", "groq", decision["reason"]
         print(f"  {BC}[thinking: cloud-fast → Groq]{X}")
+    elif decision["route"] == "cloud" and decision.get("model"):
+        # _choose_route can return a plain cloud provider (Fireworks/Gemini/etc.)
+        # after scoring. Honor that decision; falling back to detect_route() here
+        # can accidentally route deep turns through Ollama's qwen3.5:cloud lane,
+        # which is an HTTP endpoint and can fail independently of BYOK providers.
+        route, model, reason = "cloud", decision["model"], decision["reason"]
+        print(f"  {BC}[thinking: cloud → {model}]{X}")
     elif decision["route"] == "cloud_vision":
         route, model, reason = "vision", decision["model"], decision["reason"]
     elif decision["route"] == "cloud_deep":
