@@ -8567,13 +8567,33 @@ def handle(user_text, history, image_path=None):
         route, model, reason = "vision", decision["model"], decision["reason"]
     elif decision["route"] == "cloud_deep":
         # deepseek-r1 is OpenRouter (true cloud) → route='cloud'.
-        # qwen3.5:cloud is Ollama-proxied → route='local' streams through Ollama.
+        # qwen3.5:cloud is Ollama-proxied. Its lane has been returning HTTP 403
+        # on every call, so when a real cloud key exists, route through
+        # ask_cloud()'s fallback chain instead of dying on the dead Ollama lane.
+        # No cloud key → fall back to local master-ai (still useful) rather than
+        # the qwen3.5:cloud dead end.
         if decision["model"] == "deepseek-r1":
             route, model, reason = "cloud", "deepseek-r1", decision["reason"]
             print(f"  {BC}[thinking: deep → DeepSeek-R1]{X}")
+        elif decision["model"] == MODELS["qwen3"]:
+            keys_now = load_keys()
+            cloud_pref = next((m for k, m in (
+                ("fireworks",  "fireworks"),
+                ("groq",       "groq"),
+                ("gemini",     "gemini"),
+                ("openrouter", "deepseek-r1"),
+            ) if keys_now.get(k)), None)
+            if cloud_pref:
+                route, model, reason = "cloud", cloud_pref, (
+                    decision["reason"] + f" → qwen3.5:cloud unavailable, using {cloud_pref}")
+                print(f"  {BC}[thinking: deep → {cloud_pref} (qwen3.5:cloud fallback)]{X}")
+            else:
+                route, model, reason = "local", MODELS["master"], (
+                    decision["reason"] + " → no cloud keys, using local master-ai")
+                print(f"  {BC}[thinking: deep → local master-ai (no cloud keys)]{X}")
         else:
             route, model, reason = "local", decision["model"], decision["reason"]
-            print(f"  {BC}[thinking: deep → qwen3.5:cloud (397B)]{X}")
+            print(f"  {BC}[thinking: deep → {decision['model']}]{X}")
     elif decision["route"] == "local" and decision.get("model"):
         # Orchestrator picked a specific local model (coder, qwen2.5:14b, or master)
         route, model, reason = "local", decision["model"], decision["reason"]

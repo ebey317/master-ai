@@ -353,6 +353,131 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertEqual(result, "ok via Fireworks.")
         self.assertEqual(captured, ["fireworks"])
 
+    def _mock_handle_deps(self):
+        # Shared mock setup for cloud_deep routing tests. Returns a teardown
+        # callable that restores every patched module-level attribute.
+        originals = {
+            "orchestrate":           master_ai.orchestrate,
+            "detect_route":          master_ai.detect_route,
+            "ask_cloud":             master_ai.ask_cloud,
+            "ask_local_stream":      master_ai.ask_local_stream,
+            "load_keys":             master_ai.load_keys,
+            "local_thinking_start":  master_ai.local_thinking_start,
+            "local_thinking_stop":   master_ai.local_thinking_stop,
+            "git_context":           master_ai.git_context,
+            "load_memory":           master_ai.load_memory,
+            "load_behavior":         master_ai.load_behavior,
+            "auto_inject_context":   master_ai.auto_inject_context,
+        }
+        master_ai.local_thinking_start = lambda: None
+        master_ai.local_thinking_stop = lambda handle: None
+        master_ai.git_context = lambda: ""
+        master_ai.load_memory = lambda: ""
+        master_ai.load_behavior = lambda: ""
+        master_ai.auto_inject_context = lambda *args, **kwargs: (
+            "", {"big_file_no_symbol_match": [], "whole_file_requested": False,
+                 "inject_chars": 0, "sliced": []},
+        )
+        def restore():
+            for name, fn in originals.items():
+                setattr(master_ai, name, fn)
+        return restore
+
+    def test_cloud_deep_qwen3_with_fireworks_key_routes_to_cloud(self):
+        # Orchestrator picks cloud_deep + qwen3.5:cloud. Fireworks key exists.
+        # handle() must route to ask_cloud(fireworks), NOT
+        # ask_local_stream(qwen3.5:cloud) — that lane has been returning 403.
+        restore = self._mock_handle_deps()
+        captured = []
+        try:
+            master_ai.orchestrate = lambda history, user_text, image_path=None: {
+                "route": "cloud_deep",
+                "model": master_ai.MODELS["qwen3"],
+                "reason": "deep -> qwen3.5:cloud",
+            }
+            master_ai.detect_route = lambda text, has_image=False: (
+                "local", master_ai.MODELS["master"], "fallback",
+            )
+            master_ai.load_keys = lambda: {"fireworks": "fk_test_key"}
+            master_ai.ask_local_stream = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("qwen3.5:cloud route must NOT call ask_local_stream"),
+            )
+            def _fake_cloud(messages, provider=None):
+                captured.append(provider)
+                return "deep answer via Fireworks."
+            master_ai.ask_cloud = _fake_cloud
+
+            history = []
+            result = master_ai.handle("deep: explain quicksort partitioning", history)
+        finally:
+            restore()
+
+        self.assertEqual(result, "deep answer via Fireworks.")
+        self.assertEqual(captured, ["fireworks"])
+
+    def test_cloud_deep_qwen3_with_no_keys_falls_back_to_local_master(self):
+        # No cloud keys configured. qwen3.5:cloud lane is dead. handle() must
+        # NOT call ask_local_stream(qwen3.5:cloud) — should pick local master-ai.
+        restore = self._mock_handle_deps()
+        local_calls = []
+        try:
+            master_ai.orchestrate = lambda history, user_text, image_path=None: {
+                "route": "cloud_deep",
+                "model": master_ai.MODELS["qwen3"],
+                "reason": "deep -> qwen3.5:cloud",
+            }
+            master_ai.detect_route = lambda text, has_image=False: (
+                "local", master_ai.MODELS["master"], "fallback",
+            )
+            master_ai.load_keys = lambda: {}
+            def _fake_local(history, model=None, **kwargs):
+                local_calls.append(model)
+                return "local answer from master-ai."
+            master_ai.ask_local_stream = _fake_local
+            master_ai.ask_cloud = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("no-keys path must NOT call ask_cloud"),
+            )
+
+            history = []
+            result = master_ai.handle("deep: explain quicksort partitioning", history)
+        finally:
+            restore()
+
+        self.assertEqual(result, "local answer from master-ai.")
+        self.assertEqual(local_calls, [master_ai.MODELS["master"]])
+        self.assertNotIn(master_ai.MODELS["qwen3"], local_calls)
+
+    def test_cloud_deep_deepseek_r1_unchanged(self):
+        # cloud_deep + deepseek-r1 must continue to route through
+        # ask_cloud(deepseek-r1) regardless of the qwen3.5:cloud fix.
+        restore = self._mock_handle_deps()
+        captured = []
+        try:
+            master_ai.orchestrate = lambda history, user_text, image_path=None: {
+                "route": "cloud_deep",
+                "model": "deepseek-r1",
+                "reason": "deep -> DeepSeek-R1",
+            }
+            master_ai.detect_route = lambda text, has_image=False: (
+                "local", master_ai.MODELS["master"], "fallback",
+            )
+            master_ai.load_keys = lambda: {"openrouter": "or_test_key"}
+            master_ai.ask_local_stream = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("deepseek-r1 cloud_deep must NOT call ask_local_stream"),
+            )
+            def _fake_cloud(messages, provider=None):
+                captured.append(provider)
+                return "deep answer via DeepSeek-R1."
+            master_ai.ask_cloud = _fake_cloud
+
+            history = []
+            result = master_ai.handle("deep: explain quicksort partitioning", history)
+        finally:
+            restore()
+
+        self.assertEqual(result, "deep answer via DeepSeek-R1.")
+        self.assertEqual(captured, ["deepseek-r1"])
+
 
 if __name__ == "__main__":
     unittest.main()
