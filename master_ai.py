@@ -101,6 +101,8 @@ try:
         # P1.3 / P1.5 / P1.7 new surfaces — make them discoverable via tab
         "stats", "agents", "agents list", "agents inspect ", "agents run ",
         "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
+        # P1.4 hooks REPL (2026-05-11)
+        "hooks", "hooks list", "hooks enable ", "hooks disable ", "hooks reload",
     ]
     def _completer(text, state):
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
@@ -6723,8 +6725,15 @@ def _audit(kind, detail):
         pass
 
 def _record_blocked_action(kind, command="", reason="", audit_kind="POLICY-CMD-BLOCK"):
-    """Remember a refusal so process_reply can feed it back to the model."""
-    entry = {"kind": kind, "reason": reason or "blocked by Sensei policy"}
+    """Remember a refusal so process_reply can feed it back to the model.
+    2026-05-11: also stores audit_kind on the entry so downstream on_blocked
+    hooks (auto-extract-lesson) can filter by source — POLICY/FENCE blocks
+    are security guardrails and shouldn't trigger lesson extraction."""
+    entry = {
+        "kind": kind,
+        "reason": reason or "blocked by Sensei policy",
+        "audit_kind": audit_kind,
+    }
     if command:
         key = "path" if kind in ("create", "edit", "read") else "command"
         entry[key] = command
@@ -9164,6 +9173,23 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             # answer the next user turn assuming success.
             if _append_tool_blocked_feedback("RUN", cmd):
                 return None
+            # 2026-05-11 (Codex finding 2): fire on_blocked on EXEC failures
+            # too, not just safeguard refusals. fetchmail exit 127 is a real
+            # learnable failure (command-not-found / hallucination) — the
+            # auto-extract-lesson hook should see it. audit_kind tags the
+            # source so the hook can filter (this is RUN-EXEC-FAIL, not a
+            # POLICY/FENCE block).
+            try:
+                import hooks as _hooks
+                _exit = getattr(result, "exit_code", "?")
+                _hooks.fire("on_blocked", cmd, action={
+                    "kind": "RUN",
+                    "target": cmd,
+                    "reason": f"command failed (exit {_exit})",
+                    "audit_kind": "RUN-EXEC-FAIL",
+                })
+            except Exception as e:
+                log(f"ON_BLOCKED_HOOK_ERROR (exec-fail): {e}")
             print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
             return reply
@@ -9177,6 +9203,18 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if not _action_ok(result):
             if _append_tool_blocked_feedback("RUNTERM", cmd):
                 return None
+            # 2026-05-11: same exec-fail on_blocked fire for RUNTERM.
+            try:
+                import hooks as _hooks
+                _exit = getattr(result, "exit_code", "?")
+                _hooks.fire("on_blocked", cmd, action={
+                    "kind": "RUNTERM",
+                    "target": cmd,
+                    "reason": f"runterm failed (exit {_exit})",
+                    "audit_kind": "RUNTERM-EXEC-FAIL",
+                })
+            except Exception as e:
+                log(f"ON_BLOCKED_HOOK_ERROR (runterm-exec-fail): {e}")
             print(_pill("BLOCKED", f"{D}RUNTERM failed or was refused — skipped remaining RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUNTERM failure: {cmd}")
             return reply
@@ -11990,6 +12028,43 @@ def main():
                     print(f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n")
             except Exception as e:
                 print(f"  {W}agents command error: {e}{X}\n")
+            continue
+
+        # P1.4 hooks REPL — Codex flagged 2026-05-11 that the hooks
+        # system had public Python API but no user-typed command. Sub-
+        # commands match agents': list / enable <id> / disable <id>.
+        if lo == "hooks" or lo.startswith("hooks "):
+            try:
+                import hooks as _hooks
+                _args = (cmd[len("hooks"):].strip()).split(None, 1)
+                _sub = (_args[0] if _args else "").lower()
+                _rest = _args[1] if len(_args) > 1 else ""
+                if _sub in ("", "list"):
+                    _hs = _hooks.list_hooks()
+                    print(f"\n  {C}Registered hooks ({len(_hs)}):{X}")
+                    for h in _hs:
+                        state = f"{G}enabled{X}" if h.enabled else f"{D}disabled{X}"
+                        print(f"    {W}{h.id:<30}{X}  {h.kind:<14}  {state}  ({h.source})")
+                    print()
+                elif _sub == "enable":
+                    ok = _hooks.enable(_rest.strip())
+                    if ok:
+                        print(f"  {G}✅ enabled: {_rest.strip()}{X}\n")
+                    else:
+                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+                elif _sub == "disable":
+                    ok = _hooks.disable(_rest.strip())
+                    if ok:
+                        print(f"  {G}✅ disabled: {_rest.strip()}{X}\n")
+                    else:
+                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+                elif _sub == "reload":
+                    n = _hooks.reload_user_hooks()
+                    print(f"  {G}✅ reloaded {n} user hook(s) from ~/.master_ai_hooks.json{X}\n")
+                else:
+                    print(f"  {W}usage: hooks [list|enable <id>|disable <id>|reload]{X}\n")
+            except Exception as e:
+                print(f"  {W}hooks command error: {e}{X}\n")
             continue
 
         # ── Project ───────────────────────────────────────────

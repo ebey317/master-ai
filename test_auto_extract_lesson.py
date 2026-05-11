@@ -243,6 +243,55 @@ class WorkerStorageBehavior(unittest.TestCase):
             f"prefix should be stripped, got: {mem[0]!r}")
 
 
+class CodexFindingsRegressionGuard(unittest.TestCase):
+    """Pin the three real bugs Codex caught in d261b94's audit pass."""
+
+    def test_record_blocked_action_stores_audit_kind(self):
+        """Finding 1: _LAST_BLOCKED_ACTION must carry audit_kind so the
+        on_blocked hook's POLICY/FENCE skip filter actually triggers.
+        Pre-fix, the entry stored only kind/reason/path — audit_kind was
+        passed to _audit() then thrown away."""
+        master_ai._LAST_BLOCKED_ACTION = {}
+        entry = master_ai._record_blocked_action(
+            "run", "evil-cmd", "credential exfil",
+            audit_kind="POLICY-CMD-BLOCK",
+        )
+        self.assertEqual(entry.get("audit_kind"), "POLICY-CMD-BLOCK")
+        self.assertEqual(
+            master_ai._LAST_BLOCKED_ACTION.get("audit_kind"),
+            "POLICY-CMD-BLOCK",
+        )
+        master_ai._LAST_BLOCKED_ACTION = {}
+
+    def test_exec_fail_fires_on_blocked(self):
+        """Finding 2: fetchmail exit-127 case (real exec failure, not
+        safeguard refusal) must fire on_blocked so the auto-extract hook
+        can learn from it. Source-pin the wiring."""
+        import inspect
+        src = inspect.getsource(master_ai.process_reply)
+        self.assertIn('"audit_kind": "RUN-EXEC-FAIL"', src,
+            "RUN chain-fail path must fire on_blocked with "
+            "audit_kind=RUN-EXEC-FAIL so auto-extract sees command-not-"
+            "found / exit-127 hallucinations")
+        self.assertIn('"audit_kind": "RUNTERM-EXEC-FAIL"', src,
+            "RUNTERM chain-fail path must fire on_blocked too")
+
+    def test_hooks_repl_command_exists(self):
+        """Finding 3: there must be a REPL command surface for hooks
+        list/enable/disable so the user can disable auto-extract-lesson
+        without editing Python."""
+        import inspect
+        # Look for `if lo == "hooks"` in master_ai source.
+        # main() is the REPL loop, so the trigger lives somewhere in
+        # that function (or nearby).
+        with open("/home/elijah/scripts/master_ai.py") as f:
+            src = f.read()
+        self.assertIn('if lo == "hooks" or lo.startswith("hooks ")', src,
+            "hooks REPL command not wired — Codex caught this on "
+            "2026-05-11; user can't disable auto-extract-lesson "
+            "without it")
+
+
 class MasterAiFiresHook(unittest.TestCase):
     """The _append_tool_blocked_feedback path should fire on_blocked.
     Source-inspect pin — actually-running the feedback requires a real

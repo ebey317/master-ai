@@ -156,6 +156,12 @@ COMMAND_MENU_HINTS = {
     "agents list": "show registered subagents",
     "agents inspect": "type a subagent name after this",
     "agents run": "type a subagent name + task after this",
+    # P1.4 hooks REPL (2026-05-11)
+    "hooks": "show registered hooks (built-in + user)",
+    "hooks list": "show registered hooks",
+    "hooks enable": "type a hook id to enable it",
+    "hooks disable": "type a hook id to disable it",
+    "hooks reload": "reload user hooks from ~/.master_ai_hooks.json",
     # P1.3 reason depths
     "reason:": "deep reasoning lane (DeepSeek-R1 or local loop)",
     "reason fast:": "local fast reasoning (planner→solver→finalizer)",
@@ -174,7 +180,7 @@ COMMAND_MENU_GROUPS = {
         "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
         "cache", "perms", "tutorial", "project",
         # P1.5 + P1.7 new command surfaces (2026-05-11)
-        "stats", "agents", "agents list",
+        "stats", "agents", "agents list", "hooks", "hooks list",
         "go", "cancel", "e", "only",
     ],
     ";": [
@@ -196,6 +202,8 @@ COMMAND_MENU_GROUPS = {
         # P1.3 (reason depths) + P1.5 (agents subcommands) payload commands
         "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
         "agents run", "agents inspect",
+        # P1.4 hooks REPL (2026-05-11)
+        "hooks enable", "hooks disable",
     ],
 }
 
