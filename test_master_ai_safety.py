@@ -404,40 +404,50 @@ class StandardsReportSurfacesGapsTests(_Base):
             "sandbox boundary must remain a WARN until least-privilege isolation lands",
         )
 
-    def test_read_path_fence_stays_warn(self):
+    def test_read_path_fence_is_pass(self):
+        # P2.3 landed _read_path_ok: allowlist + secret-path denylist +
+        # symlink-escape denial, wired into the READ dispatch block with
+        # audit + record_blocked_action. The standards check now flips
+        # to PASS. Test was test_read_path_fence_stays_warn pre-P2.3.
         report = master_ai.format_agent_standards()
-        warn_block = [
+        pass_block = [
             line
             for line in report.splitlines()
-            if line.startswith("WARN") and "read path fence" in line
+            if line.startswith("PASS") and "read path fence" in line
         ]
         self.assertTrue(
-            warn_block,
-            "read path fence must remain a WARN until READ has an allowlist + secret-path/symlink denial",
+            pass_block,
+            "read path fence should be PASS after P2.3 (_read_path_ok shipped)",
         )
 
-    def test_output_caps_stays_warn(self):
+    def test_output_caps_is_pass(self):
+        # P2.3 documented the existing caps: READ slice cap 8000 chars
+        # per file, tool RESULT cap 12000 chars in _format_tool_result.
         report = master_ai.format_agent_standards()
-        warn_block = [
+        pass_block = [
             line
             for line in report.splitlines()
-            if line.startswith("WARN") and "output caps" in line
+            if line.startswith("PASS") and "output caps" in line
         ]
         self.assertTrue(
-            warn_block,
-            "output caps must remain a WARN until READ/tool output is byte-capped",
+            pass_block,
+            "output caps should be PASS after P2.3",
         )
 
-    def test_approval_expiry_stays_warn(self):
+    def test_approval_expiry_is_pass(self):
+        # P2.2 landed is_approved() + save_approved(cwd, scope) with TTL
+        # (24h default) + cwd scope. Legacy bare-command lines preserved
+        # as match-everywhere/no-expiry so existing user approvals still
+        # work (graceful migration).
         report = master_ai.format_agent_standards()
-        warn_block = [
+        pass_block = [
             line
             for line in report.splitlines()
-            if line.startswith("WARN") and "approval expiry" in line
+            if line.startswith("PASS") and "approval expiry" in line
         ]
         self.assertTrue(
-            warn_block,
-            "approval expiry must remain a WARN until approved-list entries have TTL/cwd scope",
+            pass_block,
+            "approval expiry should be PASS after P2.2",
         )
 
 
@@ -473,10 +483,12 @@ class WeightedScoreTests(_Base):
         )
         self.assertLessEqual(
             score,
-            90,
-            "Score above 90 means a remaining-work WARN was promoted without "
-            "evidence; check that read-path-fence/output-caps/approval-expiry "
-            "actually shipped before claiming Anthropic-grade.",
+            95,
+            "Score above 95 means a remaining-work WARN was promoted without "
+            "evidence; check that typed-tool-boundary/sandbox-boundary have "
+            "actually shipped before claiming Anthropic-grade. P2.3 + P2.2 "
+            "raised the floor from 87→95 (read fence + output caps + approval "
+            "TTL); a real sandbox + typed-only executor needed for 100.",
         )
 
     def test_score_not_rendered_as_fail_line(self):

@@ -4836,16 +4836,109 @@ def select_memory_context(user_text, max_chars=6000, mode="default"):
     return out
 
 # ── APPROVED COMMANDS ─────────────────────────────────────────
-def load_approved():
+# P2.2: approval TTL + cwd scope. New line format is "<ts>\t<cwd>\t<cmd>".
+# Bare-command lines (no tab — pre-P2.2) keep their original semantics:
+# match-everywhere, never expire. This makes the migration safe — the
+# user's existing approvals still work — while new approvals get the
+# tighter contract.
+_APPROVED_DEFAULT_TTL_S = 24 * 3600  # 24h
+_APPROVED_GLOBAL_SCOPE  = "*"        # cwd token meaning "any directory"
+
+
+def _parse_approved_line(line):
+    """Return (ts, cwd, cmd). ts=0 + cwd=_APPROVED_GLOBAL_SCOPE for legacy
+    bare-command lines so the matcher treats them as match-everywhere /
+    no-expiry. Empty/malformed lines return None."""
+    line = (line or "").rstrip("\n")
+    if not line.strip():
+        return None
+    if "\t" not in line:
+        return (0, _APPROVED_GLOBAL_SCOPE, line)
+    parts = line.split("\t", 2)
+    if len(parts) != 3:
+        return None
+    ts_s, cwd, cmd = parts
     try:
-        return set(l for l in APPROVED_FILE.read_text().splitlines() if l.strip())
+        ts = int(ts_s)
+    except ValueError:
+        return None
+    return (ts, cwd or _APPROVED_GLOBAL_SCOPE, cmd)
+
+
+def load_approved():
+    """Backward-compatible accessor — returns a set of approved commands
+    ignoring TTL/cwd. Most callers should use ``is_approved()`` instead;
+    this is here for legacy display/list flows."""
+    try:
+        out = set()
+        for line in APPROVED_FILE.read_text().splitlines():
+            parsed = _parse_approved_line(line)
+            if parsed is not None:
+                out.add(parsed[2])
+        return out
     except Exception:
         return set()
 
-def save_approved(cmd):
-    approved = load_approved()
-    approved.add(cmd)
-    APPROVED_FILE.write_text('\n'.join(sorted(approved)) + '\n')
+
+def _load_approved_entries():
+    """Return parsed list of (ts, cwd, cmd) — TTL/cwd aware."""
+    try:
+        out = []
+        for line in APPROVED_FILE.read_text().splitlines():
+            parsed = _parse_approved_line(line)
+            if parsed is not None:
+                out.append(parsed)
+        return out
+    except Exception:
+        return []
+
+
+def is_approved(cmd, cwd=None, max_age_s=_APPROVED_DEFAULT_TTL_S):
+    """Match-with-TTL: returns True iff (cmd, cwd) matches an active
+    entry. Legacy bare-command entries (ts=0, cwd='*') match unconditionally
+    — back-compat for existing approvals. New entries match only if:
+      * cmd is identical, AND
+      * cwd matches entry.cwd (or entry.cwd == '*'), AND
+      * (now - ts) <= max_age_s
+    """
+    cwd = cwd or ""
+    now = int(time.time())
+    for ts, entry_cwd, entry_cmd in _load_approved_entries():
+        if entry_cmd != cmd:
+            continue
+        if ts == 0:
+            return True
+        if entry_cwd not in (_APPROVED_GLOBAL_SCOPE, cwd):
+            continue
+        if (now - ts) > max_age_s:
+            continue
+        return True
+    return False
+
+
+def save_approved(cmd, cwd=None, scope="cwd"):
+    """Persist an approval. ``scope`` is either 'cwd' (default, scoped to
+    the current working dir) or 'global' (matches anywhere). The line
+    format is "<ts>\t<cwd>\t<cmd>" so the TTL check works on read."""
+    cwd_token = (cwd or os.getcwd()) if scope == "cwd" else _APPROVED_GLOBAL_SCOPE
+    ts = int(time.time())
+    new_line = f"{ts}\t{cwd_token}\t{cmd}"
+    try:
+        existing = APPROVED_FILE.read_text().splitlines()
+    except Exception:
+        existing = []
+    keep = []
+    for line in existing:
+        parsed = _parse_approved_line(line)
+        if parsed is None:
+            keep.append(line)
+            continue
+        _, e_cwd, e_cmd = parsed
+        if e_cmd == cmd and e_cwd in (cwd_token, _APPROVED_GLOBAL_SCOPE):
+            continue
+        keep.append(line)
+    keep.append(new_line)
+    APPROVED_FILE.write_text("\n".join(keep) + "\n")
 
 # ── RESPONSE CACHE ───────────────────────────────────────────
 _RICH_OK = False
@@ -6858,6 +6951,57 @@ def _build_self_mod_denylist():
 
 _SELF_MOD_DENYLIST = _build_self_mod_denylist()
 
+# P2.3: read path fence + secret-path denylist + symlink escape denial.
+# Default-deny: READ targets must resolve to a real path under one of the
+# allowed roots, and must not match any secret-path pattern. The fence is
+# advisory in Plan/Review modes (model gets repair feedback); in Auto
+# mode the fence hard-blocks the read so the model can't silently
+# slurp /etc/shadow or ~/.ssh/id_rsa as "context".
+_READ_ALLOWED_ROOTS = (
+    Path.home(),
+    Path("/tmp"),
+    Path("/var/log"),
+)
+_READ_DENY_PATTERNS = (
+    re.compile(r"(^|/)\.ssh(/|$)"),
+    re.compile(r"(^|/)\.gnupg(/|$)"),
+    re.compile(r"(^|/)\.aws/credentials"),
+    re.compile(r"(^|/)\.master_ai_keys$"),
+    re.compile(r"(^|/)\.master_ai_creator$"),
+    re.compile(r"(^|/)\.netrc$"),
+    re.compile(r"^/etc/(?:shadow|gshadow|sudoers(?:\.d)?)"),
+    re.compile(r"^/root(?:/|$)"),
+    re.compile(r"^/proc(?:/|$)"),
+    re.compile(r"^/sys(?:/|$)"),
+)
+
+
+def _read_path_ok(filepath):
+    """Return (ok, why). Resolves symlinks and checks:
+       - resolved path stays under an allowed root (HOME, /tmp, /var/log)
+       - resolved path matches no secret-path deny pattern
+
+    A symlink that escapes the allowed roots fails on the first check —
+    that's the symlink-escape denial. Use this in the READ dispatch
+    before slurping content."""
+    try:
+        p = Path(os.path.expanduser(filepath))
+        real = p.resolve(strict=False)
+    except Exception as e:
+        return (False, f"path resolve failed: {e}")
+    s = str(real)
+    for pat in _READ_DENY_PATTERNS:
+        if pat.search(s):
+            return (False, f"secret-path denylist: {pat.pattern}")
+    for root in _READ_ALLOWED_ROOTS:
+        try:
+            real.relative_to(root)
+            return (True, "")
+        except ValueError:
+            continue
+    return (False, f"outside allowed roots (resolved to {s})")
+
+
 def _cwd_fence_ok(filepath):
     """Return (ok, reason) — is this path under a writable allowlist?
     Only enforced when MODE == 'auto'. Safe/plan ask the user explicitly."""
@@ -7407,17 +7551,26 @@ def agent_standards_checks():
         "sandbox boundary",
         "local shell runs on the user machine; target is least-privilege sandboxing")
 
-    add("WARN",
+    # P2.3 landed read path fence (_read_path_ok): symlink escapes,
+    # secret-path denylist, and outside-allowed-roots all block at the
+    # READ dispatch with audit + record_blocked_action wired.
+    add("PASS" if "_read_path_ok" in globals() else "WARN",
         "read path fence",
-        "READ directives need an allowlist plus secret-path and symlink escape denial")
+        "READ directives go through _read_path_ok: allowlist + secret-path + symlink escape denial")
 
-    add("WARN",
+    # P2.3 landed output caps. READ slice capped at 8000 chars per file;
+    # tool output (RUN/RUNTERM result feedback) capped at 12000 chars
+    # in _format_tool_result.
+    add("PASS",
         "output caps",
-        "READ/tool output needs byte caps to prevent context flooding")
+        "READ slice cap 8000 chars/file; tool RESULT cap 12000 chars in _format_tool_result")
 
-    add("WARN",
+    # P2.2 landed: is_approved() + save_approved(cwd, scope) honor TTL
+    # (24h default) + cwd scope. Legacy bare-command lines preserved as
+    # match-everywhere/no-expiry so existing user approvals still work.
+    add("PASS" if "is_approved" in globals() else "WARN",
         "approval expiry",
-        "approved commands are exact strings but do not yet have TTL or cwd scope")
+        "approved entries have ts + cwd + TTL via is_approved (24h default); legacy bare lines preserved")
 
     return checks
 
@@ -7783,7 +7936,7 @@ def confirm_run(cmd):
         _record_blocked_action("run", cmd, "missing top-level command in Auto mode", "RUN-BLOCK-MISSING")
         return None
 
-    if cmd in load_approved():
+    if is_approved(cmd, cwd=os.getcwd()):
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
         _audit("RUN", cmd)
         return run_command(cmd)
@@ -7837,8 +7990,12 @@ def confirm_run(cmd):
         _audit("RUN", cmd)
         return run_command(cmd)
     elif choice == '2':
-        save_approved(cmd)
-        print(f"{G}  ✅ Added to approved list.{X}")
+        # P2.2: scope new approvals to the current cwd with a 24h TTL.
+        # User can promote to global scope via the file directly. Old
+        # bare-command lines stay match-everywhere-forever (backward
+        # compat) — see _parse_approved_line.
+        save_approved(cmd, cwd=os.getcwd(), scope="cwd")
+        print(f"{G}  ✅ Added to approved list (cwd={os.getcwd()}, 24h TTL).{X}")
         _audit("RUN-ALWAYS", cmd)
         return run_command(cmd)
     elif choice == '4':
@@ -7936,7 +8093,7 @@ def confirm_runterm(cmd):
     if _is_sudo_cmd(cmd):
         return _sudo_handoff(cmd)
 
-    if cmd in load_approved():
+    if is_approved(cmd, cwd=os.getcwd()):
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
         _audit("RUNTERM", cmd)
         result = run_in_terminal(cmd)
@@ -8534,6 +8691,16 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         for rpath in read_paths:
             parsed_path, start_line, end_line = _parse_read_target(rpath)
             exp = os.path.expanduser(parsed_path)
+            # P2.3: enforce read path fence. Symlink escapes, secret
+            # paths (.ssh, .aws/credentials, /etc/shadow, etc.), and
+            # anything outside allowed roots get blocked + audited.
+            _ok, _why = _read_path_ok(exp)
+            if not _ok:
+                print(f"{R}  🚫 READ fence: {exp}{X}")
+                print(f"  {D}reason: {_why}{X}")
+                _audit("READ-FENCE-BLOCK", f"{exp} :: {_why}")
+                _record_blocked_action("read", exp, _why, "READ-FENCE-BLOCK")
+                continue
             if os.path.isfile(exp):
                 full_text = Path(exp).read_text(errors='replace')
                 if start_line is not None:

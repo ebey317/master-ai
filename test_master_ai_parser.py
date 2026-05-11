@@ -727,6 +727,10 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertEqual(self.calls[2], ("runterm", "bash /tmp/sensei-visual.sh"))
 
     def test_agent_standards_reports_gaps_without_certifying(self):
+        # P2.3 + P2.2 flipped three WARNs to PASS by shipping
+        # _read_path_ok + the existing 8000/12000-char caps + is_approved
+        # TTL/cwd. Two WARNs remain by honest-claim rule: typed tool
+        # boundary and sandbox boundary (no real isolation yet).
         report = master_ai.format_agent_standards()
         self.assertIn("Not an Anthropic certification", report)
         self.assertIn("SCORE", report)
@@ -734,13 +738,13 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertIn("terminal visuals use normal tool lane", report)
         self.assertRegex(report, r"(?m)^WARN\s+typed tool boundary:", msg=report)
         self.assertRegex(report, r"(?m)^WARN\s+sandbox boundary:", msg=report)
-        self.assertRegex(report, r"(?m)^WARN\s+read path fence:", msg=report)
-        self.assertRegex(report, r"(?m)^WARN\s+output caps:", msg=report)
-        self.assertRegex(report, r"(?m)^WARN\s+approval expiry:", msg=report)
+        self.assertRegex(report, r"(?m)^PASS\s+read path fence:", msg=report)
+        self.assertRegex(report, r"(?m)^PASS\s+output caps:", msg=report)
+        self.assertRegex(report, r"(?m)^PASS\s+approval expiry:", msg=report)
         self.assertNotRegex(report, r"(?mi)^FAIL.*score", msg=report)
         score = master_ai.agent_standards_score()
-        self.assertGreaterEqual(score, 80)
-        self.assertLessEqual(score, 90)
+        self.assertGreaterEqual(score, 93)
+        self.assertLessEqual(score, 97)
 
     def test_standards_score_function_is_named(self):
         self.assertTrue(callable(master_ai.agent_standards_score))
