@@ -1,0 +1,266 @@
+"""Master AI hook system (P1.4).
+
+Hooks fire at lifecycle moments around typed actions and can BLOCK an
+action by returning a FireResult with blocked=True. Built-in safe hooks
+ship enabled (syntax check on post_edit / post_create, secret scan on
+pre_create). User-defined shell hooks load from ~/.master_ai_hooks.json
+and DEFAULT TO DISABLED — they ride the same fire pipeline once enabled.
+
+Public API:
+    fire(kind, target, *, action=None) -> FireResult
+    list_hooks() -> list[Hook]
+    enable(hook_id) -> bool
+    disable(hook_id) -> bool
+    KINDS                — frozenset of recognized hook kinds
+
+Hook kinds (lifecycle phase + directive kind):
+    pre_run | post_run | pre_runterm | post_runterm
+    pre_read | post_read
+    pre_create | post_create
+    pre_edit | post_edit
+
+A blocked FireResult carries `reason` (one-line description) and
+`hook_id`. The master_ai integration writes this to history through the
+existing [HOOK BLOCKED] message path. Hook execution errors are NOT
+blocks — they're hook bugs, logged and skipped.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+HOOKS_CONFIG = Path.home() / ".master_ai_hooks.json"
+
+
+KINDS = frozenset({
+    "pre_run", "post_run",
+    "pre_runterm", "post_runterm",
+    "pre_read", "post_read",
+    "pre_create", "post_create",
+    "pre_edit", "post_edit",
+})
+
+
+@dataclass
+class FireResult:
+    blocked: bool = False
+    reason: str = ""
+    hook_id: str = ""
+
+
+@dataclass
+class Hook:
+    id: str
+    kind: str
+    fn: Optional[Callable] = None       # built-in: Python callable
+    shell: Optional[str] = None         # user-defined: shell template
+    enabled: bool = True
+    timeout_s: int = 30
+    source: str = "builtin"
+
+
+class HookRegistry:
+    def __init__(self):
+        self._hooks: list[Hook] = []
+
+    def register(self, hook: Hook) -> None:
+        if hook.kind not in KINDS:
+            raise ValueError(
+                f"unknown hook kind {hook.kind!r}; expected one of {sorted(KINDS)}"
+            )
+        self._hooks.append(hook)
+
+    def list_hooks(self) -> list[Hook]:
+        return list(self._hooks)
+
+    def enabled_for(self, kind: str) -> list[Hook]:
+        return [h for h in self._hooks if h.kind == kind and h.enabled]
+
+    def find(self, hook_id: str) -> Optional[Hook]:
+        for h in self._hooks:
+            if h.id == hook_id:
+                return h
+        return None
+
+    def enable(self, hook_id: str) -> bool:
+        h = self.find(hook_id)
+        if h is None:
+            return False
+        h.enabled = True
+        return True
+
+    def disable(self, hook_id: str) -> bool:
+        h = self.find(hook_id)
+        if h is None:
+            return False
+        h.enabled = False
+        return True
+
+    def fire(self, kind: str, target: Any, *, action: Any = None) -> FireResult:
+        if kind not in KINDS:
+            return FireResult(hook_id="<unknown-kind>")
+        for h in self.enabled_for(kind):
+            try:
+                if h.fn is not None:
+                    res = h.fn(target, action=action)
+                    if isinstance(res, FireResult) and res.blocked:
+                        return FireResult(blocked=True,
+                                          reason=res.reason or "blocked",
+                                          hook_id=h.id)
+                elif h.shell:
+                    cmd = h.shell.replace("{target}", str(target))
+                    try:
+                        r = subprocess.run(cmd, shell=True, capture_output=True,
+                                           text=True, timeout=h.timeout_s)
+                    except subprocess.TimeoutExpired:
+                        continue  # hook timeout is NOT a block
+                    if r.returncode != 0:
+                        reason_src = (r.stderr or r.stdout
+                                       or f"exit {r.returncode}").strip()
+                        first_line = (reason_src.splitlines() or [""])[0][:200]
+                        return FireResult(blocked=True,
+                                          reason=f"{h.id}: {first_line}",
+                                          hook_id=h.id)
+            except Exception:
+                # Hook implementation errors are NOT blocks — they're bugs
+                # in the hook itself. Log via the caller's mechanism (this
+                # module has no logger of its own); fall through.
+                continue
+        return FireResult()
+
+
+# ── Built-in hook implementations ────────────────────────────────────
+
+def _syntax_check_py(target, action=None) -> FireResult:
+    """post_edit / post_create hook. Runs ``python3 -m py_compile`` on
+    .py targets; blocks on syntax errors. Non-.py paths pass through.
+    """
+    target = str(target or "")
+    if not target.endswith(".py"):
+        return FireResult()
+    if not Path(target).is_file():
+        return FireResult()
+    try:
+        r = subprocess.run(["python3", "-m", "py_compile", target],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return FireResult()  # don't block on tool failure
+    if r.returncode == 0:
+        return FireResult()
+    err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
+    last_line = (err_src.splitlines() or [""])[-1][:300]
+    return FireResult(blocked=True,
+                      reason=f"python syntax error: {last_line}",
+                      hook_id="syntax-check-py")
+
+
+_SECRET_PATTERNS = [
+    (re.compile(r'\bAKIA[0-9A-Z]{16}\b'),                            "AWS access key id"),
+    (re.compile(r'\bASIA[0-9A-Z]{16}\b'),                            "AWS temporary key"),
+    (re.compile(r'-----BEGIN (?:RSA |OPENSSH |DSA |EC )?PRIVATE KEY-----'),
+                                                                     "private key block"),
+    (re.compile(r'\bgh[pousr]_[A-Za-z0-9]{36,}\b'),                  "GitHub token"),
+    (re.compile(r'\bxox[abprs]-[A-Za-z0-9-]{10,}\b'),                "Slack token"),
+    (re.compile(r'\bsk-[A-Za-z0-9]{20,}\b'),                          "OpenAI-style API key"),
+]
+
+
+def _secret_scan(target, action=None) -> FireResult:
+    """pre_create hook. Scans the CREATE content for secret patterns.
+    The action argument (if provided) carries .create_content; otherwise
+    if ``target`` itself is a string and not a real existing file path,
+    it's treated as content. Blocks on any match.
+    """
+    text = ""
+    if action is not None:
+        text = getattr(action, "create_content", None) or ""
+    if not text and isinstance(target, str):
+        # Heuristic: if it has newlines or is long, treat as content.
+        if "\n" in target or len(target) > 200:
+            text = target
+    if not text:
+        return FireResult()
+    for pat, label in _SECRET_PATTERNS:
+        if pat.search(text):
+            return FireResult(blocked=True,
+                              reason=f"detected {label} in CREATE content",
+                              hook_id="secret-scan")
+    return FireResult()
+
+
+# ── Module-level registry ─────────────────────────────────────────────
+
+_REGISTRY = HookRegistry()
+_REGISTRY.register(Hook(id="syntax-check-py-post-edit", kind="post_edit",
+                        fn=_syntax_check_py, source="builtin"))
+_REGISTRY.register(Hook(id="syntax-check-py-post-create", kind="post_create",
+                        fn=_syntax_check_py, source="builtin"))
+_REGISTRY.register(Hook(id="secret-scan-pre-create", kind="pre_create",
+                        fn=_secret_scan, source="builtin"))
+
+
+def _load_user_hooks(path: Path = HOOKS_CONFIG) -> int:
+    """Load user-defined hooks from JSON config. Returns count loaded.
+    User hooks default to enabled=False unless the file explicitly sets
+    enabled=true. Malformed entries are skipped without raising.
+    """
+    if not path or not Path(path).is_file():
+        return 0
+    try:
+        data = json.loads(Path(path).read_text())
+    except Exception:
+        return 0
+    raw = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return 0
+    loaded = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        hid = str(entry.get("id") or "").strip()
+        kind = str(entry.get("kind") or "").strip().lower()
+        shell = entry.get("shell")
+        if not hid or kind not in KINDS or not shell:
+            continue
+        enabled = bool(entry.get("enabled", False))
+        timeout = int(entry.get("timeout_s") or 30)
+        try:
+            _REGISTRY.register(Hook(id=hid, kind=kind, shell=shell,
+                                    enabled=enabled, timeout_s=timeout,
+                                    source="user"))
+            loaded += 1
+        except ValueError:
+            continue
+    return loaded
+
+
+# Load at import time. Failures are swallowed inside _load_user_hooks.
+_load_user_hooks()
+
+
+def fire(kind: str, target: Any, *, action: Any = None) -> FireResult:
+    return _REGISTRY.fire(kind, target, action=action)
+
+
+def list_hooks() -> list[Hook]:
+    return _REGISTRY.list_hooks()
+
+
+def enable(hook_id: str) -> bool:
+    return _REGISTRY.enable(hook_id)
+
+
+def disable(hook_id: str) -> bool:
+    return _REGISTRY.disable(hook_id)
+
+
+def reload_user_hooks(path: Path = HOOKS_CONFIG) -> int:
+    """Drop all user-sourced hooks and reload from JSON. Built-in hooks
+    are untouched. Returns count of user hooks loaded."""
+    _REGISTRY._hooks = [h for h in _REGISTRY._hooks if h.source == "builtin"]
+    return _load_user_hooks(path)

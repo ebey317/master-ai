@@ -229,6 +229,7 @@ _LAST_MEMORY_SLICE_HASH = ""
 _LAST_MEMORY_SLICE_AT_S = 0.0
 _LAST_DENIED_ACTION  = {}
 _LAST_BLOCKED_ACTION = {}  # safeguard-blocked directive; consumed in process_reply to feed the BLOCKED back to the LLM next turn
+_LAST_HOOK_BLOCK = {}      # P1.4: hook-blocked action (CREATE/EDIT); consumed in process_reply's action_failed branch to feed [HOOK BLOCKED] back
 HINTS                = 0 if HINTS_FILE.exists() else 1
 ACTIVE_PROJECT       = ""
 _SETTINGS            = Path.home() / ".master_ai_settings"
@@ -7999,6 +8000,44 @@ def _looks_like_english(s: str) -> bool:
 
 # ── FILE CREATE CONFIRM ───────────────────────────────────────
 @_awaiting_confirm
+def _fire_hook_or_block(kind, target, content=None):
+    """P1.4: fire hooks for ``kind``; on block, record _LAST_HOOK_BLOCK +
+    audit + return True (caller should abort). Returns False if no hook
+    blocked (caller proceeds). Hooks module unavailable / errors swallow
+    silently — observability, not a blocker."""
+    try:
+        import hooks as _hooks
+    except Exception:
+        return False
+    # For pre_create the content carries the secret-scan payload. Pass it
+    # as the target so _secret_scan's heuristic picks it up.
+    scan_target = content if (kind == "pre_create" and content is not None) else target
+    try:
+        result = _hooks.fire(kind, scan_target)
+    except Exception as e:
+        try:
+            log(f"HOOK_FIRE_ERROR ({kind}, {target}): {e}")
+        except Exception:
+            pass
+        return False
+    if not result.blocked:
+        return False
+    globals()["_LAST_HOOK_BLOCK"] = {
+        "kind": kind,
+        "path": str(target),
+        "hook_id": result.hook_id,
+        "reason": result.reason,
+    }
+    try:
+        _audit(f"HOOK-BLOCK-{kind.upper()}",
+               f"{target} :: {result.hook_id}: {result.reason}")
+    except Exception:
+        pass
+    print(_pill("HOOK-BLOCK", f"{R}{result.hook_id}: {result.reason}{X}"))
+    log(f"HOOK_BLOCK {kind} on {target}: {result.hook_id}: {result.reason}")
+    return True
+
+
 def confirm_create(filepath, content):
     filepath = os.path.expanduser(filepath)
     # Auto-mode CWD fence
@@ -8010,6 +8049,9 @@ def confirm_create(filepath, content):
         print(f"  {D}switch to 'mode review' to confirm manually.{X}")
         _audit("CREATE-FENCE-BLOCK", filepath)
         _record_blocked_action("create", filepath, why, "CREATE-FENCE-BLOCK")
+        return False
+    # P1.4: pre_create hooks (e.g. secret scan).
+    if _fire_hook_or_block("pre_create", filepath, content=content):
         return False
     line_count = content.count('\n') + 1
     lines = content.splitlines()
@@ -8044,6 +8086,8 @@ def confirm_create(filepath, content):
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE-AUTO", filepath)
             _remember_created_file(filepath)
+            if _fire_hook_or_block("post_create", filepath):
+                return False
             return True
         except Exception as e:
             print(_pill("ERROR", f"create failed: {e}"))
@@ -8091,6 +8135,8 @@ def confirm_create(filepath, content):
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE", filepath)
             _remember_created_file(filepath)
+            if _fire_hook_or_block("post_create", filepath):
+                return False
             return True
         except Exception as e:
             print(_pill("ERROR", f"create failed: {e}"))
@@ -8150,6 +8196,8 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT-AUTO", filepath)
+            if _fire_hook_or_block("post_edit", filepath):
+                return False
             return True
         except Exception as e:
             print(_pill("ERROR", f"edit failed: {e}"))
@@ -8169,6 +8217,8 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT", filepath)
+            if _fire_hook_or_block("post_edit", filepath):
+                return False
             return True
         except Exception as e:
             print(_pill("ERROR", f"edit failed: {e}"))
@@ -8661,6 +8711,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             msg = f"[User declined {kind}{': ' + details if details else ''}] Do not repeat that action unless the user explicitly asks."
             history.append({"role": "user", "content": msg})
             globals()["_LAST_DENIED_ACTION"] = {}
+        # P1.4: surface hook blocks the same way denied actions surface —
+        # so the next model turn sees the [HOOK BLOCKED] feedback and can
+        # repair instead of marching forward assuming success.
+        hook_block = globals().get("_LAST_HOOK_BLOCK") or {}
+        if hook_block:
+            hkind = hook_block.get("kind") or "action"
+            hpath = hook_block.get("path") or ""
+            hid = hook_block.get("hook_id") or "?"
+            hreason = hook_block.get("reason") or "blocked by Sensei hook"
+            msg = (
+                f"[HOOK BLOCKED] {hkind} on {hpath} was flagged by hook "
+                f"'{hid}': {hreason}. The action did happen if it was a "
+                "post-* hook, so the file may now be in a broken state — "
+                "diagnose and fix before continuing the chain."
+            )
+            history.append({"role": "user", "content": msg})
+            globals()["_LAST_HOOK_BLOCK"] = {}
+            log(f"CHAIN_HOOK_BLOCK_FEEDBACK: appended [HOOK BLOCKED] for {hkind} {hpath}")
         if run_cmds or runterm_cmds:
             print(_pill("BLOCKED", f"{D}CREATE/EDIT failed or was denied — skipped downstream RUN/RUNTERM for this turn{X}"))
             log("CHAIN_ABORT: skipped RUN/RUNTERM after failed CREATE/EDIT")
