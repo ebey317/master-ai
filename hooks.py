@@ -43,6 +43,9 @@ KINDS = frozenset({
     "pre_read", "post_read",
     "pre_create", "post_create",
     "pre_edit", "post_edit",
+    "on_blocked",  # 2026-05-11: fires when ANY action lands BLOCKED.
+                   # Sibling to pre_/post_ — observes a state outcome,
+                   # not a lifecycle phase. Used by auto-extract-lesson.
 })
 
 
@@ -195,6 +198,114 @@ _SECRET_PATTERNS = [
 ]
 
 
+def _auto_extract_lesson(target, action=None) -> FireResult:
+    """on_blocked hook — close the self-teaching loop.
+
+    When an action lands in BLOCKED status (RUN exit-127 hallucination,
+    fence refusal, hook block, etc.), this fires a quick background
+    Ollama call asking the small local model for a one-line lesson and
+    stores it via master_ai.confirm_remember() on success. Async — never
+    blocks the user. Rate-limited to avoid burning the CPU box on long
+    chains of blocked actions.
+
+    Skips extraction for:
+      - policy / fence blocks (security guardrails — no useful lesson)
+      - empty-payload blocks (parser cleanup, not user-facing)
+      - calls beyond the per-session cap
+
+    The lesson goes through confirm_remember() so it gets the same
+    validation (200-char cap, dedup, MEMORY_FILE write) the user's
+    `remember:` command and the model's REMEMBER: directive use.
+    """
+    if not isinstance(action, dict):
+        return FireResult()
+    kind = (action.get("kind") or "").strip()
+    blocked_target = (action.get("target") or "").strip() or str(target or "")
+    reason = (action.get("reason") or "").strip()
+    audit_kind = (action.get("audit_kind") or "").upper()
+    if not blocked_target or not reason:
+        return FireResult()
+    if "POLICY" in audit_kind or "FENCE" in audit_kind:
+        return FireResult()
+    if "EMPTY" in audit_kind or "MISSING" in audit_kind:
+        return FireResult()
+    global _EXTRACT_COUNT_SESSION
+    with _EXTRACT_LOCK:
+        if _EXTRACT_COUNT_SESSION >= _EXTRACT_MAX_PER_SESSION:
+            return FireResult()
+        _EXTRACT_COUNT_SESSION += 1
+    import threading
+    threading.Thread(
+        target=_extract_lesson_worker,
+        args=(kind, blocked_target, reason),
+        daemon=True,
+        name="auto-extract-lesson",
+    ).start()
+    return FireResult()
+
+
+import threading as _threading
+_EXTRACT_LOCK = _threading.Lock()
+_EXTRACT_COUNT_SESSION = 0
+_EXTRACT_MAX_PER_SESSION = 10
+_EXTRACT_LESSON_MODEL = "qwen2.5:3b"
+_EXTRACT_LESSON_TIMEOUT_S = 12
+_EXTRACT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+
+
+def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
+    """Background worker — asks the small local model for a one-line
+    lesson from a blocked action, stores it via confirm_remember() if
+    the model returns something usable. All exceptions swallowed."""
+    prompt = (
+        f"A {kind or 'tool'} action was BLOCKED by safeguards.\n"
+        f"Action: {target[:200]}\n"
+        f"Reason: {reason[:200]}\n\n"
+        "If there is a one-line factual lesson worth remembering so "
+        "this doesn't repeat (e.g. \"X isn't installed on this box, "
+        "use Y\"), reply with JUST the lesson, no preamble, max 150 "
+        "chars.\n"
+        "If there is no useful generic lesson, reply with exactly: SKIP"
+    )
+    try:
+        import urllib.request as _ureq
+        import json as _json
+        body = _json.dumps({
+            "model": _EXTRACT_LESSON_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"num_predict": 80, "temperature": 0.2},
+        }).encode()
+        req = _ureq.Request(
+            _EXTRACT_OLLAMA_URL,
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+        with _ureq.urlopen(req, timeout=_EXTRACT_LESSON_TIMEOUT_S) as r:
+            data = _json.loads(r.read())
+    except Exception:
+        return
+    lesson = (data.get("response") or "").strip()
+    if not lesson:
+        return
+    lesson_line = (lesson.splitlines() or [""])[0].strip()
+    if lesson_line.upper().strip().rstrip(".!:") == "SKIP":
+        return
+    lesson_line = re.sub(r'^\s*REMEMBER:\s*', '', lesson_line, flags=re.IGNORECASE).strip()
+    if len(lesson_line) < 10 or len(lesson_line) > 200:
+        return
+    try:
+        import sys
+        import os as _os
+        _scripts = _os.path.expanduser("~/scripts")
+        if _scripts not in sys.path:
+            sys.path.insert(0, _scripts)
+        import master_ai as _ma
+        _ma.confirm_remember(lesson_line)
+    except Exception:
+        pass
+
+
 def _secret_scan(target, action=None) -> FireResult:
     """pre_create hook. Scans the CREATE content for secret patterns.
     The action argument (if provided) carries .create_content; otherwise
@@ -231,6 +342,13 @@ _REGISTRY.register(Hook(id="syntax-check-sh-post-create", kind="post_create",
                         fn=_syntax_check_sh, source="builtin"))
 _REGISTRY.register(Hook(id="secret-scan-pre-create", kind="pre_create",
                         fn=_secret_scan, source="builtin"))
+# 2026-05-11: auto-extract-lesson hook — closes the REMEMBER:
+# self-teaching loop. When an action lands BLOCKED, an async worker
+# asks the small local model for a one-line lesson and stores it via
+# confirm_remember(). Default-enabled; user can disable via
+# `hooks disable auto-extract-lesson` (P1.4 hook command).
+_REGISTRY.register(Hook(id="auto-extract-lesson", kind="on_blocked",
+                        fn=_auto_extract_lesson, source="builtin"))
 
 
 def _load_user_hooks(path: Path = HOOKS_CONFIG) -> int:

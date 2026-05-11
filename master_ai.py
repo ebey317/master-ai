@@ -9012,6 +9012,18 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 "reply so this doesn't repeat next turn."
             )
             history.append({"role": "user", "content": msg})
+            # 2026-05-11: fire on_blocked hook for the [HOOK BLOCKED]
+            # path too. Same async lesson-extract pipeline.
+            try:
+                import hooks as _hooks
+                _hooks.fire("on_blocked", hpath, action={
+                    "kind": hkind.upper(),
+                    "target": hpath,
+                    "reason": f"{hid}: {hreason}",
+                    "audit_kind": f"HOOK-BLOCK-{hkind.upper()}",
+                })
+            except Exception as e:
+                log(f"ON_BLOCKED_HOOK_ERROR: {e}")
             globals()["_LAST_HOOK_BLOCK"] = {}
             log(f"CHAIN_HOOK_BLOCK_FEEDBACK: appended [HOOK BLOCKED] for {hkind} {hpath}")
         if run_cmds or runterm_cmds:
@@ -9096,6 +9108,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 "reply so this doesn't repeat next turn."
             ),
         })
+        # 2026-05-11: fire on_blocked hook for auto-lesson extraction.
+        # Async — the worker runs the small 3B model in a thread and
+        # stores the lesson via confirm_remember() without blocking the
+        # user. Rate-limited inside the hook itself (max 10/session).
+        # Capture the blocked context BEFORE clearing the global.
+        try:
+            import hooks as _hooks
+            _hooks.fire("on_blocked", cmd, action={
+                "kind": (blocked.get("kind") or kind).upper(),
+                "target": blocked.get("command") or cmd,
+                "reason": blocked.get("reason", "safeguard refused"),
+                "audit_kind": blocked.get("audit_kind", "TOOL-BLOCKED"),
+            })
+        except Exception as e:
+            log(f"ON_BLOCKED_HOOK_ERROR: {e}")
         globals()["_LAST_BLOCKED_ACTION"] = {}
         log(f"CHAIN_BLOCKED_FEEDBACK: appended [TOOL BLOCKED] for: {cmd}")
         return True
