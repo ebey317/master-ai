@@ -11826,7 +11826,11 @@ def main():
         if lo == "agents" or lo.startswith("agents "):
             try:
                 import subagent_registry as _sr
-                args = (user_text[len("agents"):].strip()).split(None, 1)
+                # Slice off "agents" from the REPL input. The REPL variable
+                # here is `cmd` (not `user_text` — that's the post-command
+                # message-to-model variable scoped later). Codex caught
+                # this on the 2026-05-11 live-verification pass.
+                args = (cmd[len("agents"):].strip()).split(None, 1)
                 sub = (args[0] if args else "").lower()
                 rest = args[1] if len(args) > 1 else ""
                 if sub in ("", "list"):
