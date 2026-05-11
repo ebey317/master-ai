@@ -300,6 +300,128 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self._error(str(e))
             return
 
+        # Pupil API v1 — see ~/scripts/pupil_api.md.
+        # /health — cheap liveness + Ollama reachability.
+        if self.path == '/health':
+            ollama_state = 'down'
+            model_name = 'master-ai'
+            try:
+                req = urllib.request.Request('http://127.0.0.1:11434/api/tags')
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    json.loads(resp.read().decode())
+                ollama_state = 'active'
+            except Exception:
+                ollama_state = 'down'
+            self._json({
+                'ok': True,
+                'ollama': ollama_state,
+                'model': model_name,
+                'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+            })
+            return
+
+        # /status — richer state for the Pupil status card.
+        if self.path == '/status':
+            try:
+                mode = 'plan'
+                try:
+                    mp = os.path.expanduser('~/.master_ai_mode')
+                    if os.path.exists(mp):
+                        v = open(mp).read().strip().lower()
+                        if v in ('plan', 'review', 'auto'):
+                            mode = v
+                except Exception:
+                    pass
+                memory_facts = 0
+                try:
+                    mem_path = os.path.expanduser('~/.master_ai_memory')
+                    if os.path.exists(mem_path):
+                        with open(mem_path) as f:
+                            memory_facts = sum(1 for _ in f)
+                except Exception:
+                    pass
+                last_route = ''
+                try:
+                    rm = os.path.expanduser('~/.master_ai_router_metrics.jsonl')
+                    if os.path.exists(rm):
+                        with open(rm) as f:
+                            last_line = ''
+                            for line in f:
+                                if line.strip():
+                                    last_line = line
+                            if last_line:
+                                last_route = (json.loads(last_line).get('route') or '')
+                except Exception:
+                    pass
+                # Reuse /sys logic for mem + loaded models
+                mem = {'total_mb': 0, 'used_mb': 0, 'available_mb': 0, 'swap_used_mb': 0}
+                try:
+                    with open('/proc/meminfo') as f:
+                        m = {}
+                        for line in f:
+                            k, _, v = line.partition(':')
+                            v = v.strip().split()[0]
+                            m[k] = int(v) // 1024
+                    mem['total_mb']     = m.get('MemTotal', 0)
+                    mem['available_mb'] = m.get('MemAvailable', 0)
+                    mem['used_mb']      = mem['total_mb'] - mem['available_mb']
+                    mem['swap_used_mb'] = m.get('SwapTotal', 0) - m.get('SwapFree', 0)
+                except Exception:
+                    pass
+                loaded = []
+                try:
+                    req = urllib.request.Request('http://127.0.0.1:11434/api/ps')
+                    with urllib.request.urlopen(req, timeout=2) as resp:
+                        d = json.loads(resp.read().decode())
+                        for m in d.get('models', []):
+                            loaded.append({
+                                'name': m.get('name'),
+                                'size_mb': int(m.get('size_vram', m.get('size', 0))) // (1024*1024),
+                            })
+                except Exception:
+                    pass
+                self._json({
+                    'mode': mode,
+                    'model': 'master-ai',
+                    'memory_facts': memory_facts,
+                    'last_route': last_route,
+                    'queue_depth': 0,
+                    'loaded_models': loaded,
+                    'mem': mem,
+                    'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+                })
+            except Exception as e:
+                self._error(str(e))
+            return
+
+        # /events — SSE stream. P0.1 ships hello + heartbeat only.
+        # Typed-action events (P0.4) and mode_changed (P1.4 wiring) come later.
+        if self.path == '/events':
+            try:
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Connection', 'keep-alive')
+                self.end_headers()
+                import time as _time
+                def _write_event(name, payload):
+                    msg = f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode()
+                    self.wfile.write(msg)
+                    self.wfile.flush()
+                _write_event('hello', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
+                # Bounded loop — exits on client disconnect (BrokenPipeError).
+                # 15s heartbeat; max 1 hour per connection so a stuck client doesn't pin a thread.
+                end = _time.time() + 3600
+                while _time.time() < end:
+                    _time.sleep(15)
+                    _write_event('heartbeat', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
+            except _CLIENT_DISCONNECTS:
+                pass
+            except Exception:
+                pass
+            return
+
         # /thoughts — canonical Master AI voice (trademark quotes + tips +
         # thinking phrases). Shared by Sensei and Pupil so both UIs speak in
         # one accord. Source of truth: ~/scripts/master_ai_voice.json.
@@ -521,6 +643,83 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                     'model': model,
                     'elapsed_s': round(_time.time() - t0, 2),
                     'node': os.uname().nodename if hasattr(os, 'uname') else 'unknown',
+                }); return
+            except Exception as e:
+                self._json({'error': str(e)}, 500); return
+
+        # Pupil API v1 — see ~/scripts/pupil_api.md.
+        # POST /chat — Pupil's same-machine chat endpoint. No mesh-token gate.
+        # P0.1 MVP: direct Ollama generate. P0.3 hooks this up to
+        # master_ai.handle() so Pupil gets the full Sensei brain. Response
+        # shape stays stable across that change.
+        if self.path == '/chat':
+            import time as _time
+            import urllib.request as _ureq
+            import urllib.error as _uerr
+            t0 = _time.time()
+            try:
+                payload = json.loads(data or b'{}')
+                prompt = (payload.get('prompt') or '').strip()
+                if not prompt:
+                    self._json({'error': 'missing prompt'}, 400); return
+                model = (payload.get('model') or 'master-ai').strip()
+                mode_req = (payload.get('mode') or '').strip().lower()
+                if mode_req and mode_req not in ('plan', 'review', 'auto'):
+                    self._json({'error': 'invalid mode'}, 400); return
+                body = json.dumps({
+                    'model': model,
+                    'prompt': prompt,
+                    'stream': False,
+                    'options': {'num_predict': 512, 'temperature': 0.7},
+                }).encode()
+                try:
+                    req = _ureq.Request(
+                        'http://127.0.0.1:11434/api/generate',
+                        data=body, headers={'Content-Type': 'application/json'},
+                    )
+                    with _ureq.urlopen(req, timeout=300) as r:
+                        d = json.loads(r.read())
+                except _uerr.URLError:
+                    self._json({'error': 'ollama unreachable'}, 503); return
+                self._json({
+                    'reply': d.get('response', ''),
+                    'route': 'local',
+                    'model': model,
+                    'latency_ms': int((_time.time() - t0) * 1000),
+                    'blocked_actions': [],
+                    'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+                }); return
+            except Exception as e:
+                self._json({'error': str(e)}, 500); return
+
+        # POST /mode — change current Sensei mode. Persists to ~/.master_ai_mode.
+        if self.path == '/mode':
+            try:
+                payload = json.loads(data or b'{}')
+                mode = (payload.get('mode') or '').strip().lower()
+                if mode not in ('plan', 'review', 'auto'):
+                    self._json({'error': 'invalid mode'}, 400); return
+                mp = os.path.expanduser('~/.master_ai_mode')
+                with open(mp, 'w') as f:
+                    f.write(mode)
+                self._json({'ok': True, 'mode': mode}); return
+            except Exception as e:
+                self._json({'error': str(e)}, 500); return
+
+        # POST /voice — toggle Pupil TTS preference. Stored at ~/.master_ai_voice_enabled.
+        if self.path == '/voice':
+            try:
+                payload = json.loads(data or b'{}')
+                if 'enabled' not in payload or not isinstance(payload.get('enabled'), bool):
+                    self._json({'error': "missing or invalid 'enabled' (must be boolean)"}, 400); return
+                enabled = payload['enabled']
+                engine = (payload.get('engine') or 'piper').strip() or 'piper'
+                vp = os.path.expanduser('~/.master_ai_voice_enabled')
+                with open(vp, 'w') as f:
+                    json.dump({'enabled': enabled, 'engine': engine}, f)
+                self._json({
+                    'ok': True,
+                    'voice_state': {'enabled': enabled, 'engine': engine},
                 }); return
             except Exception as e:
                 self._json({'error': str(e)}, 500); return
