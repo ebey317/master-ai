@@ -22,13 +22,14 @@ import typed_actions as ta  # noqa: E402
 
 class KindAndRiskConstants(unittest.TestCase):
     def test_directive_kinds_are_complete(self):
+        # REMEMBER added 2026-05-11 — model self-write to memory.
         self.assertEqual(
             ta.DIRECTIVE_KINDS,
-            frozenset({"RUN", "RUNTERM", "READ", "CREATE", "EDIT"}),
+            frozenset({"RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER"}),
         )
 
     def test_kind_class_aliases_match(self):
-        for name in ("RUN", "RUNTERM", "READ", "CREATE", "EDIT"):
+        for name in ("RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER"):
             self.assertEqual(getattr(ta.Kind, name), name)
 
     def test_risk_constants_are_distinct(self):

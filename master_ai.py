@@ -8408,11 +8408,16 @@ def confirm_remember(fact):
         print(_pill("REMEMBER-EMPTY", f"{D}empty memory line — skipped{X}"))
         _audit("REMEMBER-EMPTY", "")
         return False
+    # Drop directive prefix if the model accidentally double-wrapped
+    # (e.g. emitted "REMEMBER: REMEMBER: foo"). Strip BEFORE the 200-char
+    # cap so the cap measures real content, not prefix bytes.
+    fact = re.sub(r'^\s*REMEMBER:\s*', '', fact, flags=re.IGNORECASE).strip()
+    if not fact:
+        print(_pill("REMEMBER-EMPTY", f"{D}empty memory line — skipped{X}"))
+        _audit("REMEMBER-EMPTY", "")
+        return False
     if len(fact) > 200:
         fact = fact[:200].rstrip() + "..."
-    # Drop directive prefix if the model accidentally double-wrapped
-    # (e.g. emitted "REMEMBER: REMEMBER: foo").
-    fact = re.sub(r'^\s*REMEMBER:\s*', '', fact, flags=re.IGNORECASE)
     try:
         existing = MEMORY_FILE.read_text().splitlines() if MEMORY_FILE.exists() else []
     except Exception:
@@ -8529,11 +8534,25 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
     # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
-    # extraction shape as RUN/READ. Fires through confirm_remember()
-    # below, which writes to MEMORY_FILE through the same path the user
-    # `remember:` REPL command uses.
+    # extraction shape as RUN/READ, BUT block-aware: REMEMBER lines that
+    # appear INSIDE a <<<CONTENT>>>CONTENT / <<<FIND>>>FIND /
+    # <<<REPLACE>>>REPLACE body must NOT fire — they're document/edit
+    # content, not directives. Pre-existing RUN/READ extraction has the
+    # same blindspot (rare in practice + gated by user confirm); REMEMBER
+    # writes silently so the gate matters more here.
+    _in_body, _eligible = False, []
+    for _ln in lines:
+        _stripped_up = _ln.strip().upper()
+        if _stripped_up in ("<<<CONTENT", "<<<FIND", "<<<REPLACE"):
+            _in_body = True
+            continue
+        if _stripped_up in (">>>CONTENT", ">>>FIND", ">>>REPLACE"):
+            _in_body = False
+            continue
+        if not _in_body:
+            _eligible.append(_ln)
     remember_facts = [f for f in (_directive_payload(l, "REMEMBER")
-                      for l in lines if _real_directive(l, "REMEMBER")) if f]
+                      for l in _eligible if _real_directive(l, "REMEMBER")) if f]
 
     create_directive_paths = [
         os.path.expanduser(_directive_payload(l, "CREATE"))

@@ -47,6 +47,7 @@ class Kind:
     READ = "READ"
     CREATE = "CREATE"
     EDIT = "EDIT"
+    REMEMBER = "REMEMBER"  # 2026-05-11: model self-write to memory
 
 
 class Risk:
@@ -67,7 +68,7 @@ class Status:
     SKIPPED = "skipped"
 
 
-DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT})
+DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER})
 
 
 # Heuristic patterns for risk classification. Conservative — false-positives
@@ -281,6 +282,10 @@ _AUDIT_OUTCOME_MAP = {
     "CREATE-BLOCK":           ("CREATE", Status.BLOCKED),
     "EDIT":                   ("EDIT", Status.COMPLETED),
     "EDIT-BLOCK":             ("EDIT", Status.BLOCKED),
+    # REMEMBER (self-write to memory) — added 2026-05-11.
+    "REMEMBER":               ("REMEMBER", Status.COMPLETED),
+    "REMEMBER-EMPTY":         ("REMEMBER", Status.SKIPPED),
+    "REMEMBER-DUP":           ("REMEMBER", Status.SKIPPED),
     "DESKTOP-OPEN":           ("RUN", Status.COMPLETED),
     "DESKTOP-REDIRECT":       ("RUN", Status.COMPLETED),
     "POLICY-CMD-BLOCK":       ("RUN", Status.BLOCKED),

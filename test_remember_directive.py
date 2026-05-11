@@ -124,6 +124,67 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
         self.assertIn("second lesson", mem)
         self.assertIn("third lesson", mem)
 
+    def test_remember_inside_create_body_does_NOT_fire(self):
+        """REMEMBER lines inside <<<CONTENT>>>CONTENT are document
+        content, not directives. Pre-fix the parser would write them to
+        memory silently."""
+        orig_create = master_ai.confirm_create
+        master_ai.confirm_create = lambda p, c: True
+        try:
+            master_ai.process_reply(
+                "CREATE: /tmp/notes-test.md\n"
+                "<<<CONTENT\n"
+                "REMEMBER: this is example documentation only\n"
+                "REMEMBER: another example line\n"
+                ">>>CONTENT",
+                [], streamed=False,
+            )
+        finally:
+            master_ai.confirm_create = orig_create
+        self.assertEqual(self._mem(), [],
+            "REMEMBER inside <<<CONTENT>>>CONTENT must not fire — "
+            "those are document lines, not directives")
+
+    def test_remember_inside_find_replace_body_does_NOT_fire(self):
+        """Same protection for <<<FIND>>>FIND and <<<REPLACE>>>REPLACE."""
+        orig_edit = master_ai.confirm_edit
+        master_ai.confirm_edit = lambda p, f, r: True
+        try:
+            master_ai.process_reply(
+                "READ: /tmp/notes-test.md\n"
+                "EDIT: /tmp/notes-test.md\n"
+                "<<<FIND\n"
+                "REMEMBER: don't catch this\n"
+                ">>>FIND\n"
+                "<<<REPLACE\n"
+                "REMEMBER: don't catch this either\n"
+                ">>>REPLACE",
+                [], streamed=False,
+            )
+        finally:
+            master_ai.confirm_edit = orig_edit
+        self.assertEqual(self._mem(), [],
+            "REMEMBER inside <<<FIND/REPLACE>>> blocks must not fire")
+
+    def test_remember_AFTER_create_block_still_fires(self):
+        """The block-state filter resets at the >>>CONTENT marker, so a
+        REMEMBER line that comes AFTER the close marker should still
+        fire. Pin this so the fix doesn't over-suppress."""
+        orig_create = master_ai.confirm_create
+        master_ai.confirm_create = lambda p, c: True
+        try:
+            master_ai.process_reply(
+                "CREATE: /tmp/notes-test.md\n"
+                "<<<CONTENT\n"
+                "REMEMBER: inside the body — ignored\n"
+                ">>>CONTENT\n"
+                "REMEMBER: outside the body — should fire",
+                [], streamed=False,
+            )
+        finally:
+            master_ai.confirm_create = orig_create
+        self.assertEqual(self._mem(), ["outside the body — should fire"])
+
     def test_backtick_wrapped_remember_does_not_fire(self):
         # `REMEMBER:` inside backticks is prose, not a directive.
         # _real_directive enforces the backtick-parity rule.
