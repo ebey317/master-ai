@@ -1931,7 +1931,7 @@ def _clear_cache_weather_short_circuit(text):
     )
 
 
-_DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT")
+_DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER")
 
 def _reply_has_directive(reply):
     """True if the reply contains a non-backticked RUN/RUNTERM/READ/CREATE/EDIT
@@ -3580,7 +3580,7 @@ LOCAL_DIRECTIVE_HINT = (
 
 import re as _re_classify
 _RE_NUMBERED  = _re_classify.compile(r'^\s*\d+[.)]\s')
-_RE_DIRECTIVE = _re_classify.compile(r'^\s*(RUN|RUNTERM|READ|CREATE|EDIT|THINK|DONE|PLAN):')
+_RE_DIRECTIVE = _re_classify.compile(r'^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|THINK|DONE|PLAN):')
 _RE_SCRATCH   = _re_classify.compile(r'^\s*\[scratchpad:', _re_classify.IGNORECASE)
 _RE_URL       = _re_classify.compile(r'https?://\S+')
 
@@ -8389,6 +8389,52 @@ def confirm_edit(filepath, find_text, replace_text):
         _remember_last_action("edit_denied", path=filepath)
         return False
 
+
+# ── REMEMBER directive (self-write to memory, 2026-05-11) ────
+# Sensei's self-teaching loop. The user's `remember:` REPL command has
+# always written to MEMORY_FILE; this gives the MODEL the same ability
+# via REMEMBER: <fact> in its directive stream. Same file, same
+# select_memory_context() injection on subsequent turns — no parallel
+# system. The model can capture a one-line lesson from a failed turn
+# ("fetchmail isn't installed on this box; use Thunderbird via desktop
+# launcher instead") and that line shows up matched into next turn's
+# context whenever the user's words overlap.
+def confirm_remember(fact):
+    """Append a model-emitted memory line. Validates: non-empty, <200
+    chars, not duplicate. Returns True if stored, False otherwise.
+    Same write path as the user `remember:` REPL command."""
+    fact = (fact or "").strip()
+    if not fact:
+        print(_pill("REMEMBER-EMPTY", f"{D}empty memory line — skipped{X}"))
+        _audit("REMEMBER-EMPTY", "")
+        return False
+    if len(fact) > 200:
+        fact = fact[:200].rstrip() + "..."
+    # Drop directive prefix if the model accidentally double-wrapped
+    # (e.g. emitted "REMEMBER: REMEMBER: foo").
+    fact = re.sub(r'^\s*REMEMBER:\s*', '', fact, flags=re.IGNORECASE)
+    try:
+        existing = MEMORY_FILE.read_text().splitlines() if MEMORY_FILE.exists() else []
+    except Exception:
+        existing = []
+    if fact in (l.strip() for l in existing):
+        print(_pill("REMEMBER-DUP", f"{D}{fact[:70]}{X}"))
+        _audit("REMEMBER-DUP", fact)
+        return False
+    try:
+        MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(MEMORY_FILE, "a") as f:
+            f.write(fact + "\n")
+        print(_pill("REMEMBER", f"{G}{fact[:80]}{X}"))
+        log(f"PC_REMEMBER: {fact}")
+        _audit("REMEMBER", fact)
+        return True
+    except Exception as e:
+        print(_pill("ERROR", f"remember failed: {e}"))
+        log(f"REMEMBER_WRITE_ERROR: {e}")
+        return False
+
+
 # ── REPLY PROCESSOR ──────────────────────────────────────────
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
@@ -8482,6 +8528,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
+    # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
+    # extraction shape as RUN/READ. Fires through confirm_remember()
+    # below, which writes to MEMORY_FILE through the same path the user
+    # `remember:` REPL command uses.
+    remember_facts = [f for f in (_directive_payload(l, "REMEMBER")
+                      for l in lines if _real_directive(l, "REMEMBER")) if f]
 
     create_directive_paths = [
         os.path.expanduser(_directive_payload(l, "CREATE"))
@@ -8648,7 +8700,13 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         })
         return None
 
-    has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops)
+    has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops or remember_facts)
+    # REMEMBER: <fact> — fire first, before any tool dispatch. Memory
+    # writes are inert text appends; no fence, no approval needed, same
+    # path as the user `remember:` command. The model may emit multiple
+    # REMEMBER lines in one reply; each gets validated + stored.
+    for _fact in remember_facts:
+        confirm_remember(_fact)
 
     # Print non-directive narrative text. Backtick-wrapped directive names
     # (e.g. "use `RUN:` for shell commands") are prose and must stay in the
@@ -8929,7 +8987,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 f"[HOOK BLOCKED] {hkind} on {hpath} was flagged by hook "
                 f"'{hid}': {hreason}. The action did happen if it was a "
                 "post-* hook, so the file may now be in a broken state — "
-                "diagnose and fix before continuing the chain."
+                "diagnose and fix before continuing the chain. "
+                "If there is a one-line lesson here, emit a single "
+                "`REMEMBER: <one-line lesson>` directive in your next "
+                "reply so this doesn't repeat next turn."
             )
             history.append({"role": "user", "content": msg})
             globals()["_LAST_HOOK_BLOCK"] = {}
@@ -9009,7 +9070,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 f"Reason: {blocked.get('reason', 'safeguard refused')}.\n"
                 "Choose an already-installed alternative, propose a safer "
                 "implementation, or ask for explicit user approval where "
-                "appropriate. Do not assume the command succeeded."
+                "appropriate. Do not assume the command succeeded.\n"
+                "If there is a one-line lesson here (e.g. \"X isn't "
+                "installed on this box, use Y\"), emit a single "
+                "`REMEMBER: <one-line lesson>` directive in your next "
+                "reply so this doesn't repeat next turn."
             ),
         })
         globals()["_LAST_BLOCKED_ACTION"] = {}
@@ -10191,11 +10256,17 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # and skips the scratchpad line entirely.
         f"{SCRATCHPAD_SYSTEM_ADDITION}\n"
         "[BEHAVIOR RULES — scratchpad above takes precedence when conflicting]\n"
-        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit). "
+        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, remember). "
         "Each directive lives on its OWN line at column 0; never describe directives inline using "
         "their colon-suffixed forms — the parser would match them. "
         "Do the task directly without long explanations (but ALWAYS emit the scratchpad line). "
         "NEVER emit: rm -rf / | mkfs | dd if=\n\n"
+        "[SELF-TEACHING] You can write one-line lessons to your own memory "
+        "with `REMEMBER: <one-line lesson>`. Use it sparingly — only for "
+        "facts you'll want next turn (\"X isn't installed here, use Y\", "
+        "\"the user prefers Z for W\"). Stored in MEMORY_FILE and injected "
+        "into future turns when the user's prompt overlaps. Same file as "
+        "the user's `remember:` command — no duplicates, max 200 chars.\n\n"
         "[PLAN MODE RULE] When MODE is 'plan', emit every step as one of those directive "
         "keywords on its own line. Never emit prose instructions telling the user what THEY "
         "should do — the directives ARE what you execute when the user types 'go'.\n\n"
