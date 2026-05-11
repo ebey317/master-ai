@@ -3467,10 +3467,142 @@ def cmd_unload_local_models():
         print(f"  {R}✗ {n}: {err}{X}")
 
 
+# Few-shot injection toggle. Reads ~/.master_ai_settings each call so
+# `few_shot on|off` flips take effect without a Sensei restart.
+_FEW_SHOT_SETTINGS_FILE = Path.home() / ".master_ai_settings"
+
+
+def _few_shot_enabled():
+    try:
+        if not _FEW_SHOT_SETTINGS_FILE.exists():
+            return False
+        for line in _FEW_SHOT_SETTINGS_FILE.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("FEW_SHOT="):
+                val = line.split("=", 1)[1].strip()
+                return val not in ("", "0", "false", "False", "off", "OFF")
+    except Exception:
+        return False
+    return False
+
+
+def _few_shot_set(on):
+    """Write FEW_SHOT=1|0 into ~/.master_ai_settings, preserving other keys."""
+    val = "1" if on else "0"
+    try:
+        if _FEW_SHOT_SETTINGS_FILE.exists():
+            lines = _FEW_SHOT_SETTINGS_FILE.read_text().splitlines()
+        else:
+            lines = []
+        replaced = False
+        out = []
+        for line in lines:
+            if line.strip().startswith("FEW_SHOT="):
+                out.append(f"FEW_SHOT={val}")
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            out.append(f"FEW_SHOT={val}")
+        _FEW_SHOT_SETTINGS_FILE.write_text("\n".join(out) + "\n")
+        return True
+    except Exception as e:
+        log(f"FEWSHOT_SET_ERROR: {e}")
+        return False
+
+
+def _inject_few_shot(messages, model):
+    """If FEW_SHOT toggle is on, prepend a system message with top-3
+    harvest examples scored against the last user message. No-op on
+    toggle-off, missing harvest, no examples, or any error."""
+    if harvest is None or not messages:
+        return messages
+    if not _few_shot_enabled():
+        return messages
+    try:
+        last_user = next((m.get("content", "") for m in reversed(messages)
+                          if m.get("role") == "user"), "")
+        if not last_user:
+            return messages
+        examples = harvest.few_shot(last_user, max_examples=3, min_similarity=0.30)
+        if not examples:
+            return messages
+        block = harvest.format_few_shot(examples)
+        if not block:
+            return messages
+        return [{"role": "system", "content": block}] + list(messages)
+    except Exception as e:
+        log(f"FEWSHOT_INJECT_ERROR: {e}")
+        return messages
+
+
+# ── PRIVACY: cloud-send guard for READ-injected private content ─────
+# Source of truth for "private" is harvest._privacy_reason() — same policy
+# that filters harvest entries and few-shot examples. When READ injects a
+# file that matches the policy, we mark the turn private; ask_cloud then
+# blocks until the user explicitly approves THIS send via the
+# `privacy approve send` REPL command (one-shot consume).
+_TURN_PRIVATE = False
+_TURN_PRIVATE_REASONS = []
+_TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
+
+
+def _reset_turn_privacy():
+    """Clear per-turn privacy state. Called at handle() entry on each user input."""
+    global _TURN_PRIVATE, _TURN_PRIVATE_APPROVED
+    _TURN_PRIVATE = False
+    _TURN_PRIVATE_APPROVED = False
+    _TURN_PRIVATE_REASONS.clear()
+
+
+def _mark_turn_private(reason):
+    """Mark this turn as containing private content. reason is a short label."""
+    global _TURN_PRIVATE
+    _TURN_PRIVATE = True
+    if reason:
+        _TURN_PRIVATE_REASONS.append(str(reason))
+
+
+def _is_turn_private():
+    return _TURN_PRIVATE
+
+
+def _privacy_check_path_or_content(path, content=""):
+    """Use harvest's privacy policy. Returns the reason string (truthy)
+    when path or content trips it, else empty string."""
+    if harvest is None:
+        return ""
+    try:
+        return harvest._privacy_reason(prompt=path or "", response=content or "")
+    except Exception as e:
+        log(f"PRIVACY_CHECK_ERROR: {e}")
+        return ""
+
+
+def _approve_cloud_send_once():
+    """Set the one-shot approval flag. Consumed by the next allowed cloud send."""
+    global _TURN_PRIVATE_APPROVED
+    _TURN_PRIVATE_APPROVED = True
+
+
+def _check_cloud_send_allowed():
+    """Returns (ok, reason). When turn is private and not approved, ok=False.
+    When approved, the one-shot token is consumed."""
+    global _TURN_PRIVATE_APPROVED
+    if not _TURN_PRIVATE:
+        return True, ""
+    if _TURN_PRIVATE_APPROVED:
+        _TURN_PRIVATE_APPROVED = False
+        return True, "approved (one-shot)"
+    summary = "; ".join(_TURN_PRIVATE_REASONS[-3:]) or "private content"
+    return False, summary
+
+
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
     _t0 = time.time()
+    messages = _inject_few_shot(messages, model)
     # num_ctx + timeout matched to ask_local_stream — see that function
     # for reasoning. Keeps non-streaming calls (briefings, memory recall)
     # from blocking the input loop for minutes on CPU.
@@ -3684,6 +3816,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     log(f"LOCAL_STREAM [{model}]")
     _t0 = time.time()
     globals()["_THINKING_T0"] = _t0
+    messages = _inject_few_shot(messages, model)
     payload = {"model": model, "messages": messages, "stream": True,
                "keep_alive": "30m",
                "options": {"num_ctx": 4096}}
@@ -4158,6 +4291,23 @@ def ask_cloud_openrouter(messages):
     return _ask_openrouter(messages, "meta-llama/llama-3.3-70b-instruct:free", "llama-3.3-70b", timeout=30)
 
 def ask_cloud(messages, provider="groq"):
+    # Privacy guard: if READ injected private content into this turn,
+    # block cloud send unless the user explicitly approved via the
+    # `privacy approve send` REPL command. One-shot consume.
+    _ok, _why = _check_cloud_send_allowed()
+    if not _ok:
+        print(f"{R}  🔒 Cloud send blocked: private READ content in this turn{X}")
+        print(f"  {D}reason: {_why}{X}")
+        print(f"  {D}approve with: privacy approve send  (then retry the prompt){X}")
+        try:
+            _audit("PRIVACY-CLOUD-BLOCK", f"{provider} :: {_why}")
+        except Exception:
+            pass
+        try:
+            _record_blocked_action("cloud", provider, _why, "PRIVACY-CLOUD-BLOCK")
+        except Exception:
+            pass
+        return None
     fn_map = {
         "groq":         ask_cloud_groq,
         "fireworks":    ask_cloud_fireworks_dsv3,
@@ -8792,6 +8942,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 continue
             if os.path.isfile(exp):
                 full_text = Path(exp).read_text(errors='replace')
+                _priv_reason = _privacy_check_path_or_content(exp, full_text[:4000])
+                if _priv_reason:
+                    _mark_turn_private(f"{_priv_reason}: {exp}")
+                    print(f"  {Y}🔒 Privacy: turn marked private ({_priv_reason}){X}")
                 if start_line is not None:
                     file_lines = full_text.splitlines()
                     selected = file_lines[start_line - 1:end_line]
@@ -8807,6 +8961,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     injected_block.append(f"--- {exp} ---\n{content}")
                     print(f"{C}  📄 Read: {Y}{exp}{C} ({len(content)} chars){X}")
             elif os.path.isdir(exp):
+                _priv_reason = _privacy_check_path_or_content(exp, "")
+                if _priv_reason:
+                    _mark_turn_private(f"{_priv_reason}: {exp}")
+                    print(f"  {Y}🔒 Privacy: turn marked private ({_priv_reason}){X}")
                 listing = subprocess.run(['ls', '-la', exp],
                                          capture_output=True, text=True).stdout
                 injected_block.append(f"--- {exp} (directory) ---\n{listing}")
@@ -9990,6 +10148,7 @@ def handle_image_status(user_text, arg, history):
     history.append({"role": "assistant", "content": msg})
 
 def handle(user_text, history, image_path=None, context_policy=None):
+    _reset_turn_privacy()
     context_policy = context_policy or {}
     suppress_auto_context = bool(context_policy.get("suppress_auto_context", False))
     memory_mode = (context_policy.get("memory_mode") or "default").strip().lower()
@@ -11964,6 +12123,48 @@ def main():
                     print(f"\n  {C}{harvest.format_stats()}{X}\n")
                 except Exception as e:
                     print(f"  {W}Harvest stats error: {e}{X}\n")
+            continue
+
+        # few_shot on|off|status — toggle harvest few-shot injection into
+        # ask_local / ask_local_stream. State persisted in ~/.master_ai_settings
+        # as FEW_SHOT=1|0; read on every model call so flips are immediate.
+        if lo in ("few_shot", "few-shot", "fewshot") or \
+           lo in ("few_shot status", "few-shot status", "fewshot status"):
+            on = _few_shot_enabled()
+            label = "ON" if on else "OFF"
+            color = G if on else W
+            print(f"\n  {C}Few-shot injection: {color}{label}{X}")
+            print(f"  {C}File: {_FEW_SHOT_SETTINGS_FILE}{X}\n")
+            continue
+        if lo in ("few_shot on", "few-shot on", "fewshot on"):
+            if _few_shot_set(True):
+                print(f"\n  {G}Few-shot injection: ON{X}")
+                print(f"  {C}Top-3 harvest examples will prepend local model calls.{X}\n")
+            else:
+                print(f"  {W}Could not write {_FEW_SHOT_SETTINGS_FILE}{X}\n")
+            continue
+        if lo in ("few_shot off", "few-shot off", "fewshot off"):
+            if _few_shot_set(False):
+                print(f"\n  {W}Few-shot injection: OFF{X}\n")
+            else:
+                print(f"  {W}Could not write {_FEW_SHOT_SETTINGS_FILE}{X}\n")
+            continue
+
+        # privacy approve send — one-shot approval for the next cloud send.
+        # privacy status — show whether the current turn is marked private.
+        if lo in ("privacy approve send", "privacy approve", "privacy ok"):
+            _approve_cloud_send_once()
+            print(f"\n  {G}🔓 Cloud send approved for the next call this turn (one-shot).{X}")
+            print(f"  {C}Re-issue your request now to send it through cloud.{X}\n")
+            continue
+        if lo == "privacy status":
+            if _is_turn_private():
+                reasons = "; ".join(_TURN_PRIVATE_REASONS) or "private content"
+                pending = "approved (one-shot pending)" if _TURN_PRIVATE_APPROVED else "blocked"
+                print(f"\n  {Y}🔒 Turn private: {reasons}{X}")
+                print(f"  {C}Cloud send: {pending}{X}\n")
+            else:
+                print(f"\n  {G}🔓 Turn not marked private. Cloud sends unrestricted.{X}\n")
             continue
 
         if lo in ("router", "router stats"):

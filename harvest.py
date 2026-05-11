@@ -19,9 +19,39 @@ import re
 from pathlib import Path
 
 HARVEST_FILE = Path.home() / ".master_ai_harvest.jsonl"
+PRIVATE_SKIP_FILE = Path.home() / ".master_ai_harvest_private_skips.jsonl"
 MAX_ENTRIES_IN_MEMORY = 2000  # lookup only scans most recent N
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
+_PRIVATE_PATH_PATTERNS = (
+    re.compile(r"(?i)(?:^|[\s'\"`])(?:~|/home/[^/\s'\"`]+)/(?:Pictures|Documents|Downloads|Desktop|jobseeker)(?:/|$|[\s'\"`])"),
+    re.compile(r"(?i)(?:^|/)\.(?:ssh|gnupg)(?:/|$)"),
+    re.compile(r"(?i)(?:^|/)\.aws/(?:credentials|config)(?:$|[\s'\"`])"),
+    re.compile(r"(?i)(?:^|/)\.master_ai_keys(?:$|[\s'\"`])"),
+    re.compile(r"(?i)(?:^|/)\.netrc(?:$|[\s'\"`])"),
+)
+_PRIVATE_TERM_RE = re.compile(
+    r"(?i)\b("
+    r"resume|cover letter|job application|tax|w-?2|1099|irs|bank statement|"
+    r"routing number|account number|social security|ssn|medical|doctor|patient|"
+    r"prescription|password|credential|api key|secret token|private key|"
+    r"driver'?s license|passport"
+    r")\b"
+)
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bASIA[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN (?:RSA |OPENSSH |DSA |EC )?PRIVATE KEY-----"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+)
+_IMAGE_PATH_RE = re.compile(r"(?i)(?:~|/home/[^/\s'\"`]+|/tmp)[^\s'\"`]*\.(?:png|jpe?g|webp|gif|heic|bmp)\b")
+_REDACT_PATTERNS = (
+    (re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I), "[email]"),
+    (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "[phone]"),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[ssn]"),
+)
 
 def _tokens(text):
     return set(_TOKEN_RE.findall((text or "").lower()))
@@ -32,6 +62,47 @@ def _jaccard(a, b):
     inter = len(a & b)
     union = len(a | b)
     return inter / union if union else 0.0
+
+def _privacy_reason(prompt="", response="", meta=None):
+    text = f"{prompt or ''}\n{response or ''}"
+    meta = meta or {}
+    if meta.get("private") or meta.get("has_image"):
+        return "private meta"
+    for pat in _PRIVATE_PATH_PATTERNS:
+        if pat.search(text):
+            return "private path"
+    if _IMAGE_PATH_RE.search(text):
+        return "image path"
+    if _PRIVATE_TERM_RE.search(text):
+        return "private term"
+    for pat in _SECRET_VALUE_PATTERNS:
+        if pat.search(text):
+            return "secret pattern"
+    return ""
+
+def is_private(prompt="", response="", meta=None):
+    """True when text should not enter harvest, few-shot, or fine-tune data."""
+    return bool(_privacy_reason(prompt, response, meta=meta))
+
+def _redact_for_prompt(text):
+    out = text or ""
+    for pat, repl in _REDACT_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+def _record_private_skip(reason, model, task_type):
+    entry = {
+        "ts": int(time.time()),
+        "reason": reason,
+        "model": model,
+        "task_type": task_type,
+    }
+    try:
+        PRIVATE_SKIP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PRIVATE_SKIP_FILE, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 _entries = None
 _last_mtime = 0
@@ -58,6 +129,8 @@ def _load():
                     continue
                 try:
                     e = json.loads(line)
+                    if _privacy_reason(e.get("prompt", ""), e.get("response", ""), e.get("meta")):
+                        continue
                     e["_tokens"] = _tokens(e.get("prompt", ""))
                     entries.append(e)
                 except json.JSONDecodeError:
@@ -73,6 +146,10 @@ def _load():
 def record(prompt, model, response, task_type="chat", meta=None):
     """Append one call to the harvest file. Called after every successful cloud response."""
     if not prompt or not response:
+        return
+    private_reason = _privacy_reason(prompt, response, meta)
+    if private_reason:
+        _record_private_skip(private_reason, model, task_type)
         return
     entry = {
         "ts": int(time.time()),
@@ -138,6 +215,8 @@ def few_shot(prompt, max_examples=3, min_similarity=0.30, task_type=None):
     for e in _entries:
         if task_type and e.get("task_type") != task_type:
             continue
+        if _privacy_reason(e.get("prompt", ""), e.get("response", ""), e.get("meta")):
+            continue
         sim = _jaccard(q_tokens, e.get("_tokens", set()))
         if sim >= min_similarity:
             scored.append((sim, e))
@@ -159,8 +238,8 @@ def format_few_shot(examples, max_prompt_chars=400, max_response_chars=800):
         return ""
     lines = ["\n# Past examples of similar tasks (use these for FORMAT, not content):"]
     for i, ex in enumerate(examples, 1):
-        p = ex["prompt"][:max_prompt_chars]
-        r = ex["response"][:max_response_chars]
+        p = _redact_for_prompt(ex["prompt"])[:max_prompt_chars]
+        r = _redact_for_prompt(ex["response"])[:max_response_chars]
         lines.append(f"\n## Example {i} (similarity {ex['similarity']})")
         lines.append(f"User: {p}")
         lines.append(f"Assistant: {r}")
