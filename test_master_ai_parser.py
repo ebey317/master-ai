@@ -124,7 +124,11 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertEqual(self.calls, [("create", "/tmp/master-ai-parser-test.txt", "hello")])
 
     def test_edit_markers_are_case_insensitive(self):
+        # P1.6: EDIT in the same chain must be preceded by READ (or
+        # CREATE) of the target. Tests the case-insensitive EDIT marker
+        # while satisfying the READ→EDIT loop contract.
         master_ai.process_reply(
+            "READ: /tmp/master-ai-parser-test.txt\n"
             "edit: /tmp/master-ai-parser-test.txt\n"
             "<<<find\n"
             "old\n"

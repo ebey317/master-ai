@@ -8697,6 +8697,41 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         else:
             action_failed = True
 
+    # P1.6: enforce READ → EDIT inside the same directive chain. Editing
+    # files the model hasn't read this turn is a hallucination smell — the
+    # find_text is likely drifted from current disk content, and the edit
+    # will either no-op or land in the wrong place. Allow the model one
+    # repair pass: send [Directive repair] back to history and abort the
+    # current chain so the next turn can re-emit READ: + EDIT:. Files
+    # CREATEd this chain are exempt (model just wrote them).
+    if edit_ops:
+        read_set    = {os.path.realpath(os.path.expanduser(p)) for p in read_paths}
+        created_set = {os.path.realpath(os.path.expanduser(p)) for p, _ in create_files}
+        unread_edits = []
+        for ep, _, _ in edit_ops:
+            try:
+                rp = os.path.realpath(os.path.expanduser(ep))
+            except Exception:
+                rp = os.path.expanduser(ep)
+            if rp not in read_set and rp not in created_set:
+                unread_edits.append(ep)
+        if unread_edits:
+            print(_pill("BLOCKED", f"{D}EDIT without prior READ: {unread_edits[0][:60]}{X}"))
+            log(f"DIRECTIVE_REPAIR_READ_BEFORE_EDIT: {unread_edits[:3]}")
+            history.append({
+                "role": "user",
+                "content": (
+                    "[Directive repair]\n"
+                    "You emitted an EDIT: directive for files you have not READ this turn:\n"
+                    + "\n".join(f"- {p}" for p in unread_edits[:6])
+                    + "\n\nRead each one first (READ: <path>), then re-emit the EDIT "
+                      "directive with the find/replace based on the actual current content. "
+                      "This is the coding-task loop: READ → EDIT → verify. "
+                      "Do not explain. Repair the directive chain now."
+                ),
+            })
+            return None
+
     for filepath, find_text, replace_text in edit_ops:
         if not confirm_edit(filepath, find_text, replace_text):
             action_failed = True

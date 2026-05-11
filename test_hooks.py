@@ -36,6 +36,8 @@ class RegistryShape(unittest.TestCase):
         ids = {h.id for h in hooks.list_hooks() if h.source == "builtin"}
         self.assertIn("syntax-check-py-post-edit", ids)
         self.assertIn("syntax-check-py-post-create", ids)
+        self.assertIn("syntax-check-sh-post-edit", ids)
+        self.assertIn("syntax-check-sh-post-create", ids)
         self.assertIn("secret-scan-pre-create", ids)
 
     def test_builtins_enabled_by_default(self):
@@ -101,6 +103,41 @@ class SyntaxCheckHook(unittest.TestCase):
 
     def test_missing_file_passes_through(self):
         r = hooks.fire("post_edit", "/tmp/does-not-exist-xxxxx.py")
+        self.assertFalse(r.blocked)
+
+
+class ShellSyntaxCheckHook(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_valid_shell_passes(self):
+        p = Path(self.tmpdir) / "good.sh"
+        p.write_text("#!/bin/bash\necho hello\nfor i in 1 2 3; do echo $i; done\n")
+        r = hooks.fire("post_edit", str(p))
+        self.assertFalse(r.blocked)
+
+    def test_broken_shell_blocks(self):
+        p = Path(self.tmpdir) / "bad.sh"
+        # Unmatched `do` without `done`
+        p.write_text("#!/bin/bash\nfor i in 1 2 3; do\n  echo $i\n")
+        r = hooks.fire("post_edit", str(p))
+        self.assertTrue(r.blocked)
+        self.assertIn("syntax-check-sh", r.hook_id)
+
+    def test_broken_shell_blocks_on_post_create(self):
+        p = Path(self.tmpdir) / "bad.sh"
+        p.write_text("if true; then\n  echo yes\n")
+        r = hooks.fire("post_create", str(p))
+        self.assertTrue(r.blocked)
+
+    def test_non_shell_path_passes(self):
+        p = Path(self.tmpdir) / "notes.md"
+        p.write_text("# title\n")
+        r = hooks.fire("post_edit", str(p))
         self.assertFalse(r.blocked)
 
 

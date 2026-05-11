@@ -159,6 +159,31 @@ def _syntax_check_py(target, action=None) -> FireResult:
                       hook_id="syntax-check-py")
 
 
+def _syntax_check_sh(target, action=None) -> FireResult:
+    """P1.6 post_edit / post_create hook. Runs ``bash -n`` on shell
+    script targets (.sh / .bash / .zsh). Non-shell paths pass through.
+    Coding-task verification gate — caught before the next directive
+    chain step would try to execute the broken script.
+    """
+    target = str(target or "")
+    if not target.endswith((".sh", ".bash", ".zsh")):
+        return FireResult()
+    if not Path(target).is_file():
+        return FireResult()
+    try:
+        r = subprocess.run(["bash", "-n", target],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return FireResult()
+    if r.returncode == 0:
+        return FireResult()
+    err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
+    first_line = (err_src.splitlines() or [""])[0][:300]
+    return FireResult(blocked=True,
+                      reason=f"shell syntax error: {first_line}",
+                      hook_id="syntax-check-sh")
+
+
 _SECRET_PATTERNS = [
     (re.compile(r'\bAKIA[0-9A-Z]{16}\b'),                            "AWS access key id"),
     (re.compile(r'\bASIA[0-9A-Z]{16}\b'),                            "AWS temporary key"),
@@ -200,6 +225,10 @@ _REGISTRY.register(Hook(id="syntax-check-py-post-edit", kind="post_edit",
                         fn=_syntax_check_py, source="builtin"))
 _REGISTRY.register(Hook(id="syntax-check-py-post-create", kind="post_create",
                         fn=_syntax_check_py, source="builtin"))
+_REGISTRY.register(Hook(id="syntax-check-sh-post-edit", kind="post_edit",
+                        fn=_syntax_check_sh, source="builtin"))
+_REGISTRY.register(Hook(id="syntax-check-sh-post-create", kind="post_create",
+                        fn=_syntax_check_sh, source="builtin"))
 _REGISTRY.register(Hook(id="secret-scan-pre-create", kind="pre_create",
                         fn=_secret_scan, source="builtin"))
 
