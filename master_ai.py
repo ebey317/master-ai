@@ -9360,21 +9360,68 @@ def _display_reasoning_answer(user_text, answer, history):
         threading.Thread(target=speak, args=(safe_answer,), daemon=True).start()
     return True
 
-def handle_tight_reasoning(user_text, query, history):
+# P1.3: depth knobs for the reason surface. Cloud DeepSeek-R1 is one-shot
+# so 'fast' and 'max' bypass it (fast wants local-fast TTFB, max wants the
+# mandatory second-critic pass that only the local 4-stage loop supports).
+_REASON_DEPTHS = frozenset({"fast", "standard", "deep", "max"})
+
+
+def _parse_reason_command(user_text):
+    """Recognize the four reason surface forms (P1.3):
+
+      reason: <q>                      → depth='deep' (legacy default)
+      reason <depth>: <q>              → depth in {fast,standard,deep,max}
+      reason <depth> <q>               → same, no colon
+      reason <q>                       → depth='deep' (back-compat for the
+                                          word command without a depth)
+
+    Returns (depth, query) or None if the text isn't a reason command.
+    """
+    s = (user_text or "").strip()
+    if not s:
+        return None
+    sl = s.lower()
+    if sl.startswith("reason:"):
+        return ("deep", s[7:].strip())
+    m = re.match(r'^reason\s+(fast|standard|deep|max)\s*[:\s]\s*(.+)$', s, re.I)
+    if m:
+        return (m.group(1).lower(), m.group(2).strip())
+    m = re.match(r'^reason\s+(.+)$', s, re.I)
+    if m:
+        first = m.group(1).split()[0].lower() if m.group(1).strip() else ""
+        if first in _REASON_DEPTHS:
+            # Already matched Form 2 above; falling through means the depth
+            # word had no follow-up query.
+            return None
+        return ("deep", m.group(1).strip())
+    return None
+
+
+def handle_tight_reasoning(user_text, query, history, depth="deep"):
     """Best available pure-text reasoning lane.
 
-    Cloud path: DeepSeek-R1 through OpenRouter. Fallback: local deep
-    Planner/Solver/Critic/Finalizer loop. Never feeds output to the
-    directive executor.
+    P1.3: ``depth`` selects the cognitive budget:
+      fast     — local 4-stage loop in fast mode (planner/solver/finalizer)
+      standard — cloud DeepSeek-R1 if available, else local standard loop
+      deep     — cloud DeepSeek-R1 if available, else local deep loop (legacy)
+      max      — local max loop (mandatory second critic pass; cloud skipped)
+
+    Output is always inert text — never feeds the directive executor.
     """
     query = (query or "").strip()
     if not query:
-        print(f"  {Y}usage: reason: <hard question>{X}")
+        print(f"  {Y}usage: reason [{('|'.join(sorted(_REASON_DEPTHS)))}]: <hard question>{X}")
         return
+    depth = (depth or "deep").lower()
+    if depth not in _REASON_DEPTHS:
+        depth = "deep"
 
+    # Fast and max bypass the cloud one-shot path. Fast wants local-fast
+    # TTFB; max needs the second-critic-pass that only the local loop has.
+    use_cloud = depth in ("standard", "deep")
     keys_now = load_keys()
-    if (keys_now.get("openrouter") or "").strip():
-        print(f"  {BC}[thinking: tight reasoning → DeepSeek-R1]{X}")
+    if use_cloud and (keys_now.get("openrouter") or "").strip():
+        print(f"  {BC}[thinking: tight reasoning ({depth}) → DeepSeek-R1]{X}")
         system = (
             "You are Sensei's tight reasoning lane. Answer the user's hard "
             "question with careful analysis and a clean final answer. Do not "
@@ -9392,14 +9439,15 @@ def handle_tight_reasoning(user_text, query, history):
         )
         if resp and _display_reasoning_answer(user_text, resp, history):
             return
-        print(f"  {Y}DeepSeek-R1 unavailable — falling back to local deep reasoning loop.{X}")
+        print(f"  {Y}DeepSeek-R1 unavailable — falling back to local {depth} reasoning loop.{X}")
 
     try:
         import sys as _sys
         if str(Path.home() / "scripts") not in _sys.path:
             _sys.path.insert(0, str(Path.home() / "scripts"))
         from sensei_reasoning_loop import run_reasoning_loop
-        out = run_reasoning_loop(query, mode="deep", progress=True)
+        print(f"  {BC}[thinking: local reasoning loop ({depth})]{X}")
+        out = run_reasoning_loop(query, mode=depth, progress=True)
         answer = out.get("answer", "").strip()
         if not _display_reasoning_answer(user_text, answer, history):
             print(f"  {R}tight reasoning produced no answer.{X}")
@@ -11907,12 +11955,18 @@ def main():
             _request_auto_save(history)
             continue
 
-        # ── reason: prefix — best available quick reasoning lane.
-        # Uses DeepSeek-R1 through OpenRouter when configured, with local
-        # deep reasoning-loop fallback. Pure text; never executes directives.
-        if user_text.lower().startswith("reason:"):
-            query = user_text[7:].strip()
-            handle_tight_reasoning(user_text, query, history)
+        # ── reason — best available pure-text reasoning lane (P1.3 surface).
+        # Forms (any of these):
+        #   reason: <q>                     → legacy default depth=deep
+        #   reason fast|standard|deep|max: <q>
+        #   reason fast|standard|deep|max <q>
+        #   reason <q>                      → defaults to deep
+        # DeepSeek-R1 via OpenRouter for standard/deep when configured.
+        # Fast/max stay local. Pure text; never executes directives.
+        _reason_parsed = _parse_reason_command(user_text)
+        if _reason_parsed is not None:
+            _depth, _query = _reason_parsed
+            handle_tight_reasoning(user_text, _query, history, depth=_depth)
             _request_auto_save(history)
             continue
 
