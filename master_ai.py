@@ -11652,6 +11652,46 @@ def main():
                 print(f"  {W}Stats error: {e}{X}\n")
             continue
 
+        # P1.5 agents — subagent registry. Sub-commands:
+        #   agents list             — show registered subagents
+        #   agents inspect <name>   — show description + source path
+        #   agents run <name> <task...>  — dispatch (returns inert JSON)
+        if lo == "agents" or lo.startswith("agents "):
+            try:
+                import subagent_registry as _sr
+                args = (user_text[len("agents"):].strip()).split(None, 1)
+                sub = (args[0] if args else "").lower()
+                rest = args[1] if len(args) > 1 else ""
+                if sub in ("", "list"):
+                    agents = _sr.list_subagents()
+                    print(f"\n  {C}Registered subagents ({len(agents)}):{X}")
+                    for a in agents:
+                        print(f"    {W}{a.name:<22}{X}  {a.description}")
+                    print()
+                elif sub == "inspect":
+                    a = _sr.get(rest.strip())
+                    if a is None:
+                        print(f"  {W}unknown subagent: {rest!r}{X}\n")
+                    else:
+                        print(f"\n  {C}{a.name}{X}")
+                        print(f"    description: {a.description}")
+                        print(f"    source:      {a.source}")
+                        print()
+                elif sub == "run":
+                    parts = rest.split(None, 1)
+                    if not parts:
+                        print(f"  {W}usage: agents run <name> [task...]{X}\n")
+                    else:
+                        sub_name, task = parts[0], (parts[1] if len(parts) > 1 else "")
+                        result = _sr.run(sub_name, task)
+                        import json as _json
+                        print(f"\n  {C}{_json.dumps(result, indent=2, default=str)}{X}\n")
+                else:
+                    print(f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n")
+            except Exception as e:
+                print(f"  {W}agents command error: {e}{X}\n")
+            continue
+
         # ── Project ───────────────────────────────────────────
         if lo == "project":
             if ACTIVE_PROJECT:
