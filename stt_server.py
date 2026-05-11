@@ -394,6 +394,22 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self._error(str(e))
             return
 
+        # P1.7 /metrics — observability rollup over router metrics +
+        # typed audit. Same summary the Sensei `stats` command renders;
+        # Pupil can poll this to populate its stats panel.
+        if self.path == '/metrics':
+            try:
+                import sys as _sys
+                _scripts_dir = os.path.expanduser('~/scripts')
+                if _scripts_dir not in _sys.path:
+                    _sys.path.insert(0, _scripts_dir)
+                import observability as _obs
+                summary = _obs.summarize(limit=500)
+                self._json(summary)
+            except Exception as e:
+                self._error(str(e))
+            return
+
         # /events — SSE stream. P0.1 ships hello + heartbeat only.
         # Typed-action events (P0.4) and mode_changed (P1.4 wiring) come later.
         if self.path == '/events':

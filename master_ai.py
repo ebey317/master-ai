@@ -11639,6 +11639,19 @@ def main():
                 print(f"  {W}Router stats error: {e}{X}\n")
             continue
 
+        # P1.7 stats — observability rollup across router metrics + typed
+        # audit. Wider than `router stats` (which is router-only): adds
+        # blocked counts by audit kind, harvest hits/records, hook fires,
+        # audit-by-risk distribution, recent fallback reasons.
+        if lo == "stats":
+            try:
+                import observability as _obs
+                summary = _obs.summarize(limit=500)
+                print(f"\n  {C}{_obs.format_stats(summary)}{X}\n")
+            except Exception as e:
+                print(f"  {W}Stats error: {e}{X}\n")
+            continue
+
         # ── Project ───────────────────────────────────────────
         if lo == "project":
             if ACTIVE_PROJECT:
