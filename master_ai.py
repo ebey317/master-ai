@@ -6458,6 +6458,11 @@ def _is_destructive(cmd):
 #   3. Audit log   — every executed action appended to ~/.master_ai_audit.log
 # The point is: auto-mode shouldn't rely on the model's judgment alone.
 AUDIT_LOG = Path.home() / ".master_ai_audit.log"
+# P0.4 typed audit. JSONL alongside the legacy tab-separated text log so
+# hooks (P1.4), subagents (P1.5), and the observability dashboard (P1.7)
+# can consume a stable schema. See ~/scripts/typed_actions.py for the
+# record shape. Old AUDIT_LOG stays as-is — backward compatibility.
+AUDIT_LOG_JSONL = Path.home() / ".master_ai_audit_typed.jsonl"
 
 def _audit(kind, detail):
     """Append one line: 12-hour timestamp · profile · mode · cwd · kind · detail.
@@ -6474,6 +6479,26 @@ def _audit(kind, detail):
         ])
         with AUDIT_LOG.open("a") as f:
             f.write(line + "\n")
+    except Exception:
+        pass
+    # P0.4: typed JSONL record alongside the legacy text audit. Only emits
+    # for directive kinds (RUN/RUNTERM/READ/CREATE/EDIT or documented
+    # variants); make_audit_record() returns None for menu navigation,
+    # service-state notes, etc. Failures here are swallowed — audit is
+    # observability, never a blocker.
+    try:
+        import os as _os
+        import typed_actions as _ta
+        rec = _ta.make_audit_record(
+            kind=kind, detail=detail or "",
+            profile=(_PROFILE_NAME or "default"),
+            mode=globals().get("MODE", ""),
+            cwd=_os.getcwd(),
+            model=globals().get("_LAST_MODEL", ""),
+        )
+        if rec is not None:
+            with AUDIT_LOG_JSONL.open("a") as f:
+                f.write(json.dumps(rec, sort_keys=True) + "\n")
     except Exception:
         pass
 
