@@ -4394,7 +4394,10 @@ def _trim_history_by_chars(history, max_chars, keep_system=True):
     return after != before
 
 # ── AUTO FILE INJECTION ───────────────────────────────────────
-# Symbol-aware slicer caps (adjustable in one place).
+# Symbol-aware slicer caps. These are DEFAULTS — the adaptive sizing in
+# _adaptive_slice_params() scales them per call by symbol reference density
+# and prompt intent. Edit here to change the baseline; the adaptive scales
+# stay proportional.
 _SLICER_PRE_LINES         = 50
 _SLICER_POST_LINES        = 100
 _SLICER_MAX_CHARS         = 8000
@@ -4404,6 +4407,58 @@ _WHOLE_FILE_CLOUD_BIAS_AT = 15000  # inject_chars > this triggers cloud bias if 
 _AUTO_CONTEXT_MAX_FILES   = 2
 _SLICER_MAX_SLICES_PER_FILE = 2
 _SYMBOL_MIN_LENGTH        = 4
+
+# P1.1 adaptive slicer: scale pre/post/max_chars by reference density and
+# intent verb so the model sees less context for narrow asks (rename, where
+# is) and more for wide ones (debug, audit, trace).
+_REF_DENSITY_TIGHT_BELOW   = 3   # symbol appears <3 times → tighten
+_REF_DENSITY_EXPAND_ABOVE  = 15  # symbol appears >15 times → expand
+_TIGHTER_INTENTS_RE = re.compile(
+    r"\b(?:rename|where\s+is|find|locate|show\s+me\s+the\s+def(?:inition)?|"
+    r"what\s+line|on\s+what\s+line)\b",
+    re.I,
+)
+_WIDER_INTENTS_RE = re.compile(
+    r"\b(?:fix|debug|understand|audit|trace|why\s+does|why\s+is|"
+    r"root\s+cause|how\s+does|walk\s+through|explain\s+the\s+flow)\b",
+    re.I,
+)
+
+
+def _adaptive_slice_params(content, symbol, user_text):
+    """Return (pre_lines, post_lines, max_chars) tuned to density + intent.
+
+    Density: word-boundary count of the symbol in the file content.
+      <3 refs   → tight   (30/60/5000)
+      3-15 refs → default (current constants)
+      >15 refs  → expand  (80/150/12000)
+
+    Intent overlay applies on top of the density baseline:
+      _TIGHTER_INTENTS_RE  → ×0.6 pre/post, ×0.7 max_chars
+      _WIDER_INTENTS_RE    → ×1.4 pre/post/max_chars
+      neither              → unchanged
+
+    Returned values are bounded so a perverse multiplier never drops below
+    a usable minimum (20/40/4000).
+    """
+    pre, post, mc = _SLICER_PRE_LINES, _SLICER_POST_LINES, _SLICER_MAX_CHARS
+    if not symbol or not content:
+        return (pre, post, mc)
+    ref_count = len(re.findall(r'\b' + re.escape(symbol) + r'\b', content))
+    if ref_count < _REF_DENSITY_TIGHT_BELOW:
+        pre, post, mc = 30, 60, 5000
+    elif ref_count > _REF_DENSITY_EXPAND_ABOVE:
+        pre, post, mc = 80, 150, 12000
+    ut = user_text or ""
+    if _TIGHTER_INTENTS_RE.search(ut):
+        pre = max(20, int(pre * 0.6))
+        post = max(40, int(post * 0.6))
+        mc = max(4000, int(mc * 0.7))
+    elif _WIDER_INTENTS_RE.search(ut):
+        pre = int(pre * 1.4)
+        post = int(post * 1.4)
+        mc = int(mc * 1.4)
+    return (pre, post, mc)
 
 # ALL_CAPS English/instruction words that aren't code symbols. Prevents the
 # slicer from matching the user's directive language ("emit READ/RUN
@@ -4454,7 +4509,8 @@ def _extract_target_symbols(user_text: str, ignored_symbols=None) -> list:
 
 def _slice_around_symbol(content: str, symbol: str,
                          pre_lines: int = _SLICER_PRE_LINES,
-                         post_lines: int = _SLICER_POST_LINES):
+                         post_lines: int = _SLICER_POST_LINES,
+                         max_chars: int = _SLICER_MAX_CHARS):
     """Find symbol's definition (or first word-boundary fallback) and slice around it.
 
     Two-pass: prefer a def/class line or a top-level assignment (`X = ...`,
@@ -4462,6 +4518,10 @@ def _slice_around_symbol(content: str, symbol: str,
     or string literal. Falls back to first word-boundary match if no
     definition line exists. Returns (start_line_1indexed, end_line_1indexed,
     slice_text) or None.
+
+    P1.1: ``max_chars`` is now a parameter (was hardcoded to _SLICER_MAX_CHARS)
+    so adaptive callers can pass density+intent-tuned caps. Defaults preserve
+    pre-P1.1 behavior.
     """
     word_pat = re.compile(r'\b' + re.escape(symbol) + r'\b')
     sym_esc = re.escape(symbol)
@@ -4494,8 +4554,8 @@ def _slice_around_symbol(content: str, symbol: str,
         f"{line_no}: {line}"
         for line_no, line in enumerate(lines[start:end], start=start + 1)
     )
-    if len(slice_text) > _SLICER_MAX_CHARS:
-        slice_text = slice_text[:_SLICER_MAX_CHARS] + f"\n... [TRUNCATED at {_SLICER_MAX_CHARS} chars] ..."
+    if len(slice_text) > max_chars:
+        slice_text = slice_text[:max_chars] + f"\n... [TRUNCATED at {max_chars} chars] ..."
     return (start + 1, end, slice_text, match_idx + 1)
 
 
@@ -4577,9 +4637,16 @@ def auto_inject_context(user_text, enabled=True):
 
         # Big file: try symbol slices. Allow a narrow pair from the same file
         # for prompts like "walk handle() and explain the cloud_deep branch".
+        # P1.1: per-symbol adaptive sizing — tight for "where is X", expanded
+        # for "debug X", default otherwise. Density (ref count) and intent
+        # verb both contribute. See _adaptive_slice_params().
         matched_slices = []
         for sym in symbols:
-            slice_result = _slice_around_symbol(content, sym)
+            pre, post, mc = _adaptive_slice_params(content, sym, user_text)
+            slice_result = _slice_around_symbol(content, sym,
+                                                pre_lines=pre,
+                                                post_lines=post,
+                                                max_chars=mc)
             if slice_result:
                 start, end, slice_text, match_line = slice_result
                 if any(abs(start - existing[1]) < 5 for existing in matched_slices):
