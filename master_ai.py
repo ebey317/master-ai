@@ -3598,6 +3598,24 @@ def _check_cloud_send_allowed():
     return False, summary
 
 
+def _check_run_output_for_privacy(kind, cmd, output):
+    """RUN/RUNTERM exfil guard: when the command string or its captured
+    output trips the privacy policy, mark the turn private so the next
+    ask_cloud blocks the re-ask. Returns the reason string (truthy when
+    marked, empty when not). Defensive — never raises.
+
+    Same policy source as READ marking and the cloud-send guard:
+    harvest._privacy_reason() via _privacy_check_path_or_content."""
+    try:
+        reason = _privacy_check_path_or_content(cmd or "", (output or "")[:4000])
+        if reason:
+            _mark_turn_private(f"{reason}: {kind} {(cmd or '')[:60]}")
+            return reason
+    except Exception as e:
+        log(f"PRIVACY_RUN_CHECK_ERROR: {e}")
+    return ""
+
+
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
@@ -9300,6 +9318,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if exit_code is None:
             exit_code = 0 if ok else "unknown"
         output = str(result or "").strip()
+        # Privacy guard for RUN/RUNTERM exfil before output goes back to
+        # the model: same source of truth as the READ marking path.
+        _priv_reason = _check_run_output_for_privacy(kind, cmd, output)
+        if _priv_reason:
+            print(f"  {Y}🔒 Privacy: turn marked private ({_priv_reason} in {kind}){X}")
         if not output:
             output = "[no output]"
         max_chars = 12000

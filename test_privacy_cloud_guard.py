@@ -162,5 +162,59 @@ class AskCloudGateTests(unittest.TestCase):
             master_ai._cloud_allowed = original
 
 
+class RunOutputExfilTests(unittest.TestCase):
+    """RUN/RUNTERM output is fed back into history when continue_after_tools
+    is True. Without this guard, `RUN: cat ~/Documents/foo` would put private
+    bytes into the next cloud send. _check_run_output_for_privacy is the
+    centralized hook called from _format_tool_result inside process_reply."""
+
+    def setUp(self):
+        master_ai._reset_turn_privacy()
+
+    def test_private_path_in_cmd_marks_private(self):
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "cat /home/elijah/Documents/notes.txt", "hello")
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_private_path_in_cmd_pictures(self):
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "ls /home/elijah/Pictures/", "drwxr-xr-x  ...")
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_secret_in_output_marks_private(self):
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "cat /tmp/dump.txt", "AWS_KEY=AKIAABCDEFGHIJKLMNOP")
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_private_term_in_output_marks_private(self):
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "cat /tmp/foo.txt", "Subject: tax 1099 forms for 2025")
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_clean_cmd_and_output_does_not_mark(self):
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "ls /tmp", "foo.txt\nbar.log")
+        self.assertFalse(reason)
+        self.assertFalse(master_ai._is_turn_private())
+
+    def test_runterm_kind_also_marks(self):
+        # Same helper covers RUNTERM (visual scripts that cat private paths)
+        reason = master_ai._check_run_output_for_privacy(
+            "RUNTERM", "bash /home/elijah/jobseeker/show_cover.sh", "")
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_marked_run_then_blocks_cloud(self):
+        # Integration: after RUN exfil marks private, ask_cloud must block.
+        master_ai._check_run_output_for_privacy(
+            "RUN", "cat /home/elijah/.aws/credentials", "[default]\naws_secret=...")
+        ok, _ = master_ai._check_cloud_send_allowed()
+        self.assertFalse(ok)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
