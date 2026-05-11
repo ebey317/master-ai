@@ -2029,15 +2029,30 @@ _VISION_INTENT_RE = re.compile(
     r"(?:image|photo|picture|screenshot|snapshot|thumbnail)s?\b",
     re.I,
 )
+# Negation guard for vision: "don't describe the image" / "no need to look
+# at the screenshot" / "without showing me the picture" must NOT fire vision.
+# Looks back from the matched verb for any negation token.
+_VISION_NEGATION_RE = re.compile(
+    r"\b(?:don'?t|do\s+not|doesn'?t|didn'?t|never|no\s+need\s+to|without|skip(?:ping)?|won'?t|cannot|can'?t|isn'?t|aren'?t)\b",
+    re.I,
+)
+_VISION_NEGATION_LOOKBACK = 40
 
 def _is_explicit_vision_request(text: str) -> bool:
     """Vision routes need an image-extension path or a verb+vision-noun phrase.
     Soft words (see/show/look/read/describe) alone never qualify — they appear
     in every code/edit/system request and were misrouting text turns to llava
-    ('so Groq sees it directly' burned 7+ minutes with no image attached)."""
+    ('so Groq sees it directly' burned 7+ minutes with no image attached).
+    Negation in the ~5 words before the verb suppresses the match — 'don't
+    describe the image' is a text turn, not a vision turn."""
     if _IMAGE_PATH_RE.search(text):
         return True
-    if _VISION_INTENT_RE.search(text):
+    m = _VISION_INTENT_RE.search(text)
+    if m:
+        start = m.start()
+        window = text[max(0, start - _VISION_NEGATION_LOOKBACK):start]
+        if _VISION_NEGATION_RE.search(window):
+            return False
         return True
     return False
 
@@ -9520,6 +9535,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
         _router_metric(f"{decision['route']}_short_circuit",
                        prompt=user_text[:200],
                        directive=directive[:200])
+        # P0.3: cache the deterministic answer. Pre-fix, only LLM call paths
+        # (local/local_stream/cloud) called harvest.record — short-circuits
+        # bypassed the model AND the cache, so identical queries paid the
+        # same parsing cost every time. task_type='deterministic' tags this
+        # source so observability can distinguish short-circuit cache hits
+        # from LLM cache hits.
+        try:
+            if harvest is not None:
+                harvest.record(user_text, decision["route"], synth,
+                               task_type="deterministic")
+        except Exception as e:
+            log(f"HARVEST_RECORD_ERROR ({decision['route']}): {e}")
         return synth
 
     if decision["route"] == "link_lookup":
