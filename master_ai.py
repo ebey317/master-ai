@@ -4368,6 +4368,62 @@ def compact_history(history):
     if len(convo) > 40:
         history[:] = system + convo[-40:]
 
+# P1.2 per-route history budgets. Chat banter doesn't need 30 turns of
+# context; debugging does. The trim runs before prompt assembly so cold
+# prefill stays bounded. See _route_history_budget() for the picker; raise
+# values here to extend any single tier's ceiling.
+_ROUTE_HISTORY_BUDGETS = {
+    "chat":       8000,    # cloud_fast — banter-class, keep small
+    "tool":       6000,    # local with tool-required intent — fewer distractions
+    "code":      20000,    # CODE_WORDS / ALTER_WORDS local
+    "reasoning": 40000,    # REASONING_WORDS / cloud_deep / qwen3
+    "vision":    12000,    # local llava
+    "default":   28000,    # legacy local cap (pre-P1.2)
+}
+
+# Dispatch table for non-local routes. Lookup form (not `if` chain) keeps
+# route name literals out of `if`-branch bodies, which the auto-context
+# slicer would otherwise pick up as fallback matches for those route names.
+_NONLOCAL_ROUTE_TIERS = {
+    "cloud_fast":   "chat",
+    "cloud_deep":   "reasoning",
+    "cloud":        "reasoning",
+    "cloud_vision": "vision",
+    "vision":       "vision",
+    "web":          "reasoning",
+}
+
+
+def _route_history_budget(route_name, user_text):
+    """Pick a history-trim budget tuned to the chosen route.
+
+    route_name is the dispatched route ('local', 'cloud_fast', etc.) — same
+    identifier the dispatcher uses. Non-local routes pick via the dispatch
+    table above. Local routes refine by intent in the user text (code/alter
+    → code budget, reasoning/complex → reasoning, tool-required → tool).
+    Returns chars (integer)."""
+    name = (route_name or "").lower()
+    tier = _NONLOCAL_ROUTE_TIERS.get(name)
+    if tier:
+        return _ROUTE_HISTORY_BUDGETS[tier]
+    # Local route — refine by intent in the user text
+    ut = (user_text or "").lower()
+    word_set = set(ut.split())
+    try:
+        if word_set & CODE_WORDS:
+            return _ROUTE_HISTORY_BUDGETS["code"]
+        if word_set & ALTER_WORDS:
+            return _ROUTE_HISTORY_BUDGETS["code"]
+        if any(w in ut for w in REASONING_WORDS) or (word_set & COMPLEX_WORDS):
+            return _ROUTE_HISTORY_BUDGETS["reasoning"]
+        if _is_tool_required(ut):
+            return _ROUTE_HISTORY_BUDGETS["tool"]
+    except NameError:
+        # Word sets may not be defined yet at import time; fall through.
+        pass
+    return _ROUTE_HISTORY_BUDGETS["default"]
+
+
 def _trim_history_by_chars(history, max_chars, keep_system=True):
     """Trim oldest non-system messages until total chars <= max_chars.
     Used to prevent local prefill from ballooning into 10-minute TTFT."""
@@ -9983,15 +10039,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
         local_prefix = ""
     history.append({"role": "user", "content": local_prefix + user_text + (inject_ctx or "")})
 
-    # Keep local prompts bounded in chars as well as message count. A few turns
-    # with big memory/file injections can still exceed what a CPU box can
-    # prefill in under ~10 minutes, even with num_ctx=4096.
-    if route == "local":
-        before_chars = sum(len(m.get("content", "") or "") for m in history if m.get("role") != "system")
-        trimmed = _trim_history_by_chars(history, max_chars=28000, keep_system=False)
-        after_chars = sum(len(m.get("content", "") or "") for m in history if m.get("role") != "system")
-        if trimmed:
-            print(f"  {D}[local context trimmed {before_chars}→{after_chars} chars]{X}")
+    # P1.2: route-aware history trim. Each lane has its own budget — chat
+    # banter doesn't need debug-session length, debug doesn't fit in chat
+    # length. _route_history_budget() picks the cap; trim runs for every
+    # route that can suffer from oversized history (cloud_fast hits HTTP
+    # 413, local hits CPU prefill cost). cloud_deep / cloud_vision still
+    # trim but at the higher reasoning budget.
+    _budget = _route_history_budget(route, user_text)
+    before_chars = sum(len(m.get("content", "") or "") for m in history if m.get("role") != "system")
+    trimmed = _trim_history_by_chars(history, max_chars=_budget, keep_system=False)
+    after_chars = sum(len(m.get("content", "") or "") for m in history if m.get("role") != "system")
+    if trimmed:
+        print(f"  {D}[{route} context trimmed {before_chars}→{after_chars} chars · budget={_budget}]{X}")
 
     streamed = False
     fallback_user_only = [
