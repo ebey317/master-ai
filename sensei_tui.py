@@ -150,6 +150,18 @@ COMMAND_MENU_HINTS = {
     "e": "edit thread label",
     "resize": "fit tmux pane",
     "only": "make Sensei the only tmux pane",
+    # P1.5 + P1.7 new commands (2026-05-11)
+    "stats": "observability rollup: routes, models, blocked, harvest",
+    "agents": "show registered subagents",
+    "agents list": "show registered subagents",
+    "agents inspect": "type a subagent name after this",
+    "agents run": "type a subagent name + task after this",
+    # P1.3 reason depths
+    "reason:": "deep reasoning lane (DeepSeek-R1 or local loop)",
+    "reason fast:": "local fast reasoning (planner→solver→finalizer)",
+    "reason standard:": "cloud DeepSeek-R1, else local standard loop",
+    "reason deep:": "DeepSeek-R1, else local deep loop (default)",
+    "reason max:": "local max loop (mandatory second-critic pass)",
 }
 
 COMMAND_MENU_GROUPS = {
@@ -161,6 +173,8 @@ COMMAND_MENU_GROUPS = {
         "clear approved", "clear chats", "chats", "doctor",
         "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
         "cache", "perms", "tutorial", "project",
+        # P1.5 + P1.7 new command surfaces (2026-05-11)
+        "stats", "agents", "agents list",
         "go", "cancel", "e", "only",
     ],
     ";": [
@@ -179,6 +193,9 @@ COMMAND_MENU_GROUPS = {
     "/": [
         "remember:", "forget:", "task add", "git commit",
         "image:", "image status", "image latest", "max:", "agent:",
+        # P1.3 (reason depths) + P1.5 (agents subcommands) payload commands
+        "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
+        "agents run", "agents inspect",
     ],
 }
 

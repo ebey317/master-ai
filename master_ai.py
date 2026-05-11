@@ -98,6 +98,9 @@ try:
         "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
         "how", "how we work", "hww", "agent:", "max:",
+        # P1.3 / P1.5 / P1.7 new surfaces — make them discoverable via tab
+        "stats", "agents", "agents list", "agents inspect ", "agents run ",
+        "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
     ]
     def _completer(text, state):
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
@@ -10878,6 +10881,15 @@ def main():
             continue
 
         lo = cmd.lower()
+
+        # P1.5/P1.7 follow-up: accept a single leading "/" so /stats,
+        # /agents, /reason:, /hub, etc. all route the same as the bare
+        # form. Codex flagged the slash-prefix variant on 2026-05-11.
+        # Strip only ONE leading slash, not greedy — preserves intent
+        # of any command that legitimately needs slashes elsewhere.
+        if lo.startswith("/") and len(lo) > 1:
+            cmd = cmd[1:]
+            lo = cmd.lower()
 
         # ── Exit ──────────────────────────────────────────────
         if lo == "x":
