@@ -629,6 +629,17 @@ class SenseiApp:
             # bleed onto text. Semantic ANSI codes from _paint_line render
             # true (blue=file/info, yellow=plan, green=voice, red=warning).
             "chat":        "noinherit",
+            # Scrollbar (2026-05-11) — was unset, falling to prompt_toolkit
+            # defaults which render as reverse-video against the frame
+            # (effectively invisible, ungrabbable). Thumb gets the mode
+            # accent so the scrollbar reads as chrome and follows the
+            # stoplight — Plan red / Review amber / Auto green. Track stays
+            # neutral gray so the thumb has contrast. Mouse drag works when
+            # SENSEI_MOUSE=1 (Elijah's remote/phone profile).
+            "scrollbar":            "#666666 noinherit",
+            "scrollbar.background": "#444444 noinherit",
+            "scrollbar.button":     f"bg:{accent} {accent} bold noinherit",
+            "scrollbar.arrow":      f"{accent} bold noinherit",
         })
 
     def set_mode(self, mode: str) -> None:
