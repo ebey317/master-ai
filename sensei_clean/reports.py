@@ -31,6 +31,7 @@ def write_summary(
         f"- Items: {len(items)}",
         f"- Findings: {len(findings)}",
         f"- Actions: {len(actions)}",
+        f"- Preview index: previews.md",
         "",
         "## Adapters",
     ]
@@ -38,4 +39,14 @@ def write_summary(
         lines.append(
             f"- {capability.adapter}: capability={capability.capability} available={capability.available} blockers={','.join(capability.blockers) or 'none'}"
         )
+    if findings:
+        lines.extend(["", "## Findings"])
+        for finding in findings[:50]:
+            lines.append(f"- {finding.summary} risk={finding.risk} ids={', '.join(finding.item_ids[:4])}")
+    if actions:
+        lines.extend(["", "## Planned Actions"])
+        for action in actions[:100]:
+            lines.append(
+                f"- {action.action_type} lane={action.lane} from `{action.source_path}` to `{action.destination_path}`"
+            )
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")

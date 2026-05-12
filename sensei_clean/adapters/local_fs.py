@@ -214,12 +214,18 @@ class LocalFSAdapter(BaseAdapter):
             return "documents", "Reading"
         if path.suffix.lower() in {".doc", ".docx", ".odt", ".rtf"}:
             return "documents", "Office"
+        if path.suffix.lower() in {".xls", ".xlsx", ".ods", ".csv"}:
+            return "documents", "Spreadsheets"
+        if path.suffix.lower() in {".ppt", ".pptx", ".odp"}:
+            return "documents", "Presentations"
+        if path.suffix.lower() in {".apk", ".apks", ".xapk"}:
+            return "media", "Android-Apps"
         return "unknown", "Manual-Review"
 
     def _confidence(self, path: Path, mime: str, category_guess: str) -> float:
         if category_guess in {"Photos", "Videos", "Music"} and "/" in mime:
             return 0.96
-        if category_guess in {"Reading", "Office"}:
+        if category_guess in {"Reading", "Office", "Spreadsheets", "Presentations", "Android-Apps"}:
             return 0.85
         if category_guess in {"Career", "Forms", "Poetry"}:
             return 0.7

@@ -23,11 +23,11 @@ banner() {
 
 banner
 
-printf "Step 1: SCAN — inventory + duplicate detection.\n"
-printf "  Reads: ~/Desktop ~/Downloads ~/Documents ~/Pictures ~/Videos\n"
-printf "  Writes only to: ~/sensei_runs/<timestamp>/\n"
-printf "  Hashing is on, so first run may take a minute.\n\n"
-read -rp "  Enter to scan, Ctrl-C to abort: " _
+printf "Choose what to scan:\n"
+printf "  1) Demo (safe): scans only a temporary folder under /tmp with fake files\n"
+printf "  2) Custom roots: you type folders to scan (advanced)\n\n"
+read -rp "Selection [1]: " sel
+sel="${sel:-1}"
 
 # Try the PATH version first; fall back to the script if not installed.
 if command -v sensei-clean >/dev/null 2>&1; then
@@ -37,10 +37,47 @@ else
 fi
 
 OUT=/tmp/sensei_clean_scan.out
-$SC scan --sha256 | tee "$OUT"
+RUN_DIR=""
+
+if [[ "$sel" == "2" ]]; then
+  printf "\nSCAN (custom roots)\n"
+  printf "  Notes:\n"
+  printf "  - Scanning is local-only, but it still reads file names and contents.\n"
+  printf "  - For privacy, avoid roots like ~/Documents and ~/Pictures unless you explicitly intend that.\n\n"
+  read -rp "Enter one or more roots (space-separated): " -a ROOTS
+  if [[ "${#ROOTS[@]}" -lt 1 ]]; then
+    printf "${yellow}no roots provided. Bail.${reset}\n"
+    read -rp "  Enter to close: " _
+    exit 1
+  fi
+  RUN_DIR="$(mktemp -d /tmp/sensei_clean_run_XXXXXX)"
+  $SC scan --sha256 --run-dir "$RUN_DIR" --roots "${ROOTS[@]}" | tee "$OUT"
+else
+  printf "\nSCAN (demo / safe)\n"
+  printf "  Reads: /tmp/sensei_clean_demo_<id>/ only\n"
+  printf "  Writes: /tmp/sensei_clean_run_<id>/ only\n"
+  printf "  Hashing is ON for the demo so duplicates are found deterministically.\n\n"
+  read -rp "  Enter to run demo scan, Ctrl-C to abort: " _
+
+  DEMO_ROOT="$(mktemp -d /tmp/sensei_clean_demo_XXXXXX)"
+  mkdir -p "$DEMO_ROOT"/A "$DEMO_ROOT"/B "$DEMO_ROOT"/C
+  printf "hello world\n" > "$DEMO_ROOT/A/dup.txt"
+  cp "$DEMO_ROOT/A/dup.txt" "$DEMO_ROOT/B/dup.txt"
+  printf "unique\n" > "$DEMO_ROOT/C/unique.txt"
+
+  RUN_DIR="$(mktemp -d /tmp/sensei_clean_run_XXXXXX)"
+  $SC scan --sha256 \
+    --run-dir "$RUN_DIR" \
+    --roots "$DEMO_ROOT" \
+    --quarantine-root "$DEMO_ROOT/Quarantine" | tee "$OUT"
+fi
 echo
 
-RUN_DIR=$(grep -m1 "^  run:" "$OUT" | awk '{print $2}')
+# Prefer the run dir printed by scan, but fall back to our mktemp dir.
+PARSED_RUN_DIR="$(grep -m1 "^  run:" "$OUT" | awk '{print $2}')"
+if [[ -n "${PARSED_RUN_DIR}" ]]; then
+  RUN_DIR="${PARSED_RUN_DIR}"
+fi
 if [[ -z "${RUN_DIR}" || ! -d "${RUN_DIR}" ]]; then
   printf "${yellow}could not parse run dir from scan output. Bail.${reset}\n"
   read -rp "  Enter to close: " _
@@ -59,8 +96,8 @@ case "${ans,,}" in
 esac
 
 printf "\n${cyan}Step 3: APPLY${reset}\n"
-printf "  Moves duplicates to ~/Sensei-Quarantine/duplicates/\n"
-printf "  Monitored-lane (sensitive) items are skipped by default.\n\n"
+printf "  Applies unattended-lane actions only by default.\n"
+printf "  Monitored-lane (sensitive) items are skipped unless you opt in.\n\n"
 read -rp "  Apply unattended-lane actions? [y/N]: " ans
 case "${ans,,}" in
   y|yes)
