@@ -18,6 +18,7 @@ from prompt_toolkit.shortcuts import (
 )
 from prompt_toolkit.shortcuts.progress_bar import ProgressBar
 
+from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.apply import load_undo_records
 from sensei_clean.connectors import detect_sources
 from sensei_clean.engine import scan_run
@@ -98,6 +99,100 @@ def _open_review_page(path: Path) -> None:
         webbrowser.open(path.resolve().as_uri())
     except Exception:
         pass
+
+
+def _open_picker_choices(items, n: int = 40) -> list[tuple[str, str]]:
+    """Build the (value, label) list for the per-row open radiolist.
+
+    Sorted by size desc and capped at N rows so a 34k-file scan doesn't
+    overflow the picker. Values are item_ids so the caller can look the
+    chosen item back up in the inventory list."""
+    from sensei_clean.waste import human_bytes
+    ranked = sorted(items, key=lambda it: it.size_bytes or 0, reverse=True)
+    out: list[tuple[str, str]] = []
+    for it in ranked[:n]:
+        size_h = human_bytes(it.size_bytes or 0)
+        kind = "📁" if (it.kind == "dir") else "📄"
+        if (it.identity or {}).get("path", "").startswith("rclone:"):
+            kind = "☁"
+        label = (
+            f"{kind} {it.display_name}  "
+            f"[{size_h}, {it.category_guess}"
+            f"{', private' if it.sensitivity in ('private', 'financial', 'medical', 'identity', 'credential', 'career') else ''}]"
+        )
+        out.append((it.item_id, label))
+    return out
+
+
+def _adapter_for_item(item, *, run_id: str, quarantine_root: str):
+    """Return the adapter instance the opener should ask for the
+    item's view URL. Mirrors the logic in sensei_clean.cmd_open."""
+    adapter_name = item.source.get("adapter", "")
+    if adapter_name.startswith("rclone:"):
+        from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+        remote = adapter_name.split(":", 1)[1]
+        return RcloneRemoteAdapter(run_id=run_id, remote=remote)
+    return LocalFSAdapter(
+        run_id=run_id,
+        roots=[item.source.get("root", "")],
+        quarantine_root=quarantine_root,
+    )
+
+
+def _pick_and_open_loop(items, *, run_id: str, quarantine_root: str) -> None:
+    """Per-row open picker: radiolist of top items by size, resolve via
+    the opener, confirm before spawning xdg-open. Loops until the user
+    declines 'open another'. No-op when items is empty."""
+    if not items:
+        return
+    from sensei_clean.opener import open_item, resolve_open_target
+    item_by_id = {it.item_id: it for it in items}
+    while True:
+        if not bool(yes_no_dialog(
+            title=BANNER,
+            text=(
+                "Open one of the scanned files in its app?\n\n"
+                "Nothing is moved or deleted. Local files open in your default app, "
+                "cloud files open in your browser."
+            ),
+        ).run()):
+            return
+        choices = _open_picker_choices(items, n=40)
+        if not choices:
+            message_dialog(title=BANNER, text="No items to pick from.").run()
+            return
+        picked_id = radiolist_dialog(
+            title=BANNER,
+            text="Pick a file to open (top items by size shown):",
+            values=choices,
+        ).run()
+        if not picked_id:
+            return
+        item = item_by_id.get(picked_id)
+        if item is None:
+            message_dialog(title=BANNER, text="That item is no longer in the inventory.").run()
+            continue
+        adapter = _adapter_for_item(item, run_id=run_id, quarantine_root=quarantine_root)
+        target = resolve_open_target(item, adapter=adapter)
+        if target.kind == "unknown":
+            message_dialog(
+                title=BANNER,
+                text=f"Sensei can't open this one yet.\n\n{target.note or 'no resolvable target'}",
+            ).run()
+            continue
+        if not bool(yes_no_dialog(
+            title=BANNER,
+            text=(
+                f"Open this in your default app?\n\n"
+                f"What : {item.display_name}\n"
+                f"Type : {target.kind}\n"
+                f"Where: {target.target}"
+            ),
+        ).run()):
+            continue
+        _t, ok, msg = open_item(item, adapter=adapter, spawn=True)
+        if not ok:
+            message_dialog(title=BANNER, text=f"Could not open:\n\n{msg}").run()
 
 
 def run_interactive() -> int:
@@ -280,6 +375,15 @@ def run_interactive() -> int:
     if review_path.exists():
         if bool(yes_no_dialog(title=BANNER, text="Open the visual review page now?").run()):
             _open_review_page(review_path)
+
+    # ---- inspect (optional, before any move) ----
+    # Per-row open picker: spot-check individual files in their real
+    # apps before deciding what to move. xdg-open for local, browser
+    # for cloud. Loops until the user says no.
+    if items:
+        _pick_and_open_loop(items,
+                            run_id=str(run_path.name),
+                            quarantine_root=quarantine_root)
 
     # ---- move (optional) ----
     if not actions:

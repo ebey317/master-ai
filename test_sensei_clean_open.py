@@ -189,6 +189,60 @@ class OpenItemSpawnTests(unittest.TestCase):
             self.assertTrue(captured["arg"].startswith("https://drive.google.com/"))
 
 
+class GuiPickerHelpersTests(unittest.TestCase):
+    """The dialogs themselves need a TTY, but the helpers that build
+    the choice list and pick the right adapter per item are pure."""
+
+    def test_open_picker_choices_sorted_by_size_desc_and_capped(self):
+        from sensei_clean_app import _open_picker_choices
+        items = [
+            _local_item("/tmp/a.txt", "a.txt", size=5),
+            _local_item("/tmp/b.txt", "b.txt", size=100),
+            _local_item("/tmp/c.txt", "c.txt", size=50),
+        ]
+        choices = _open_picker_choices(items, n=10)
+        # value is item_id, label includes size & category
+        names_in_order = [c[1].split(" ", 1)[1].split(" ", 1)[0]
+                          for c in choices]  # extract display name token
+        self.assertEqual(names_in_order, ["b.txt", "c.txt", "a.txt"])
+        self.assertEqual(len(choices), 3)
+        # Cap honored
+        many = [_local_item(f"/tmp/f{i}.txt", f"f{i}.txt", size=i + 1)
+                for i in range(80)]
+        capped = _open_picker_choices(many, n=20)
+        self.assertEqual(len(capped), 20)
+
+    def test_open_picker_choices_marks_cloud_items_with_cloud_glyph(self):
+        from sensei_clean_app import _open_picker_choices
+        cloud = _cloud_item("gdrive", "FID", "doc.pdf")
+        choices = _open_picker_choices([cloud], n=10)
+        self.assertEqual(len(choices), 1)
+        label = choices[0][1]
+        self.assertIn("☁", label)
+        self.assertIn("doc.pdf", label)
+
+    def test_open_picker_choices_flags_sensitive_in_label(self):
+        from sensei_clean_app import _open_picker_choices
+        item = _local_item("/tmp/resume.pdf", "resume.pdf", size=200)
+        # Override sensitivity to one in the monitored set
+        from dataclasses import replace
+        item = replace(item, sensitivity="career")
+        choices = _open_picker_choices([item], n=5)
+        self.assertIn("private", choices[0][1])
+
+    def test_adapter_for_local_item_returns_local_fs(self):
+        from sensei_clean_app import _adapter_for_item
+        item = _local_item("/tmp/foo.txt")
+        adapter = _adapter_for_item(item, run_id="r1", quarantine_root="/tmp/q")
+        self.assertEqual(adapter.name, "local_fs")
+
+    def test_adapter_for_cloud_item_returns_rclone(self):
+        from sensei_clean_app import _adapter_for_item
+        item = _cloud_item("gdrive", "FID", "doc.pdf")
+        adapter = _adapter_for_item(item, run_id="r1", quarantine_root="/tmp/q")
+        self.assertEqual(adapter.name, "rclone:gdrive")
+
+
 class ReviewHtmlClickableLinksTests(unittest.TestCase):
     def test_review_html_emits_file_uri_for_local_action(self):
         """Smoke: write_review_html renders an <a class="open-link">
