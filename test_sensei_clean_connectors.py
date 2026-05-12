@@ -5,7 +5,9 @@ import unittest
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
+from sensei_clean import status as _status
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.connectors import detect_sources, supported_connector_catalog
@@ -96,15 +98,18 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             run_dir = root / "run"
             organize_root = root / "organized"
             quarantine_root = root / "quarantine"
-            run_path, caps, items, findings, actions = scan_run(
-                roots=[str(downloads), str(cloud), str(android)],
-                sha256=True,
-                quarantine_root=str(quarantine_root),
-                run_dir=str(run_dir),
-                include_previews=True,
-                organize=True,
-                organize_root=str(organize_root),
-            )
+            state_dir = root / "state"
+            with mock.patch.object(_status, "STATE_DIR", state_dir), \
+                 mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                run_path, caps, items, findings, actions = scan_run(
+                    roots=[str(downloads), str(cloud), str(android)],
+                    sha256=True,
+                    quarantine_root=str(quarantine_root),
+                    run_dir=str(run_dir),
+                    include_previews=True,
+                    organize=True,
+                    organize_root=str(organize_root),
+                )
             cap = next((c for c in caps if c.capability == "local"), caps[0])
 
             self.assertGreaterEqual(len(items), 6)

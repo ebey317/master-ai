@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from sensei_clean import connectors as _connectors
+from sensei_clean import status as _status
 from sensei_clean.adapters.cloud_drive import CloudDriveAdapter
 from sensei_clean.adapters.fake_drive import FakeDriveAdapter, FakeFile
 from sensei_clean.adapters.gdrive import GoogleDriveAdapter
@@ -403,13 +404,16 @@ class ListCloudFlagTests(unittest.TestCase):
             return_value={"used": 1, "total": 100},
         ):
             with TemporaryDirectory() as tmpdir:
-                run_path, caps, items, findings, actions = scan_run(
-                    roots=["rclone:gdrive:"],
-                    sha256=False,
-                    quarantine_root=str(Path(tmpdir) / "q"),
-                    run_dir=str(Path(tmpdir) / "run"),
-                    list_cloud=False,
-                )
+                state_dir = Path(tmpdir) / "state"
+                with mock.patch.object(_status, "STATE_DIR", state_dir), \
+                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                    run_path, caps, items, findings, actions = scan_run(
+                        roots=["rclone:gdrive:"],
+                        sha256=False,
+                        quarantine_root=str(Path(tmpdir) / "q"),
+                        run_dir=str(Path(tmpdir) / "run"),
+                        list_cloud=False,
+                    )
         # Probe records the cap but scan emits no items
         self.assertEqual(len(items), 0)
         self.assertTrue(any(c.provider.startswith("rclone-") for c in caps))
@@ -429,13 +433,16 @@ class ListCloudFlagTests(unittest.TestCase):
             return_value={"used": 1, "total": 100},
         ):
             with TemporaryDirectory() as tmpdir:
-                run_path, caps, items, findings, actions = scan_run(
-                    roots=["rclone:gdrive:"],
-                    sha256=False,
-                    quarantine_root=str(Path(tmpdir) / "q"),
-                    run_dir=str(Path(tmpdir) / "run"),
-                    list_cloud=True,
-                )
+                state_dir = Path(tmpdir) / "state"
+                with mock.patch.object(_status, "STATE_DIR", state_dir), \
+                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                    run_path, caps, items, findings, actions = scan_run(
+                        roots=["rclone:gdrive:"],
+                        sha256=False,
+                        quarantine_root=str(Path(tmpdir) / "q"),
+                        run_dir=str(Path(tmpdir) / "run"),
+                        list_cloud=True,
+                    )
         self.assertEqual(len(items), 2)
         self.assertEqual(len(findings), 1)  # md5 dedup cluster
         self.assertEqual(len(actions), 1)
@@ -464,12 +471,15 @@ class EngineMultiAdapterTests(unittest.TestCase):
                 "sensei_clean.adapters.rclone_remote.shutil.which",
                 return_value="/usr/bin/rclone",
             ):
-                run_path, caps, items, findings, actions = scan_run(
-                    roots=[str(root / "Local"), "rclone:gdrive:"],
-                    sha256=False,
-                    quarantine_root=str(root / "Q"),
-                    run_dir=str(run_dir),
-                )
+                state_dir = root / "state"
+                with mock.patch.object(_status, "STATE_DIR", state_dir), \
+                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                    run_path, caps, items, findings, actions = scan_run(
+                        roots=[str(root / "Local"), "rclone:gdrive:"],
+                        sha256=False,
+                        quarantine_root=str(root / "Q"),
+                        run_dir=str(run_dir),
+                    )
         # Local items present, cloud probe-only yields nothing
         self.assertGreaterEqual(len(items), 1)
         cap_providers = {c.provider for c in caps}
