@@ -125,6 +125,16 @@ class LocalFSAdapter(BaseAdapter):
         # Pathological case — return a hash-suffixed name as last resort
         return parent / f"{stem}.{hashlib.sha1(str(dest).encode()).hexdigest()[:8]}{suffix}"
 
+    def open_view(self, item: ItemRecord) -> str:
+        """Local 'view' is the file's own path. The CLI's `open`
+        subcommand and the review.html link generator use this to
+        spawn xdg-open. Returns "" when the item has no resolvable
+        local path."""
+        path = (item.identity or {}).get("path", "")
+        if path and not path.startswith(("rclone:", "http://", "https://")):
+            return path
+        return ""
+
     def undo(self, undo_record: UndoRecord) -> ApplyResult:
         source = Path(undo_record.source_path)
         destination = Path(undo_record.destination_path)

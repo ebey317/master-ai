@@ -323,6 +323,88 @@ def cmd_status(_args: argparse.Namespace) -> int:
     return 0
 
 
+# ────────────── open ──────────────
+
+def cmd_open(args: argparse.Namespace) -> int:
+    """Open a single item from a prior scan run in its real app
+    (xdg-open for local files, browser for cloud URLs)."""
+    from sensei_clean.opener import resolve_open_target, open_item
+    from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+
+    run_dir = Path(args.run_dir).expanduser().resolve()
+    inv = run_dir / "inventory.jsonl"
+    if not inv.exists():
+        print(f"error: no inventory.jsonl at {inv}", file=sys.stderr)
+        return 2
+    lines = [ln for ln in inv.read_text().splitlines() if ln.strip()]
+    if not lines:
+        print(f"error: inventory is empty at {inv}", file=sys.stderr)
+        return 2
+    items = [ItemRecord(**json.loads(ln)) for ln in lines]
+
+    # Selector: --item N (1-based), --path P, --biggest, --oldest.
+    chosen = None
+    if args.path:
+        wanted = str(Path(args.path).expanduser())
+        for it in items:
+            if it.identity.get("path") == wanted or it.identity.get("path") == args.path:
+                chosen = it
+                break
+        if chosen is None:
+            print(f"error: no item with path {args.path}", file=sys.stderr)
+            return 2
+    elif args.biggest:
+        nonempty = [i for i in items if (i.size_bytes or 0) > 0]
+        if not nonempty:
+            print("error: no items have size > 0", file=sys.stderr)
+            return 2
+        chosen = max(nonempty, key=lambda i: i.size_bytes or 0)
+    elif args.oldest:
+        from sensei_clean.waste import oldest_files
+        picks = oldest_files(items, n=1)
+        if not picks:
+            print("error: no items have a timestamp", file=sys.stderr)
+            return 2
+        chosen = picks[0]
+    elif args.item is not None:
+        if not 1 <= args.item <= len(items):
+            print(f"error: --item {args.item} out of range (1..{len(items)})", file=sys.stderr)
+            return 2
+        chosen = items[args.item - 1]
+    else:
+        print("error: pass one of --item N / --path P / --biggest / --oldest", file=sys.stderr)
+        return 2
+
+    # Pick the right adapter for this item so cloud URLs resolve.
+    adapter_name = chosen.source.get("adapter", "")
+    adapter = None
+    if adapter_name.startswith("rclone:"):
+        remote = adapter_name.split(":", 1)[1]
+        adapter = RcloneRemoteAdapter(run_id=chosen.run_id, remote=remote)
+    else:
+        adapter = LocalFSAdapter(
+            run_id=chosen.run_id,
+            roots=[chosen.source.get("root", "")],
+            quarantine_root=str(Path("~/Sensei-Quarantine").expanduser().resolve()),
+        )
+
+    target = resolve_open_target(chosen, adapter=adapter)
+    print(f"{BANNER}")
+    print(f"  item       : {chosen.display_name}")
+    print(f"  category   : {chosen.category_guess}  (sensitivity={chosen.sensitivity})")
+    print(f"  resolution : {target.kind}")
+    print(f"  target     : {target.target or '(none)'}")
+    if target.note:
+        print(f"  note       : {target.note}")
+
+    if args.print_only or target.kind == "unknown":
+        return 0 if target.kind != "unknown" else 1
+
+    _t, ok, msg = open_item(chosen, adapter=adapter, spawn=True)
+    print(f"  spawn      : {msg}")
+    return 0 if ok else 1
+
+
 # ────────────── apply ──────────────
 
 def cmd_apply(args: argparse.Namespace) -> int:
@@ -464,6 +546,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     sub.add_parser("status", help="show last full-scan date + reclaim totals")
 
+    p_open = sub.add_parser("open",
+                            help="open an item from a scan run in its real app")
+    p_open.add_argument("run_dir", help="path to a sensei_runs/<ts>/ directory")
+    sel = p_open.add_mutually_exclusive_group()
+    sel.add_argument("--item", type=int, default=None,
+                     help="1-based index into inventory.jsonl")
+    sel.add_argument("--path", default=None,
+                     help="exact identity.path from the inventory (local or rclone:...)")
+    sel.add_argument("--biggest", action="store_true",
+                     help="open the largest file in the inventory")
+    sel.add_argument("--oldest", action="store_true",
+                     help="open the oldest file in the inventory (by modified time)")
+    p_open.add_argument("--print-only", action="store_true",
+                        help="resolve the target and print it; do not run xdg-open")
+
     p_apply = sub.add_parser("apply", help="enact queued actions from a scan run")
     p_apply.add_argument("run_dir", help="path to the run directory from scan")
     p_apply.add_argument("--yes", action="store_true",
@@ -490,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Back-compat: bare invocation = scan with defaults.
-    if argv and argv[0] not in ("scan", "scan-all", "status", "apply", "undo", "-h", "--help"):
+    if argv and argv[0] not in ("scan", "scan-all", "status", "open", "apply", "undo", "-h", "--help"):
         # Treat legacy flags (--run-dir, --roots, --sha256, --quarantine-root)
         # as `scan` arguments so old callers still work.
         argv = ["scan", *argv]
@@ -501,6 +598,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_scan_all(args)
     if args.cmd == "status":
         return cmd_status(args)
+    if args.cmd == "open":
+        return cmd_open(args)
     if args.cmd == "apply":
         return cmd_apply(args)
     if args.cmd == "undo":

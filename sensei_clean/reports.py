@@ -106,6 +106,21 @@ def _plain_action(action: ActionRecord) -> tuple[str, str, str]:
     )
 
 
+def _review_href(path_str: str) -> str:
+    """Render-side helper: file:// URI for local paths, the URL as-is
+    for cloud (https://drive.google.com/...) or http(s) entries. Empty
+    string when there's no usable target."""
+    if not path_str:
+        return ""
+    if path_str.startswith(("http://", "https://")):
+        return path_str
+    if path_str.startswith("rclone:"):
+        # rclone-only roots have no direct browser URL until the
+        # adapter's open_view fills it in; skip in the review page.
+        return ""
+    return f"file://{path_str.replace(' ', '%20')}"
+
+
 def write_review_html(
     path: str,
     capabilities: list[CapabilityReport],
@@ -135,6 +150,16 @@ def write_review_html(
         source = action.source_path
         destination = action.destination_path or "(not set)"
         badge_class = "badge safe" if action.lane != "monitored" else "badge extra"
+        src_href = _review_href(source)
+        # "From" links to the file's current location so a click in the
+        # browser opens the file in the user's default app (xdg-open
+        # equivalent). Local paths become file:// links; cloud URLs are
+        # passed through. No href when the source isn't directly
+        # openable.
+        src_html = (
+            f'<a class="open-link" href="{html.escape(src_href)}">{html.escape(source)}</a>'
+            if src_href else f"<code>{html.escape(source)}</code>"
+        )
         rows.append(f"""
         <section class="move-row">
           <div class="row-num">{idx}</div>
@@ -146,8 +171,8 @@ def write_review_html(
             <p>{html.escape(detail)}</p>
             <div class="path-grid">
               <div>
-                <span class="label">From</span>
-                <code>{html.escape(source)}</code>
+                <span class="label">From (click to open)</span>
+                {src_html}
               </div>
               <div>
                 <span class="label">To</span>
@@ -306,6 +331,22 @@ def write_review_html(
       color: #26364f;
       font-size: 12px;
     }
+    a.open-link {
+      display: block;
+      width: 100%;
+      min-height: 38px;
+      padding: 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      border-radius: 6px;
+      background: #eef4ff;
+      border: 1px solid #c7d6f5;
+      color: #1a3d8c;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      text-decoration: none;
+    }
+    a.open-link:hover { background: #dbe7ff; text-decoration: underline; }
     .empty {
       background: white;
       border: 1px solid #d9e0ed;
