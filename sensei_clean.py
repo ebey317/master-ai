@@ -33,6 +33,7 @@ from pathlib import Path
 
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
+from sensei_clean.engine import scan_run
 from sensei_clean.policy import MONITORED_SENSITIVITIES
 from sensei_clean.queue_builder import build_queue
 from sensei_clean.reports import write_jsonl, write_summary
@@ -213,57 +214,39 @@ def make_run_dir(raw_run_dir: str | None, run_id: str) -> Path:
 # ────────────── scan ──────────────
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    run_dir = make_run_dir(args.run_dir, run_id)
-    reports_dir = run_dir / "reports"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    reports_dir.mkdir(parents=True, exist_ok=True)
-
-    adapter = LocalFSAdapter(
-        run_id=run_id,
-        roots=args.roots,
-        quarantine_root=args.quarantine_root,
-    )
-    capability = adapter.probe()
-
+    has_cloud = any(r.startswith("rclone:") for r in args.roots)
     print(f"{BANNER}")
-    print(f"  run:  {run_dir}")
     print(f"  roots: {', '.join(args.roots)}")
     print(f"  sha256: {'on' if args.sha256 else 'off (default — pass --sha256 to find duplicates)'}")
+    if has_cloud:
+        if args.list_cloud:
+            print(f"  cloud listing: ON (rclone lsjson)")
+        else:
+            print(f"  cloud listing: off (default — pass --list-cloud to enumerate cloud files)")
     print()
 
-    items = list(adapter.scan())
-    if args.sha256:
-        items = [adapter.enrich(item, ["sha256", "screenshot", "text_snippet"]) for item in items]
-    items = _bump_sensitivity_if_private(items)
-    findings = build_findings(items, run_id)
-    actions = build_actions(items, findings, run_id,
-                            Path(args.quarantine_root).expanduser().resolve())
-    queue = build_queue(items, actions, [capability])
-
-    write_jsonl(str(run_dir / "inventory.jsonl"), items)
-    write_jsonl(str(run_dir / "findings.jsonl"), findings)
-    write_jsonl(str(run_dir / "actions.jsonl"), actions)
-    write_summary(str(reports_dir / "summary.md"),
-                  [capability], items, findings, actions)
-    (run_dir / "queue.json").write_text(json.dumps(queue, indent=2) + "\n",
-                                        encoding="utf-8")
-    (run_dir / "capabilities.json").write_text(
-        json.dumps([capability.to_dict()], indent=2) + "\n", encoding="utf-8")
+    run_path, capabilities, items, findings, actions = scan_run(
+        roots=args.roots,
+        sha256=args.sha256,
+        quarantine_root=args.quarantine_root,
+        run_dir=str(args.run_dir) if args.run_dir else None,
+        list_cloud=args.list_cloud,
+    )
 
     monitored = sum(1 for a in actions if a.lane == "monitored")
     unattended = sum(1 for a in actions if a.lane == "unattended")
     reclaim = _estimate_reclaim_bytes(items, findings)
 
+    print(f"Run dir   : {run_path}")
     print(f"Items     : {len(items)}")
     print(f"Findings  : {len(findings)}")
     print(f"Actions   : {len(actions)} (monitored={monitored}, unattended={unattended})")
     print(f"Reclaim   : ~{reclaim / 1e6:.1f} MB if all duplicates quarantined")
-    print(f"Report    : {reports_dir / 'summary.md'}")
+    print(f"Report    : {run_path / 'reports' / 'summary.md'}")
     print()
     print("Review the report, then:")
-    print(f"  sensei-clean apply {run_dir}")
-    print(f"  sensei-clean apply {run_dir} --approve-monitored   # include sensitive items")
+    print(f"  sensei-clean apply {run_path}")
+    print(f"  sensei-clean apply {run_path} --approve-monitored   # include sensitive items")
     return 0
 
 
@@ -402,6 +385,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="where apply would move quarantined files")
     p_scan.add_argument("--sha256", action="store_true",
                         help="hash files (needed to find duplicates)")
+    p_scan.add_argument("--list-cloud", action="store_true",
+                        help="actually list files in cloud remotes via rclone lsjson "
+                             "(default: probe-only, account/quota metadata only)")
 
     p_apply = sub.add_parser("apply", help="enact queued actions from a scan run")
     p_apply.add_argument("run_dir", help="path to the run directory from scan")

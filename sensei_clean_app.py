@@ -100,6 +100,7 @@ def run_interactive() -> int:
     sha256 = False
     include_text = False
     include_previews = False
+    list_cloud = False
     roots: list[str]
     suffix_allowlist = None
     organize = task in {"organize", "both", "office"}
@@ -146,6 +147,22 @@ def run_interactive() -> int:
             text="Generate a local preview index with file paths and readable document excerpts?\n\n"
                  "This writes excerpts to the local run report. Recommended: No for private folders unless you need review.",
         ).run())
+
+        # Cloud listing toggle — only ask when an rclone source was picked.
+        has_cloud_root = any(r.startswith("rclone:") for r in roots)
+        list_cloud = False
+        if has_cloud_root:
+            list_cloud = bool(yes_no_dialog(
+                title=BANNER,
+                text=(
+                    "List files in the selected cloud remote(s)?\n\n"
+                    "Default is OFF — scan probes account quota only and does not\n"
+                    "enumerate cloud file names. Turning this ON calls\n"
+                    "`rclone lsjson --hash` against each selected cloud remote.\n\n"
+                    "Cloud actions are routed to the monitored lane and require\n"
+                    "--approve-monitored at apply time."
+                ),
+            ).run())
 
         # Keep run artifacts local and contained by default.
         run_dir = mkdtemp(prefix="sensei_clean_run_", dir="/tmp")
@@ -210,6 +227,7 @@ def run_interactive() -> int:
             suffix_allowlist=suffix_allowlist,
             organize=organize,
             organize_root=str((Path.home() / "Sensei-Organized").resolve()),
+            list_cloud=list_cloud,
             progress=progress_cb,
         )
         # The local capability is the one we drive for apply/undo this round.

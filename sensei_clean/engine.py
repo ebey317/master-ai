@@ -240,6 +240,7 @@ def scan_run(
     suffix_allowlist: Optional[set[str]] = None,
     organize: bool = False,
     organize_root: str | None = None,
+    list_cloud: bool = False,
     progress: Optional[Callable[[str, int, int], None]] = None,
 ) -> tuple[Path, list[CapabilityReport], list[ItemRecord], list[FindingRecord], list[ActionRecord]]:
     """Run scan pipeline and write run artifacts to run_dir.
@@ -279,18 +280,21 @@ def scan_run(
                 progress("scan", idx, 0)
 
     if rclone_roots:
-        # Cloud probe-only this round: scan() yields nothing unless
-        # list_enabled=True at construction. We surface each remote's
-        # capability/availability so the UI can render the cloud row.
+        # Cloud probe-only by default. Pass list_cloud=True (via
+        # `sensei-clean scan --list-cloud` or the GUI checkbox) to
+        # actually call `rclone lsjson --hash` and emit ItemRecords.
         from .adapters.rclone_remote import RcloneRemoteAdapter
         for cloud_root in rclone_roots:
             rest = cloud_root[len("rclone:"):]
             remote, _, path_in_remote = rest.partition(":")
             cloud_adapter = RcloneRemoteAdapter(
-                run_id=run_id, remote=remote, path_in_remote=path_in_remote
+                run_id=run_id,
+                remote=remote,
+                path_in_remote=path_in_remote,
+                list_enabled=list_cloud,
             )
             capabilities.append(cloud_adapter.probe())
-            for cloud_item in cloud_adapter.scan():  # empty unless listing enabled
+            for cloud_item in cloud_adapter.scan():  # empty unless list_cloud=True
                 items.append(cloud_item)
 
     if sha256 and local_roots:

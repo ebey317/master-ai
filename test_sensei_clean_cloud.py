@@ -389,6 +389,60 @@ class CloudDedupAndActionTests(unittest.TestCase):
                             [r.message for r in undo_results])
 
 
+class ListCloudFlagTests(unittest.TestCase):
+    """`sensei-clean scan --list-cloud` and the GUI checkbox both plumb
+    a single boolean (`list_cloud`) into scan_run, which passes it to
+    RcloneRemoteAdapter as list_enabled. Pin that contract."""
+
+    def test_list_cloud_false_default_yields_no_cloud_items(self):
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=[{"Path": "x.txt", "Name": "x.txt", "Size": 1, "ID": "i", "Hashes": {}}],
+        ), mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_about",
+            return_value={"used": 1, "total": 100},
+        ):
+            with TemporaryDirectory() as tmpdir:
+                run_path, caps, items, findings, actions = scan_run(
+                    roots=["rclone:gdrive:"],
+                    sha256=False,
+                    quarantine_root=str(Path(tmpdir) / "q"),
+                    run_dir=str(Path(tmpdir) / "run"),
+                    list_cloud=False,
+                )
+        # Probe records the cap but scan emits no items
+        self.assertEqual(len(items), 0)
+        self.assertTrue(any(c.provider.startswith("rclone-") for c in caps))
+
+    def test_list_cloud_true_yields_items_from_lsjson(self):
+        records = [
+            {"Path": "x.txt", "Name": "x.txt", "Size": 5, "MimeType": "text/plain",
+             "ID": "id1", "Hashes": {"md5": "abc"}},
+            {"Path": "y.txt", "Name": "y.txt", "Size": 5, "MimeType": "text/plain",
+             "ID": "id2", "Hashes": {"md5": "abc"}},  # duplicate of x.txt by md5
+        ]
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=records,
+        ), mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_about",
+            return_value={"used": 1, "total": 100},
+        ):
+            with TemporaryDirectory() as tmpdir:
+                run_path, caps, items, findings, actions = scan_run(
+                    roots=["rclone:gdrive:"],
+                    sha256=False,
+                    quarantine_root=str(Path(tmpdir) / "q"),
+                    run_dir=str(Path(tmpdir) / "run"),
+                    list_cloud=True,
+                )
+        self.assertEqual(len(items), 2)
+        self.assertEqual(len(findings), 1)  # md5 dedup cluster
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action_type, "cloud_move")
+        self.assertEqual(actions[0].lane, "monitored")
+
+
 class EngineMultiAdapterTests(unittest.TestCase):
     """scan_run must accept a mix of local and rclone roots and record
     a capability for each, without crashing on the cloud side even when
