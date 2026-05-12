@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 from sensei_clean.adapters.local_fs import LocalFSAdapter
-from sensei_clean.connectors import detect_sources
+from sensei_clean.connectors import detect_sources, supported_connector_catalog
 from sensei_clean.engine import scan_run
 
 
@@ -36,12 +36,15 @@ class SenseiCleanConnectorTests(unittest.TestCase):
                 home / "Desktop",
                 home / "Documents",
                 home / "Pictures",
+                home / "Camera Uploads",
                 home / "Google Drive",
                 home / "OneDrive - Work",
                 home / "Dropbox",
                 home / "Nextcloud",
                 gvfs / "mtp:host=Android_123",
+                gvfs / "mtp:host=Android_123" / "DCIM" / "Camera",
                 media / "PhoneStorage",
+                media / "PhoneStorage" / "DCIM",
             ]:
                 folder.mkdir(parents=True, exist_ok=True)
 
@@ -56,8 +59,23 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             self.assertIn("Nextcloud", labels)
             self.assertIn("Android device", labels)
             self.assertIn("Removable/media storage", labels)
+            self.assertIn("Camera Uploads", labels)
             self.assertIn("synced_cloud_folder", kinds)
             self.assertIn("android_mounted_storage", kinds)
+            self.assertIn("photo_library", kinds)
+
+    def test_connector_catalog_names_photos_cloud_email_and_all_os(self) -> None:
+        catalog_text = " ".join(
+            f"{row['group']} {row['name']} {row['status']}"
+            for row in supported_connector_catalog()
+        )
+        self.assertIn("Google Drive", catalog_text)
+        self.assertIn("OneDrive", catalog_text)
+        self.assertIn("Google Photos", catalog_text)
+        self.assertIn("Gmail", catalog_text)
+        self.assertIn("Linux", catalog_text)
+        self.assertIn("Windows", catalog_text)
+        self.assertIn("macOS", catalog_text)
 
     def test_scan_organize_apply_undo_and_preview(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -93,6 +111,12 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             self.assertGreaterEqual(len(findings), 1)
             self.assertTrue((run_path / "reports" / "summary.md").exists())
             self.assertTrue((run_path / "reports" / "previews.md").exists())
+            self.assertTrue((run_path / "reports" / "review.html").exists())
+            review_html = (run_path / "reports" / "review.html").read_text(encoding="utf-8")
+            self.assertIn("Sensei Clean Review", review_html)
+            self.assertIn("What Sensei Wants To Move", review_html)
+            self.assertIn("Move extra copy", review_html)
+            self.assertIn("Safe Quarantine", review_html)
             previews = json.loads((run_path / "previews.json").read_text())
             preview_text = json.dumps(previews)
             self.assertIn("consumer invoice preview text", preview_text)
@@ -116,4 +140,3 @@ class SenseiCleanConnectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

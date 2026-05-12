@@ -33,11 +33,14 @@ from pathlib import Path
 
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
+from sensei_clean.connectors import detect_sources
 from sensei_clean.engine import scan_run
 from sensei_clean.policy import MONITORED_SENSITIVITIES
 from sensei_clean.queue_builder import build_queue
 from sensei_clean.reports import write_jsonl, write_summary
 from sensei_clean.schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
+from sensei_clean import status as _status
+from sensei_clean import waste as _waste
 
 
 # Source of truth for privacy: the harvest module if available, else a
@@ -262,6 +265,64 @@ def _estimate_reclaim_bytes(items: list[ItemRecord],
     return total
 
 
+# ────────────── scan-all ──────────────
+
+def cmd_scan_all(args: argparse.Namespace) -> int:
+    """Full System Scan: auto-discover every available source (local
+    folders, mounted Android, synced cloud folders, rclone cloud
+    remotes) and run a single scan against all of them.
+
+    Scan-only. Nothing is moved or deleted. The report at
+    <run>/reports/summary.md has the storage waste section + biggest
+    + oldest. Apply / undo are separate commands."""
+    sources = [s for s in detect_sources() if s.available]
+    if not sources:
+        print(f"{BANNER}")
+        print("  No sources detected. Nothing to scan.")
+        return 1
+
+    cloud_sources = [s for s in sources if s.kind in ("cloud_api", "cloud_photo_api")]
+    list_cloud = bool(args.list_cloud and cloud_sources)
+
+    roots = [s.path for s in sources]
+
+    print(f"{BANNER} — Full System Scan")
+    print(f"  sources discovered : {len(sources)}")
+    for s in sources:
+        suffix = " (cloud probe-only)" if s in cloud_sources and not list_cloud else ""
+        print(f"    - {s.kind:>22s}  {s.path}{suffix}")
+    print(f"  sha256 hashing     : {'on' if args.sha256 else 'off — pass --sha256 to find duplicates'}")
+    if cloud_sources:
+        print(f"  cloud listing      : {'on' if list_cloud else 'off — pass --list-cloud to enumerate cloud files'}")
+    print()
+
+    run_path, capabilities, items, findings, actions = scan_run(
+        roots=roots,
+        sha256=args.sha256,
+        quarantine_root=args.quarantine_root,
+        run_dir=str(args.run_dir) if args.run_dir else None,
+        list_cloud=list_cloud,
+    )
+
+    s = _waste.summary(items, findings, biggest_n=10, oldest_n=10)
+    print(f"Run dir          : {run_path}")
+    print(f"Files seen       : {s['total_items']:,} / {s['total_bytes_human']}")
+    print(f"Duplicate cluster: {s['duplicate_clusters']}")
+    print(f"Reclaim ready    : {s['reclaim_bytes_human']}")
+    print(f"Report           : {run_path / 'reports' / 'summary.md'}")
+    print(f"Review HTML      : {run_path / 'reports' / 'review.html'}")
+    print()
+    print(f"Status saved. Run `sensei-clean status` any time to see the headline.")
+    return 0
+
+
+# ────────────── status ──────────────
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    print(_status.format_status())
+    return 0
+
+
 # ────────────── apply ──────────────
 
 def cmd_apply(args: argparse.Namespace) -> int:
@@ -389,6 +450,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="actually list files in cloud remotes via rclone lsjson "
                              "(default: probe-only, account/quota metadata only)")
 
+    p_all = sub.add_parser("scan-all",
+                           help="full system scan — auto-discover and scan every source")
+    p_all.add_argument("--run-dir", default=None,
+                       help="output directory (default: ~/sensei_runs/<ts>/)")
+    p_all.add_argument("--quarantine-root", default="~/Sensei-Quarantine",
+                       help="where apply would move quarantined files")
+    p_all.add_argument("--sha256", action="store_true",
+                       help="hash files (needed to find duplicates)")
+    p_all.add_argument("--list-cloud", action="store_true",
+                       help="actually list files in detected cloud remotes "
+                            "(default: probe-only)")
+
+    sub.add_parser("status", help="show last full-scan date + reclaim totals")
+
     p_apply = sub.add_parser("apply", help="enact queued actions from a scan run")
     p_apply.add_argument("run_dir", help="path to the run directory from scan")
     p_apply.add_argument("--yes", action="store_true",
@@ -415,13 +490,17 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Back-compat: bare invocation = scan with defaults.
-    if argv and argv[0] not in ("scan", "apply", "undo", "-h", "--help"):
+    if argv and argv[0] not in ("scan", "scan-all", "status", "apply", "undo", "-h", "--help"):
         # Treat legacy flags (--run-dir, --roots, --sha256, --quarantine-root)
         # as `scan` arguments so old callers still work.
         argv = ["scan", *argv]
     args = parse_args(argv)
     if args.cmd == "scan":
         return cmd_scan(args)
+    if args.cmd == "scan-all":
+        return cmd_scan_all(args)
+    if args.cmd == "status":
+        return cmd_status(args)
     if args.cmd == "apply":
         return cmd_apply(args)
     if args.cmd == "undo":

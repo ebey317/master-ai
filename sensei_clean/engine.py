@@ -12,7 +12,9 @@ from .adapters.local_fs import LocalFSAdapter
 from .policy import MONITORED_SENSITIVITIES
 from .previews import write_preview_files
 from .queue_builder import build_queue
-from .reports import write_jsonl, write_summary
+from .reports import write_jsonl, write_review_html, write_summary
+from . import status as _status_module
+from . import waste as _waste_module
 from .schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
 
 
@@ -331,12 +333,31 @@ def scan_run(
     write_jsonl(str(out_dir / "findings.jsonl"), findings)
     write_jsonl(str(out_dir / "actions.jsonl"), actions)
     write_summary(str(reports_dir / "summary.md"), capabilities, items, findings, actions)
+    write_review_html(str(reports_dir / "review.html"), capabilities, items, findings, actions)
     write_preview_files(out_dir, items, include_content=include_previews)
     (out_dir / "queue.json").write_text(json.dumps(queue, indent=2) + "\n", encoding="utf-8")
     (out_dir / "capabilities.json").write_text(
         json.dumps([c.to_dict() for c in capabilities], indent=2) + "\n",
         encoding="utf-8",
     )
+
+    # Storage waste rollup as a structured artifact (status command +
+    # GUI read this without re-loading inventory.jsonl) and last-clean
+    # state for the menu/banner.
+    waste = _waste_module.summary(items, findings, biggest_n=20, oldest_n=20)
+    (out_dir / "waste.json").write_text(json.dumps(waste, indent=2) + "\n", encoding="utf-8")
+    try:
+        _status_module.record_full_scan(
+            run_dir=str(out_dir),
+            total_items=waste["total_items"],
+            total_bytes=waste["total_bytes"],
+            reclaim_bytes=waste["reclaim_bytes"],
+            duplicate_clusters=waste["duplicate_clusters"],
+            sources=list(roots),
+        )
+    except Exception:
+        # Non-fatal: status is a convenience, not a correctness gate.
+        pass
 
     if progress:
         progress("done", len(items), len(items))

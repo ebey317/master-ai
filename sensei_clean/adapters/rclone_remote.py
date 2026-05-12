@@ -174,12 +174,13 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
             account_label=self.remote,
             root=self.root,
             available=not blockers,
-            supported_actions=[],  # no mutations in this round
+            supported_actions=["cloud_move"],
             blockers=blockers,
             notes=[
                 f"rclone remote {self.remote!r} (uses ~/.config/rclone/rclone.conf).",
                 "Probe-only: scan yields nothing unless list_enabled=True at construction.",
-                "Move/delete actions are not wired yet — review/approval flow first.",
+                "cloud_move is wired through rclone moveto and always requires monitored approval.",
+                "Deletes are not wired.",
                 quota_note,
             ],
         )

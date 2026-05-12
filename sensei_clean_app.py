@@ -5,6 +5,7 @@ import argparse
 import os
 import shlex
 import sys
+import webbrowser
 from pathlib import Path
 from tempfile import mkdtemp
 
@@ -17,10 +18,10 @@ from prompt_toolkit.shortcuts import (
 )
 from prompt_toolkit.shortcuts.progress_bar import ProgressBar
 
-from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
-from sensei_clean.adapters.local_fs import LocalFSAdapter
+from sensei_clean.apply import load_undo_records
 from sensei_clean.connectors import detect_sources
 from sensei_clean.engine import scan_run
+from sensei_clean.runner import apply_per_adapter, undo_per_adapter
 
 
 BANNER = "Sensei Clean"
@@ -72,13 +73,40 @@ def _require_typed_approval(reason: str) -> bool:
     return (ans or "").strip().upper() == "YES"
 
 
+def _short_path(path: str, limit: int = 78) -> str:
+    if len(path) <= limit:
+        return path
+    return "..." + path[-(limit - 3):]
+
+
+def _action_words(action) -> str:
+    name = Path(action.source_path).name
+    if action.action_type == "quarantine_move":
+        verb = "extra copy -> Safe Quarantine"
+    elif action.action_type == "cloud_move":
+        verb = "extra cloud copy -> Cloud Quarantine"
+    elif action.action_type == "archive_move":
+        verb = "file -> organized folder"
+    else:
+        verb = "file move"
+    need = " (needs extra YES)" if action.lane == "monitored" else ""
+    return f"- {name}: {verb}{need}\n  from: {_short_path(action.source_path)}\n  to:   {_short_path(action.destination_path or '')}"
+
+
+def _open_review_page(path: Path) -> None:
+    try:
+        webbrowser.open(path.resolve().as_uri())
+    except Exception:
+        pass
+
+
 def run_interactive() -> int:
     message_dialog(
         title=BANNER,
         text=(
-            "Review-first local cleanup.\n\n"
-            "This tool does not move anything unless you explicitly run Apply.\n"
-            "Sensitive items are routed to the monitored lane and require extra approval."
+            "Clean up without guessing.\n\n"
+            "Sensei scans the places you pick, shows you the list, then asks before moving anything.\n"
+            "Extra copies go to Safe Quarantine. If something looks wrong, Undo puts it back."
         ),
     ).run()
 
@@ -86,16 +114,16 @@ def run_interactive() -> int:
         title=BANNER,
         text="Choose what to do:",
         values=[
-            ("dups", "Clean: find exact duplicates (quarantine the extras)"),
-            ("organize", "Organize: sort Downloads by file type (reversible)"),
-            ("both", "Both: duplicates + organize"),
-            ("office", "Office/Libre: focus on Office file types (duplicates + organize)"),
+            ("dups", "Find duplicate files"),
+            ("organize", "Organize messy Downloads"),
+            ("both", "Find duplicates + organize Downloads"),
+            ("office", "Clean Office, PDF, and LibreOffice files"),
         ],
     ).run()
     if not task:
         return 0
 
-    demo = bool(yes_no_dialog(title=BANNER, text="Run in Demo mode (safe /tmp only)?").run())
+    demo = bool(yes_no_dialog(title=BANNER, text="Try a safe demo first?").run())
 
     sha256 = False
     include_text = False
@@ -128,24 +156,23 @@ def run_interactive() -> int:
 
         sha256 = task in {"dups", "both", "office"} and bool(yes_no_dialog(
             title=BANNER,
-            text="Compute SHA256 to detect exact duplicates?\n\n"
-                 "This reads file contents locally (no network).",
+            text="Check for true duplicate files?\n\n"
+                 "Sensei reads each file locally to prove two files are exactly the same.",
         ).run())
 
         if sha256:
             include_text = bool(yes_no_dialog(
                 title=BANNER,
-                text="Include short text snippets in the report?\n\n"
-                     "This reads the first ~280 chars of .txt/.md locally.\n"
-                     "Recommended: No unless you need it.",
+                text="Show tiny text previews in the review page?\n\n"
+                     "Use this only when you want to see what readable text files contain.",
             ).run())
         else:
             include_text = False
 
         include_previews = bool(yes_no_dialog(
             title=BANNER,
-            text="Generate a local preview index with file paths and readable document excerpts?\n\n"
-                 "This writes excerpts to the local run report. Recommended: No for private folders unless you need review.",
+            text="Make a visual review page?\n\n"
+                 "It shows file names, where files are now, and where Sensei wants to move them.",
         ).run())
 
         # Cloud listing toggle — only ask when an rclone source was picked.
@@ -155,12 +182,10 @@ def run_interactive() -> int:
             list_cloud = bool(yes_no_dialog(
                 title=BANNER,
                 text=(
-                    "List files in the selected cloud remote(s)?\n\n"
-                    "Default is OFF — scan probes account quota only and does not\n"
-                    "enumerate cloud file names. Turning this ON calls\n"
-                    "`rclone lsjson --hash` against each selected cloud remote.\n\n"
-                    "Cloud actions are routed to the monitored lane and require\n"
-                    "--approve-monitored at apply time."
+                    "Look inside the cloud folder you picked?\n\n"
+                    "No = only check that the cloud account connects.\n"
+                    "Yes = read the file list in that cloud folder so Sensei can find duplicates.\n\n"
+                    "Cloud files will never be deleted. Any cloud move asks for extra approval."
                 ),
             ).run())
 
@@ -171,9 +196,9 @@ def run_interactive() -> int:
         sensitive = [r for r in roots if _sensitive_root(r)]
         if sensitive:
             ok = _require_typed_approval(
-                "You selected sensitive home folders:\n"
+                "You picked private folders:\n"
                 + "\n".join(f"  - {r}" for r in sensitive)
-                + "\n\nScan is local-only, but it will read filenames and optionally file contents for hashing/snippets."
+                + "\n\nSensei will read file names there, and may read file contents if duplicate checking is on."
             )
             if not ok:
                 return 0
@@ -230,78 +255,86 @@ def run_interactive() -> int:
             list_cloud=list_cloud,
             progress=progress_cb,
         )
-        # The local capability is the one we drive for apply/undo this round.
-        # Cloud caps land in the same list but their adapters are probe-only.
-        capability = next(
-            (c for c in capabilities if c.capability == "local"),
-            capabilities[0] if capabilities else None,
-        )
-
         scan_counter.done = True
         if hash_counter is not None:
             hash_counter.done = True
 
     report_path = run_path / "reports" / "summary.md"
+    review_path = run_path / "reports" / "review.html"
     monitored = sum(1 for a in actions if a.lane == "monitored")
     unattended = sum(1 for a in actions if a.lane == "unattended")
 
     message_dialog(
         title=BANNER,
         text=(
-            f"Scan complete.\n\n"
-            f"Run dir: {run_path}\n"
-            f"Items: {len(items)}\n"
-            f"Findings: {len(findings)}\n"
-            f"Actions: {len(actions)} (unattended={unattended}, monitored={monitored})\n\n"
-            f"Report:\n  {report_path}"
+            f"Scan finished.\n\n"
+            f"Files checked: {len(items)}\n"
+            f"Duplicate groups found: {len(findings)}\n"
+            f"Moves ready: {unattended}\n"
+            f"Moves needing extra YES: {monitored}\n\n"
+            f"Visual review page:\n  {review_path}\n\n"
+            f"Text report:\n  {report_path}"
         ),
     ).run()
 
-    # ---- apply (optional) ----
-    do_apply = bool(yes_no_dialog(title=BANNER, text="Apply unattended-lane actions now?").run())
-    if do_apply:
+    if review_path.exists():
+        if bool(yes_no_dialog(title=BANNER, text="Open the visual review page now?").run()):
+            _open_review_page(review_path)
+
+    # ---- move (optional) ----
+    if not actions:
+        message_dialog(title=BANNER, text="Nothing to move. Your selected places are clean for this scan.").run()
+        return 0
+
+    preview_lines = "\n\n".join(_action_words(a) for a in actions[:6])
+    if len(actions) > 6:
+        preview_lines += f"\n\n...and {len(actions) - 6} more move(s). Open the review page to see all of them."
+
+    do_move = bool(yes_no_dialog(
+        title=BANNER,
+        text=(
+            "Move the safe files now?\n\n"
+            "Nothing gets deleted. Extra copies go to Safe Quarantine.\n\n"
+            f"{preview_lines}"
+        ),
+    ).run())
+    if do_move:
         approve_monitored = False
         if monitored:
             approve_monitored = bool(yes_no_dialog(
                 title=BANNER,
-                text="Also include monitored (sensitive) actions?\n\n"
-                     "Recommended: No unless you explicitly intend to move sensitive items.",
+                text="Also move the files that need extra approval?\n\n"
+                     "Choose No unless you clearly understand those moves.",
             ).run())
 
-        cap = capability
-        adapter = LocalFSAdapter(run_id=cap.root.split(";")[0] if cap.root else "run", roots=roots, quarantine_root=quarantine_root)
-        # Note: LocalFSAdapter.run_id is used only for item ids; apply uses paths.
-        # We reuse a fresh adapter for apply/undo operations.
         selected = actions if approve_monitored else [a for a in actions if a.lane != "monitored"]
 
         if not selected:
-            message_dialog(title=BANNER, text="No actions selected to apply.").run()
+            message_dialog(title=BANNER, text="No safe moves selected. Nothing changed.").run()
         else:
-            with ProgressBar(title=f"{BANNER} — apply") as pb:
-                it = pb(selected, label="Applying")
-                # apply_actions already enforces policy.can_apply; this is just UI progress.
-                results = apply_actions(adapter, it, cap, str(run_path / "undo.jsonl"))
+            with ProgressBar(title=f"{BANNER} - moving files") as pb:
+                it = pb(selected, label="Moving")
+                results = apply_per_adapter(it, capabilities, str(run_path / "undo.jsonl"))
             applied = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
             message_dialog(
                 title=BANNER,
-                text=f"Apply complete.\n\nApplied: {applied}\nFailed: {failed}\nJournal: {run_path / 'undo.jsonl'}",
+                text=f"Move finished.\n\nMoved: {applied}\nProblems: {failed}\nUndo file:\n  {run_path / 'undo.jsonl'}",
             ).run()
 
     # ---- undo (optional) ----
     if (run_path / "undo.jsonl").exists():
-        do_undo = bool(yes_no_dialog(title=BANNER, text="Undo moves from this run now?").run())
+        do_undo = bool(yes_no_dialog(title=BANNER, text="Put the moved files back now?").run())
         if do_undo:
             if not _require_typed_approval("Undo will move files back to their original paths."):
                 return 0
             undo_records = load_undo_records(str(run_path / "undo.jsonl"))
-            adapter = LocalFSAdapter(run_id="undo", roots=roots, quarantine_root=quarantine_root)
-            with ProgressBar(title=f"{BANNER} — undo") as pb:
+            with ProgressBar(title=f"{BANNER} - putting files back") as pb:
                 it = pb(list(reversed(undo_records)), label="Undoing")
-                results = undo_actions(adapter, it)
+                results = undo_per_adapter(it)
             undone = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
-            message_dialog(title=BANNER, text=f"Undo complete.\n\nUndone: {undone}\nFailed: {failed}").run()
+            message_dialog(title=BANNER, text=f"Undo finished.\n\nMoved back: {undone}\nProblems: {failed}").run()
 
     return 0
 
@@ -323,13 +356,11 @@ def run_selftest() -> int:
         include_previews=True,
         progress=None,
     )
-    cap = next((c for c in caps if c.capability == "local"), caps[0])
-    adapter = LocalFSAdapter(run_id="apply", roots=[str(demo_root)], quarantine_root=str(demo_root / "Quarantine"))
-    results = apply_actions(adapter, actions, cap, str(run_path / "undo.jsonl"))
+    results = apply_per_adapter(actions, caps, str(run_path / "undo.jsonl"))
     if not all(r.success for r in results):
         return 2
     undo_records = load_undo_records(str(run_path / "undo.jsonl"))
-    undo_results = undo_actions(adapter, list(reversed(undo_records)))
+    undo_results = undo_per_adapter(list(reversed(undo_records)))
     if not all(r.success for r in undo_results):
         return 3
     print(f"selftest ok: run={run_path}")
