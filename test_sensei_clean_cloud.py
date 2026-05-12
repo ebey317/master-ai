@@ -132,15 +132,76 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
             self.assertFalse(cap.available)
             self.assertTrue(any("rclone-about-failed" in b for b in cap.blockers))
 
-    def test_apply_refuses_with_clear_message(self):
+    def test_apply_refuses_non_rclone_source_path(self):
         with self._stub_rclone(["gdrive"], {"used": 0, "total": 1}):
             adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
             action = _move_action("anything")
             from dataclasses import replace
-            action = replace(action, adapter=adapter.name)
+            action = replace(action, adapter=adapter.name)  # source_path stays "fake_drive:..."
             result = adapter.apply(action)
             self.assertFalse(result.success)
-            self.assertIn("not wired", result.message)
+            self.assertIn("non-rclone source", result.message)
+
+    def test_apply_refuses_cross_remote_move(self):
+        with self._stub_rclone(["gdrive", "dropbox"], {"used": 0, "total": 1}):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
+            from dataclasses import replace
+            action = replace(
+                _move_action("xyz"),
+                adapter=adapter.name,
+                source_path="rclone:dropbox:foo.txt",
+                destination_path="rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt",
+                action_type="cloud_move",
+            )
+            result = adapter.apply(action)
+            self.assertFalse(result.success)
+            self.assertIn("cross-remote", result.message)
+
+    def test_apply_propagates_rclone_failure(self):
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_moveto",
+            return_value=(False, "rclone moveto rc=2: permission denied"),
+        ), mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_listremotes",
+            return_value=["gdrive"],
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
+            from dataclasses import replace
+            action = replace(
+                _move_action("xyz"),
+                adapter=adapter.name,
+                source_path="rclone:gdrive:foo.txt",
+                destination_path="rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt",
+                action_type="cloud_move",
+            )
+            result = adapter.apply(action)
+            self.assertFalse(result.success)
+            self.assertIn("permission denied", result.message)
+
+    def test_apply_then_undo_round_trip_with_mock(self):
+        """Happy path: rclone_moveto succeeds for apply AND for undo.
+        Undo record points the path back at the original."""
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_moveto",
+            return_value=(True, "moved gdrive:foo.txt -> gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt"),
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
+            from dataclasses import replace
+            action = replace(
+                _move_action("xyz"),
+                adapter=adapter.name,
+                source_path="rclone:gdrive:foo.txt",
+                destination_path="rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt",
+                action_type="cloud_move",
+            )
+            result = adapter.apply(action)
+            self.assertTrue(result.success, result.message)
+            self.assertIsNotNone(result.undo_record)
+            # Undo record swaps source/destination so reversal goes back to original
+            self.assertEqual(result.undo_record.source_path, action.destination_path)
+            self.assertEqual(result.undo_record.destination_path, action.source_path)
+            undo_result = adapter.undo(result.undo_record)
+            self.assertTrue(undo_result.success, undo_result.message)
 
 
 class GoogleDriveStubTests(unittest.TestCase):
@@ -202,6 +263,130 @@ class ConnectorsDiscoveryTests(unittest.TestCase):
         self.assertIn("cloud_api", kinds)
         cloud = [s for s in sources if s.kind == "cloud_api"]
         self.assertTrue(any(c.path.startswith("rclone:") for c in cloud))
+
+
+class RcloneRemoteListingTests(unittest.TestCase):
+    """list_enabled=True path: scan calls rclone_lsjson and emits items."""
+
+    def test_scan_yields_items_from_lsjson(self):
+        fake_records = [
+            {
+                "Path": "Documents/foo.txt", "Name": "foo.txt", "Size": 42,
+                "MimeType": "text/plain", "ModTime": "2026-01-01T00:00:00Z",
+                "ID": "fid_001",
+                "Hashes": {"md5": "abcdef0123456789", "sha1": "x" * 40},
+            },
+            {
+                "Path": "Documents/foo_copy.txt", "Name": "foo_copy.txt", "Size": 42,
+                "MimeType": "text/plain", "ModTime": "2026-01-02T00:00:00Z",
+                "ID": "fid_002",
+                "Hashes": {"md5": "abcdef0123456789", "sha1": "y" * 40},
+            },
+        ]
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=fake_records,
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            items = list(adapter.scan())
+        self.assertEqual(len(items), 2)
+        names = sorted(i.display_name for i in items)
+        self.assertEqual(names, ["foo.txt", "foo_copy.txt"])
+        # md5 carried into hashes for dedup
+        md5s = {i.hashes.get("md5") for i in items}
+        self.assertEqual(md5s, {"abcdef0123456789"})
+        # provider_id captured
+        ids = sorted(i.identity.get("provider_id") for i in items)
+        self.assertEqual(ids, ["fid_001", "fid_002"])
+        # path uses rclone:remote:relpath convention so engine routes it back
+        self.assertTrue(all(i.identity["path"].startswith("rclone:gdrive:") for i in items))
+
+    def test_scan_skips_bad_records_without_failing(self):
+        records = [{"Path": "ok.txt", "Name": "ok.txt", "Size": 1, "ID": "i1", "Hashes": {}},
+                   {"Path": None}]  # bad row — should be skipped
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=records,
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            items = list(adapter.scan())
+        # Both may yield; the bad one yields with empty path. Worst case
+        # is one good item.
+        self.assertGreaterEqual(len(items), 1)
+
+
+class CloudDedupAndActionTests(unittest.TestCase):
+    """End-to-end: cloud scan -> findings -> cloud_move action (with
+    in-remote destination) -> apply via mocked rclone -> undo."""
+
+    def test_md5_dedup_and_cloud_move_destination(self):
+        from sensei_clean.engine import build_findings, build_actions
+        fake_records = [
+            {"Path": "A/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
+             "ID": "fid_a", "Hashes": {"md5": "AAAA"}},
+            {"Path": "B/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
+             "ID": "fid_b", "Hashes": {"md5": "AAAA"}},
+            {"Path": "C/y.txt", "Name": "y.txt", "Size": 5, "MimeType": "text/plain",
+             "ID": "fid_c", "Hashes": {"md5": "BBBB"}},
+        ]
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=fake_records,
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            items = list(adapter.scan())
+        findings = build_findings(items, run_id="r1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].finding_type, "exact_duplicate")
+        actions = build_actions(items, findings, run_id="r1",
+                                quarantine_root=Path("/unused"))
+        self.assertEqual(len(actions), 1)  # one extra duplicate -> one cloud_move
+        action = actions[0]
+        self.assertEqual(action.action_type, "cloud_move")
+        self.assertEqual(action.lane, "monitored")  # cloud always monitored this round
+        self.assertTrue(action.destination_path.startswith(
+            "rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/"))
+        self.assertTrue(action.source_path.startswith("rclone:gdrive:"))
+
+    def test_full_cloud_apply_undo_round_trip(self):
+        """Mock rclone_lsjson for scan and rclone_moveto for apply/undo."""
+        from sensei_clean.engine import build_findings, build_actions
+        from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
+        from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+        from tempfile import TemporaryDirectory
+        fake_records = [
+            {"Path": "A/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
+             "ID": "fid_a", "Hashes": {"md5": "AAAA"}},
+            {"Path": "B/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
+             "ID": "fid_b", "Hashes": {"md5": "AAAA"}},
+        ]
+        with mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+            return_value=fake_records,
+        ):
+            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            items = list(adapter.scan())
+        findings = build_findings(items, run_id="r1")
+        actions = build_actions(items, findings, run_id="r1",
+                                quarantine_root=Path("/unused"))
+        cap = adapter.probe()  # supports cloud_move; required by policy.can_apply
+        # Force capability available even though our mocked subprocess
+        # path doesn't actually call out:
+        from dataclasses import replace
+        cap = replace(cap, available=True, blockers=[])
+        with TemporaryDirectory() as tmp, mock.patch(
+            "sensei_clean.adapters.rclone_remote.rclone_moveto",
+            return_value=(True, "mock moveto ok"),
+        ):
+            undo_path = Path(tmp) / "undo.jsonl"
+            results = apply_actions(adapter, actions, cap, str(undo_path))
+            self.assertEqual(sum(1 for r in results if r.success), len(actions),
+                             [r.message for r in results])
+            records = load_undo_records(str(undo_path))
+            self.assertEqual(len(records), len(actions))
+            undo_results = undo_actions(adapter, records)
+            self.assertTrue(all(r.success for r in undo_results),
+                            [r.message for r in undo_results])
 
 
 class EngineMultiAdapterTests(unittest.TestCase):

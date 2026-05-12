@@ -139,6 +139,71 @@ def build_actions(items: list[ItemRecord], findings: list[FindingRecord],
     return actions
 
 
+def _build_adapter(adapter_name: str, run_id: str):
+    """Construct the right BaseAdapter from a stored action.adapter
+    name. Local actions all go through one LocalFSAdapter; each rclone
+    remote gets its own RcloneRemoteAdapter."""
+    if adapter_name.startswith("rclone:"):
+        from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+        remote = adapter_name.split(":", 1)[1]
+        return RcloneRemoteAdapter(run_id=run_id, remote=remote, list_enabled=True)
+    return LocalFSAdapter(
+        run_id=run_id,
+        roots=DEFAULT_ROOTS,
+        quarantine_root=str(Path("~/Sensei-Quarantine").expanduser().resolve()),
+    )
+
+
+def _capability_for(adapter_name: str, capabilities: list):
+    """Find the CapabilityReport that matches an action's adapter."""
+    for c in capabilities:
+        if c.adapter == adapter_name:
+            return c
+    # Fall back to first available cap if no exact match (shouldn't
+    # happen in practice — capabilities.json records one per adapter).
+    return capabilities[0] if capabilities else None
+
+
+def _apply_per_adapter(filtered, capabilities, undo_path: str):
+    """Group actions by their adapter, run apply_actions per group with
+    the matching capability. Aggregates all ApplyResults."""
+    from collections import defaultdict
+    groups: dict[str, list] = defaultdict(list)
+    for a in filtered:
+        groups[a.adapter].append(a)
+    results = []
+    for adapter_name, group_actions in groups.items():
+        cap = _capability_for(adapter_name, capabilities)
+        if cap is None:
+            results.extend([
+                type("R", (), {
+                    "action_id": a.action_id, "success": False,
+                    "message": f"no capability for {adapter_name}",
+                })()
+                for a in group_actions
+            ])
+            continue
+        adapter = _build_adapter(adapter_name, group_actions[0].run_id)
+        results.extend(apply_actions(adapter, group_actions, cap, undo_path))
+    return results
+
+
+def _undo_per_adapter(records):
+    """Group undo records by adapter, dispatch each to the right
+    adapter. Preserves the caller's ordering."""
+    from collections import defaultdict
+    # Preserve order: process records sequentially, building per-adapter
+    # adapters lazily.
+    adapters: dict[str, object] = {}
+    results = []
+    for rec in records:
+        if rec.adapter not in adapters:
+            adapters[rec.adapter] = _build_adapter(rec.adapter, rec.run_id)
+        adapter = adapters[rec.adapter]
+        results.extend(undo_actions(adapter, [rec]))
+    return results
+
+
 def make_run_dir(raw_run_dir: str | None, run_id: str) -> Path:
     if raw_run_dir:
         return Path(raw_run_dir).expanduser().resolve()
@@ -233,7 +298,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
     if not cap_list:
         print("error: no capabilities recorded in run", file=sys.stderr)
         return 2
-    capability = CapabilityReport(**cap_list[0])
+    capabilities = [CapabilityReport(**c) for c in cap_list]
 
     raw_actions = [json.loads(line) for line in actions_file.read_text().splitlines() if line.strip()]
     actions = [ActionRecord(**a) for a in raw_actions]
@@ -267,13 +332,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
             print("  cancelled.")
             return 1
 
-    adapter = LocalFSAdapter(
-        run_id=actions[0].run_id if actions else "apply",
-        roots=DEFAULT_ROOTS,
-        quarantine_root=str(Path("~/Sensei-Quarantine").expanduser().resolve()),
-    )
+    # Group by adapter so local and rclone actions dispatch through their
+    # own adapter + capability.
     undo_path = run_dir / "undo.jsonl"
-    results = apply_actions(adapter, filtered, capability, str(undo_path))
+    results = _apply_per_adapter(filtered, capabilities, str(undo_path))
 
     ok = sum(1 for r in results if r.success)
     fail = sum(1 for r in results if not r.success)
@@ -316,12 +378,7 @@ def cmd_undo(args: argparse.Namespace) -> int:
             print("  cancelled.")
             return 1
 
-    adapter = LocalFSAdapter(
-        run_id=records[0].run_id if records else "undo",
-        roots=DEFAULT_ROOTS,
-        quarantine_root=str(Path("~/Sensei-Quarantine").expanduser().resolve()),
-    )
-    results = undo_actions(adapter, reversed(records))
+    results = _undo_per_adapter(list(reversed(records)))
     ok = sum(1 for r in results if r.success)
     fail = sum(1 for r in results if not r.success)
     print()

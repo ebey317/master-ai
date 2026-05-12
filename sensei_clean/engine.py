@@ -48,17 +48,27 @@ def bump_sensitivity_if_private(items: Iterable[ItemRecord]) -> list[ItemRecord]
 
 
 def build_findings(items: list[ItemRecord], run_id: str) -> list[FindingRecord]:
+    """Group items by best-available hash. Cloud items typically have
+    only md5 (Drive) or sha1 (other providers), not sha256. Within-source
+    dedup works for cloud; cross-source dedup needs matching algorithms,
+    which is fine — only same-algo groups can prove exactness."""
     findings: list[FindingRecord] = []
-    by_hash: dict[str, list[ItemRecord]] = defaultdict(list)
+    by_hash: dict[tuple[str, str], list[ItemRecord]] = defaultdict(list)
     for item in items:
         sha256 = item.hashes.get("sha256")
+        md5 = item.hashes.get("md5")
+        sha1 = item.hashes.get("sha1")
         if sha256:
-            by_hash[sha256].append(item)
-    for sha256, members in by_hash.items():
+            by_hash[("sha256", sha256)].append(item)
+        elif md5:
+            by_hash[("md5", md5)].append(item)
+        elif sha1:
+            by_hash[("sha1", sha1)].append(item)
+    for (algo, value), members in by_hash.items():
         if len(members) < 2:
             continue
         item_ids = [item.item_id for item in members]
-        finding_id = hashlib.sha1(("dup:" + sha256).encode("utf-8")).hexdigest()
+        finding_id = hashlib.sha1((f"dup:{algo}:" + value).encode("utf-8")).hexdigest()
         findings.append(FindingRecord(
             schema_version="sensei.finding.v1",
             run_id=run_id,
@@ -67,8 +77,8 @@ def build_findings(items: list[ItemRecord], run_id: str) -> list[FindingRecord]:
             item_ids=item_ids,
             confidence=1.0,
             risk=max(item.risk for item in members),
-            summary=f"{len(members)} exact duplicates",
-            evidence={"sha256": sha256},
+            summary=f"{len(members)} exact duplicates ({algo})",
+            evidence={algo: value},
             notes=[],
         ))
     return findings
@@ -90,25 +100,41 @@ def build_actions(
         keeper = item_by_id[finding.item_ids[0]]
         for item_id in finding.item_ids[1:]:
             item = item_by_id[item_id]
-            destination = quarantine_root / "duplicates" / item.display_name
-            action_id = hashlib.sha1((item.item_id + str(destination)).encode("utf-8")).hexdigest()
-            is_sensitive = item.sensitivity in MONITORED_SENSITIVITIES
-            lane = "monitored" if is_sensitive else "unattended"
+            adapter_name = item.source.get("adapter", "")
+            # Cloud items get an in-remote quarantine destination so
+            # nothing leaves the provider; local items use the local
+            # quarantine root. Action type tracks the dispatch path.
+            if adapter_name.startswith("rclone:"):
+                from .adapters.rclone_remote import RcloneRemoteAdapter
+                remote = adapter_name.split(":", 1)[1]
+                destination_str = RcloneRemoteAdapter.cloud_quarantine_destination(
+                    remote, item.display_name
+                )
+                action_type = "cloud_move"
+                # All cloud actions go to monitored lane in this round:
+                # the customer must explicitly approve any cloud mutation.
+                is_monitored = True
+            else:
+                destination_str = str(quarantine_root / "duplicates" / item.display_name)
+                action_type = "quarantine_move"
+                is_monitored = item.sensitivity in MONITORED_SENSITIVITIES
+            action_id = hashlib.sha1((item.item_id + destination_str).encode("utf-8")).hexdigest()
+            lane = "monitored" if is_monitored else "unattended"
             actions.append(ActionRecord(
                 schema_version="sensei.action.v1",
                 run_id=run_id,
                 action_id=action_id,
-                action_type="quarantine_move",
-                adapter=item.source["adapter"],
+                action_type=action_type,
+                adapter=adapter_name,
                 item_id=item.item_id,
                 source_path=item.identity["path"],
-                destination_path=str(destination),
+                destination_path=destination_str,
                 confidence=1.0,
                 risk=max(item.risk, keeper.risk),
                 reversible=True,
                 lane=lane,
                 reason=f"exact duplicate of {keeper.identity['path']}",
-                approval_required=is_sensitive,
+                approval_required=is_monitored,
                 metadata={"sensitivity": item.sensitivity},
             ))
     return actions
