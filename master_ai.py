@@ -11285,6 +11285,21 @@ def main():
             else:
                 continue
 
+        # ── Sensei Clean dashboard ────────────────────────────
+        if lo in ("clean", "clean ui", "clean web", "clean dashboard", "sensei clean"):
+            try:
+                subprocess.Popen(
+                    ["python3", "/home/elijah/scripts/sensei_clean_web.py", "--open"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                print(f"  {G}✓ Sensei Clean dashboard launching → http://127.0.0.1:8787/{X}")
+                print(f"  {D}  If 8787 is busy a different port is auto-picked; check your browser.{X}")
+            except Exception as e:
+                print(f"  {Y}Failed to launch Sensei Clean: {e}{X}")
+            continue
+
         # ── Hub menu (numbered actions) ───────────────────────
         if lo in ("hub", "menu", "main", "home"):
             chosen = show_hub()

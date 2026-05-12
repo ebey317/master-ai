@@ -104,6 +104,8 @@ COMMAND_MENU_HINTS = {
     "clear chats": "clear saved chats",
     "chats": "browse saved chats",
     "doctor": "system health",
+    "clean": "open Sensei Clean dashboard",
+    "clean ui": "open Sensei Clean dashboard",
     "update": "update Master AI safely",
     "master update": "update Master AI safely",
     "refresh": "soft reload",
@@ -182,7 +184,7 @@ COMMAND_MENU_GROUPS = {
         "update", "master update", "refresh", "restart",
         "save session", "load summary", "load session", "transcript", "log",
         "preview", "clear", "clear history", "clear cache",
-        "clear approved", "clear chats", "chats", "doctor",
+        "clear approved", "clear chats", "chats", "doctor", "clean",
         "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
         "cache", "perms", "tutorial", "project",
         # P1.5 + P1.7 new command surfaces (2026-05-11)
