@@ -337,6 +337,26 @@ def _api_parse_actions(reply, *, model="", source="", session_id="", schedule_id
     return actions
 
 
+_DONE_DIRECTIVE_RE = re.compile(r"^\s*DONE:\s*\S")
+
+
+def _reply_has_done_directive(reply):
+    """Return True if `reply` contains an explicit `DONE: <summary>` line.
+
+    M9.1 termination signal: when the model says it's finished, the agent loop
+    ends with terminal_reason="done_directive" — taking priority over the
+    implicit no_actions / budget terminal branches. The line must be at column
+    0 (whitespace allowed), match `DONE:` verbatim (parser-style), and have at
+    least one non-whitespace character after the colon (rejects bare `DONE:`).
+    """
+    if not reply or not isinstance(reply, str):
+        return False
+    for line in reply.splitlines():
+        if _DONE_DIRECTIVE_RE.match(line):
+            return True
+    return False
+
+
 def _api_blocked_actions(module, extra_blocked=None):
     out = []
     for blocked in (extra_blocked or []):
@@ -566,10 +586,14 @@ def api_handle(payload):
             _API_HISTORIES[session_key] = _trim_api_history(history)
 
     # M9 termination signal. Done when:
+    #   · Model emits an explicit `DONE: <summary>` line (priority signal)
     #   · No more actions proposed (model thinks goal complete)
     #   · Round budget exhausted
     round_remaining = max(0, round_budget - round_num)
-    if not captured_actions:
+    if _reply_has_done_directive(reply):
+        done = True
+        terminal_reason = "done_directive"
+    elif not captured_actions:
         done = True
         terminal_reason = "no_actions"
     elif round_remaining <= 0:
@@ -599,8 +623,8 @@ def api_handle(payload):
 
     # M9 turn-level audit on terminal rounds only. Mid-loop rounds (done=false)
     # stay out of the JSONL — only the closing row per turn-root is recorded,
-    # so behavioral analytics can query terminal_reason ∈ {no_actions, budget,
-    # duplicate_failure} per goal without filtering noise.
+    # so behavioral analytics can query terminal_reason ∈ {done_directive,
+    # no_actions, budget, duplicate_failure} per goal without filtering noise.
     if done:
         _write_turn_audit({
             "ts": now_iso,
@@ -631,6 +655,7 @@ def api_handle(payload):
         "round_budget": round_budget,
         "round_remaining": round_remaining,
         "done": done,
+        "terminal_reason": terminal_reason,
         "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
