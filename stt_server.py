@@ -246,7 +246,12 @@ def _format_action_results(action_results):
                 if v:
                     detail = f" — {key}: {_safe_context_text(str(v), 240)}"
                     break
-        rows.append(f"  · {kind} {target!r} → verdict={verdict} result={result}{detail}")
+        # M9.2: irreversible-action heuristic label from the extension. When
+        # present, surface it to the model so the next round's reasoning
+        # acknowledges the safety category that the user explicitly approved.
+        gated_by = ar.get("gated_by") if isinstance(ar.get("gated_by"), str) else None
+        gated = f" (gated by {gated_by})" if gated_by else ""
+        rows.append(f"  · {kind} {target!r} → verdict={verdict} result={result}{gated}{detail}")
     if not rows:
         return ""
     return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
@@ -1266,6 +1271,14 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                     'verdict':   payload.get('verdict'),
                     'result':    payload.get('result'),
                     'final_state': payload.get('final_state'),
+                    # M9.2: irreversible-action heuristic label from side_panel.js
+                    # classifyBrowserAction. None when the action wasn't gated.
+                    # Stored alongside the verdict so analytics can answer
+                    # "how often does the user approve gated purchases vs deletes?"
+                    'gated_by': (
+                        payload.get('gated_by') if isinstance(payload.get('gated_by'), str)
+                        else (payload.get('action') or {}).get('gated_by')
+                    ),
                     'raw': payload,
                 }
                 with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:

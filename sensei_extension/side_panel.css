@@ -207,6 +207,17 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.policy-marker {
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid rgba(161, 98, 7, 0.28);
+  border-radius: 6px;
+  background: #fffbeb;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .screenshot-preview {
   display: block;
   width: 100%;

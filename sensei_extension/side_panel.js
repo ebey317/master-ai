@@ -184,7 +184,8 @@ async function reportAction(action, verdict, result, finalState = {}) {
         action,
         verdict,
         result,
-        final_state: finalState
+        final_state: finalState,
+        gated_by: action?.gated_by || action?.classification?.gated_by || null
       }
     });
   } catch (err) {
@@ -195,6 +196,41 @@ async function reportAction(action, verdict, result, finalState = {}) {
 function setActionStatus(row, text) {
   const status = row.querySelector(".status");
   if (status) status.textContent = text;
+}
+
+function classifyBrowserAction(action) {
+  const kind = String(action?.kind || "").toUpperCase();
+  const target = String(action?.target || "").toLowerCase();
+
+  const PURCHASE_RE = /\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b/i;
+  const DELETE_RE = /\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b/i;
+  const AUTH_RE = /\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out|register|authorize|grant\s*access|oauth|api\s*key)\b/i;
+  const SENSITIVE_RE = /\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number)\b/i;
+  const PASSWORD_SEL = /type=["']?password["']?|name=["']?(password|pwd|passwd)["']?/i;
+
+  if (kind === "BROWSER_FILL" && (PASSWORD_SEL.test(target) || SENSITIVE_RE.test(target))) {
+    return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:sensitive_fill" };
+  }
+  if (kind === "BROWSER_CLICK") {
+    if (PURCHASE_RE.test(target)) return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:purchase" };
+    if (DELETE_RE.test(target)) return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:delete" };
+    if (AUTH_RE.test(target)) return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:auth" };
+  }
+  if (kind === "BROWSER_NAV") {
+    if (PURCHASE_RE.test(target) || /\/(checkout|cart|pay|order)\b/i.test(target)) {
+      return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:purchase_url" };
+    }
+  }
+  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") {
+    return { safe: true, requires_confirm: false, gated_by: null };
+  }
+  return { safe: true, requires_confirm: false, gated_by: null };
+}
+
+function gateLabel(gatedBy) {
+  if (!gatedBy) return "";
+  const reason = String(gatedBy).split(":").pop().replace(/_/g, " ");
+  return `gated_by: ${reason}`;
 }
 
 async function approveAction(action, row) {
@@ -257,7 +293,10 @@ function renderActions(actions = [], blockedActions = []) {
   list.textContent = "";
 
   const all = [
-    ...actions.map((action) => ({ ...action, blocked: false })),
+    ...actions.map((action) => {
+      const classification = classifyBrowserAction(action);
+      return { ...action, blocked: false, classification, gated_by: classification.gated_by };
+    }),
     ...blockedActions.map((action) => ({ ...action, blocked: true }))
   ];
 
@@ -300,11 +339,17 @@ function renderActions(actions = [], blockedActions = []) {
     target.className = "target";
     target.textContent = action.target || action.reason || "";
 
+    const gatedBy = action.gated_by || action.classification?.gated_by || null;
+    const policy = document.createElement("div");
+    policy.className = "policy-marker";
+    policy.hidden = !gatedBy;
+    policy.textContent = gateLabel(gatedBy);
+
     const status = document.createElement("div");
     status.className = "status";
     status.textContent = action.blocked ? (action.reason || "Blocked") : "Pending";
 
-    row.append(main, target, status);
+    row.append(main, target, policy, status);
     list.appendChild(row);
   }
 }
@@ -398,7 +443,8 @@ function recordLoopResult(action, verdict, result, finalState) {
     verdict,
     result,
     final_state: finalState || {},
-    action: { kind: action.kind, target: action.target }
+    action: { kind: action.kind, target: action.target },
+    gated_by: action?.gated_by || action?.classification?.gated_by || null
   });
   if (verdict === "reject") state.loop.rejected = true;
   state.loop.pending = Math.max(0, state.loop.pending - 1);
