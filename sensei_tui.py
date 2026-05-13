@@ -939,21 +939,40 @@ class SenseiApp:
 
         @kb.add("s-tab", filter=has_focus(self._input))
         def _shift_tab(event):
-            """Terminal-standard reverse navigation.
+            """Shift+Tab cycles ONLY plan → review → auto → plan.
 
-            If the completion menu is open, move backward through choices.
-            If the input is empty, open the settings/mode bucket (`;`) so
-            Shift+Tab gives the user a universal "controls/settings" entry
-            without silently changing execution mode.
+            Matches Claude Code's 3-state Shift-Tab toggle. Universal CLI
+            convention: Shift+Tab is the mode/agency-level switch, not a
+            generic settings menu.
+
+            - Completion menu open → step backward through choices (terminal
+              standard reverse-tab behavior).
+            - Input has text → start completion against the current text
+              (don't drop the user's in-progress prompt to cycle mode).
+            - Input empty → cycle mode: type the next `mode <name>` command
+              and submit it. The existing command parser in master_ai.py
+              handles save_mode() + _SENSEI_APP.set_mode() + chrome repaint,
+              so we don't duplicate that logic here.
             """
             buf = self._input.buffer
             state = getattr(buf, "complete_state", None)
             if state and getattr(state, "completions", None):
                 buf.complete_previous()
                 return
-            if not buf.text:
-                buf.insert_text(";")
-            buf.start_completion(select_first=False)
+            if buf.text:
+                # Non-empty input — preserve reverse-completion behavior.
+                buf.start_completion(select_first=False)
+                return
+            current = getattr(self, "_mode", "plan") or "plan"
+            cycle = ("plan", "review", "auto")
+            try:
+                idx = cycle.index(current)
+            except ValueError:
+                idx = -1
+            nxt = cycle[(idx + 1) % len(cycle)]
+            buf.text = f"mode {nxt}"
+            buf.cursor_position = len(buf.text)
+            buf.validate_and_handle()
 
         # Single scroll binding — Shift+Up / Shift+Down. Elijah's pick
         # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
