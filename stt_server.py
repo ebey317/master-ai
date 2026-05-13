@@ -37,6 +37,16 @@ _API_HANDLE_LOCK = threading.Lock()
 _API_HISTORY_LOCK = threading.Lock()
 _API_HISTORIES = {}
 _API_MAX_HISTORY_MESSAGES = 24
+
+# M9 — Agentic Continuation Loop (scaffold 2026-05-12).
+# Each /chat call mints a turn_id. /chat/continue references it via parent_turn_id
+# and feeds the extension-reported action_results back into the model. Round
+# budget caps runaway loops; user Stop button is the hard interrupt. The model
+# emitting an empty actions[] AND no DONE directive also terminates.
+_API_TURNS = {}  # {turn_id: {session_key, round_num, round_budget, created_at, parent_turn_id}}
+_API_TURNS_LOCK = threading.Lock()
+_API_DEFAULT_ROUND_BUDGET = 3
+_API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
 _ACTION_LINE_RE = re.compile(
     r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):\s*(.*?)\s*$",
     re.IGNORECASE,
@@ -92,9 +102,11 @@ def _format_page_context(page_context):
     return "[BROWSER PAGE CONTEXT]\n" + "\n".join(fields)
 
 
-def _api_prompt(prompt, *, source="", page_context=None, schedule_id=""):
+def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
+                action_results=None, round_num=1, round_budget=None):
     context = _format_page_context(page_context)
-    if not (source or context or schedule_id):
+    results_block = _format_action_results(action_results)
+    if not (source or context or schedule_id or results_block):
         return prompt
     lines = [
         "[API REQUEST]",
@@ -102,15 +114,142 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id=""):
     ]
     if schedule_id:
         lines.append(f"schedule_id: {_safe_context_text(schedule_id, 120)}")
+    if round_num and round_num > 1:
+        budget_str = f"/{round_budget}" if round_budget else ""
+        lines.append(f"continuation_round: {round_num}{budget_str}")
     lines.extend([
         "Branch B: do not execute local machine or browser actions inside the backend request.",
         "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, or BROWSER_NAV directives.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
     ])
+    if round_num and round_num > 1:
+        lines.append(
+            "M9 LOOP: the extension already dispatched your previous round's actions. "
+            "Read [PREVIOUS ROUND RESULTS] below, decide if the user's goal is met, "
+            "and either propose more BROWSER_* actions or reply with a final answer "
+            "(empty actions[] = goal complete)."
+        )
     if context:
         lines.extend(["", context])
+    if results_block:
+        lines.extend(["", results_block])
     lines.extend(["", "[USER PROMPT]", prompt])
     return "\n".join(lines)
+
+
+def _write_turn_audit(rec):
+    """M9 turn-level audit: one JSON record per terminated turn so behavioral
+    analytics can query 'what did the user ask, what did the model propose
+    across all rounds, and what was the net outcome' from a single source.
+    Sibling to /extension/action_result rows but at turn granularity."""
+    try:
+        from pathlib import Path as _P
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
+    except Exception:
+        pass  # Audit is observability, not a blocker.
+
+
+def _build_terminal_turn(*, turn_id, turn_root, round_num, round_budget,
+                         parent_turn_id, session_key, reply, route, model,
+                         t0, terminal_reason):
+    """Synthesize a final-round response without calling the model. Used by
+    the M9 short-circuit (duplicate failure detection) and any other forced
+    termination path. Always returns done=true."""
+    round_remaining = max(0, round_budget - round_num)
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    with _API_TURNS_LOCK:
+        _API_TURNS[turn_id] = {
+            "session_key": session_key,
+            "round_num": round_num,
+            "round_budget": round_budget,
+            "turn_root": turn_root,
+            "parent_turn_id": parent_turn_id or None,
+            "created_at": now,
+            "done": True,
+        }
+        if len(_API_TURNS) > 256:
+            oldest = sorted(_API_TURNS.items(), key=lambda kv: kv[1].get("created_at", ""))[:64]
+            for k, _ in oldest:
+                _API_TURNS.pop(k, None)
+    _write_turn_audit({
+        "ts": now,
+        "source": "api_handle",
+        "kind": "turn_terminal",
+        "turn_id": turn_id,
+        "turn_root": turn_root,
+        "round_num": round_num,
+        "round_budget": round_budget,
+        "terminal_reason": terminal_reason,
+        "route": route,
+        "model": model,
+        "actions_count": 0,
+    })
+    return {
+        "reply": reply,
+        "route": route,
+        "model": model,
+        "latency_ms": int((time.time() - t0) * 1000),
+        "actions": [],
+        "blocked_actions": [],
+        "turn_id": turn_id,
+        "turn_root": turn_root,
+        "round_num": round_num,
+        "round_budget": round_budget,
+        "round_remaining": round_remaining,
+        "done": True,
+        "ts": now,
+    }
+
+
+def _duplicate_failure_reason(action_results):
+    """M9 safety: if the same (kind, target) failed twice in the incoming batch,
+    return a reason string for short-circuit termination. Returns "" otherwise.
+    Prevents the loop from burning rounds when the model retries a bad selector."""
+    if not isinstance(action_results, list) or not action_results:
+        return ""
+    seen_failures = {}
+    for ar in action_results:
+        if not isinstance(ar, dict):
+            continue
+        if (ar.get("result") or "").lower() != "failure":
+            continue
+        act = ar.get("action") or {}
+        kind = str(act.get("kind") or ar.get("kind") or "").upper()
+        target = str(act.get("target") or ar.get("target") or "")[:300]
+        if not kind or not target:
+            continue
+        key = (kind, target)
+        seen_failures[key] = seen_failures.get(key, 0) + 1
+        if seen_failures[key] >= 2:
+            return f"same target failed twice in one round: {kind} {target!r}"
+    return ""
+
+
+def _format_action_results(action_results):
+    """Format extension-reported action outcomes into a prompt block (M9 loop)."""
+    if not isinstance(action_results, list) or not action_results:
+        return ""
+    rows = []
+    for ar in action_results[:20]:  # Cap to keep prompt bounded.
+        if not isinstance(ar, dict):
+            continue
+        kind = str((ar.get("action") or {}).get("kind") or ar.get("kind") or "").upper()
+        target = str((ar.get("action") or {}).get("target") or ar.get("target") or "")[:300]
+        verdict = str(ar.get("verdict") or "").lower()
+        result = str(ar.get("result") or "").lower()
+        final_state = ar.get("final_state") or {}
+        detail = ""
+        if isinstance(final_state, dict):
+            for key in ("error", "text", "value", "navigated", "reason"):
+                v = final_state.get(key)
+                if v:
+                    detail = f" — {key}: {_safe_context_text(str(v), 240)}"
+                    break
+        rows.append(f"  · {kind} {target!r} → verdict={verdict} result={result}{detail}")
+    if not rows:
+        return ""
+    return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
 
 
 def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
@@ -222,6 +361,12 @@ def api_handle(payload):
     Branch B contract: the backend can propose typed actions, but it must not
     call the TUI confirmation/execution path. The Chrome extension confirms and
     dispatches browser actions separately, then reports results back.
+
+    M9 (2026-05-12): supports continuation rounds. If payload includes
+    parent_turn_id + action_results, the previous round's outcomes are
+    formatted into [PREVIOUS ROUND RESULTS] and the model decides whether to
+    propose more actions or reply with a final answer (empty actions[] = done).
+    Round budget caps the loop.
     """
     payload = payload if isinstance(payload, dict) else {}
     prompt = (payload.get("prompt") or "").strip()
@@ -240,6 +385,58 @@ def api_handle(payload):
     requested_model = (payload.get("model") or "").strip()
     t0 = time.time()
 
+    # M9 continuation context
+    parent_turn_id = _safe_context_text(payload.get("parent_turn_id") or "", 80)
+    action_results = payload.get("action_results") if isinstance(payload.get("action_results"), list) else None
+    try:
+        req_budget = int(payload.get("round_budget") or _API_DEFAULT_ROUND_BUDGET)
+    except (TypeError, ValueError):
+        req_budget = _API_DEFAULT_ROUND_BUDGET
+    req_budget = max(1, min(req_budget, _API_MAX_ROUND_BUDGET))
+
+    # M9 safety: detect duplicate-target failures in the incoming round and
+    # short-circuit before burning another model turn. If the same target
+    # failed twice in the latest action_results batch, the model is almost
+    # certainly going to retry the same selector. Force termination instead.
+    short_circuit_reason = _duplicate_failure_reason(action_results)
+
+    # Resolve turn lineage. Continuation references parent; fresh /chat mints new.
+    if parent_turn_id:
+        with _API_TURNS_LOCK:
+            parent_meta = dict(_API_TURNS.get(parent_turn_id, {}))
+        if parent_meta:
+            round_budget = int(parent_meta.get("round_budget") or req_budget)
+            round_num = int(parent_meta.get("round_num", 1)) + 1
+            turn_root = parent_meta.get("turn_root") or parent_turn_id
+        else:
+            # Unknown parent — treat as fresh turn but echo the id back to caller.
+            round_budget = req_budget
+            round_num = 1
+            turn_root = parent_turn_id
+    else:
+        round_budget = req_budget
+        round_num = 1
+        turn_root = None
+
+    turn_id = str(uuid.uuid4())
+
+    # M9 short-circuit: same-target-twice-failed in this round → terminate
+    # without calling the model. Returns a synthetic done=true response.
+    if short_circuit_reason:
+        return _build_terminal_turn(
+            turn_id=turn_id,
+            turn_root=turn_root or turn_id,
+            round_num=round_num,
+            round_budget=round_budget,
+            parent_turn_id=parent_turn_id,
+            session_key=_api_session_key(source, session_id),
+            reply=f"[loop terminated: {short_circuit_reason}]",
+            route="loop_safety",
+            model="m9_short_circuit",
+            t0=t0,
+            terminal_reason="duplicate_failure",
+        )
+
     session_key = _api_session_key(source, session_id)
     with _API_HISTORY_LOCK:
         history = list(_API_HISTORIES.get(session_key, [])) if session_key else []
@@ -249,6 +446,9 @@ def api_handle(payload):
         source=prompt_source,
         page_context=page_context,
         schedule_id=schedule_id,
+        action_results=action_results,
+        round_num=round_num,
+        round_budget=round_budget,
     )
 
     with _API_HANDLE_LOCK:
@@ -365,6 +565,59 @@ def api_handle(payload):
         with _API_HISTORY_LOCK:
             _API_HISTORIES[session_key] = _trim_api_history(history)
 
+    # M9 termination signal. Done when:
+    #   · No more actions proposed (model thinks goal complete)
+    #   · Round budget exhausted
+    round_remaining = max(0, round_budget - round_num)
+    if not captured_actions:
+        done = True
+        terminal_reason = "no_actions"
+    elif round_remaining <= 0:
+        done = True
+        terminal_reason = "budget"
+    else:
+        done = False
+        terminal_reason = ""
+
+    # Register this turn so a continuation request can find it.
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    with _API_TURNS_LOCK:
+        _API_TURNS[turn_id] = {
+            "session_key": session_key,
+            "round_num": round_num,
+            "round_budget": round_budget,
+            "turn_root": turn_root or turn_id,
+            "parent_turn_id": parent_turn_id or None,
+            "created_at": now_iso,
+            "done": done,
+        }
+        # Bounded registry — drop oldest entries if it grows past 256.
+        if len(_API_TURNS) > 256:
+            oldest = sorted(_API_TURNS.items(), key=lambda kv: kv[1].get("created_at", ""))[:64]
+            for k, _ in oldest:
+                _API_TURNS.pop(k, None)
+
+    # M9 turn-level audit on terminal rounds only. Mid-loop rounds (done=false)
+    # stay out of the JSONL — only the closing row per turn-root is recorded,
+    # so behavioral analytics can query terminal_reason ∈ {no_actions, budget,
+    # duplicate_failure} per goal without filtering noise.
+    if done:
+        _write_turn_audit({
+            "ts": now_iso,
+            "source": "api_handle",
+            "kind": "turn_terminal",
+            "turn_id": turn_id,
+            "turn_root": turn_root or turn_id,
+            "parent_turn_id": parent_turn_id or None,
+            "round_num": round_num,
+            "round_budget": round_budget,
+            "terminal_reason": terminal_reason,
+            "route": route,
+            "model": model,
+            "actions_count": len(captured_actions),
+            "blocked_count": len(blocked_actions),
+        })
+
     return {
         "reply": reply or "",
         "route": route,
@@ -372,6 +625,12 @@ def api_handle(payload):
         "latency_ms": int((time.time() - t0) * 1000),
         "actions": captured_actions,
         "blocked_actions": blocked_actions,
+        "turn_id": turn_id,
+        "turn_root": turn_root or turn_id,
+        "round_num": round_num,
+        "round_budget": round_budget,
+        "round_remaining": round_remaining,
+        "done": done,
         "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
@@ -1051,6 +1310,32 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except ValueError as e:
                 msg = str(e)
                 status = 400 if msg in ('missing prompt', 'invalid mode') else 500
+                self._json({'error': msg}, status); return
+            except Exception as e:
+                self._json({'error': str(e)}, 500); return
+
+        # POST /chat/continue — M9 Agentic Continuation Loop (2026-05-12).
+        # The extension calls this AFTER dispatching the prior round's actions
+        # and reporting their results to /extension/action_result. Body shape:
+        #   {parent_turn_id, action_results:[{action_id,verdict,result,final_state,action}],
+        #    prompt?, session_id, source}
+        # If prompt is omitted, a synthetic "continue" is used so the model
+        # reads only the [PREVIOUS ROUND RESULTS] block and the user goal in
+        # history. Round budget caps runaway loops; the response includes
+        # `done` so the extension knows when to stop auto-continuing.
+        if self.path == '/chat/continue':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+                if not (payload.get("prompt") or "").strip():
+                    payload["prompt"] = "continue"
+                if not payload.get("parent_turn_id"):
+                    self._json({'error': 'missing parent_turn_id'}, 400); return
+                self._json(api_handle(payload)); return
+            except ValueError as e:
+                msg = str(e)
+                status = 400 if msg in ('missing prompt', 'invalid mode', 'missing parent_turn_id') else 500
                 self._json({'error': msg}, status); return
             except Exception as e:
                 self._json({'error': str(e)}, 500); return

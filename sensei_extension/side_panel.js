@@ -9,7 +9,23 @@ const state = {
   config: { ...DEFAULT_CONFIG },
   mediaRecorder: null,
   mediaStream: null,
-  chunks: []
+  chunks: [],
+  // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
+  // proposed actions, the user approves/rejects each one. As each result is
+  // reported to /extension/action_result, it's also appended to loop.results.
+  // When all actions in a round have a verdict AND loop.active AND none were
+  // rejected, the next round fires automatically via /chat/continue. Stop
+  // button hard-interrupts. Budget caps runaway loops.
+  loop: {
+    active: false,
+    turn_id: null,
+    round_num: 0,
+    round_budget: 3,
+    pending: 0,
+    rejected: false,
+    results: [],
+    stopped: false
+  }
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -173,6 +189,7 @@ async function approveAction(action, row) {
   if (!kind.startsWith("BROWSER_")) {
     setActionStatus(row, "Not executable in the browser");
     await reportAction(action, "accept", "blocked", { reason: "unsupported by extension" });
+    recordLoopResult(action, "accept", "blocked", { reason: "unsupported by extension" });
     return;
   }
 
@@ -192,9 +209,11 @@ async function approveAction(action, row) {
     const ok = Boolean(result?.ok);
     setActionStatus(row, ok ? "Done" : (result?.error || "Failed"));
     await reportAction(action, "accept", ok ? "success" : "failure", result || {});
+    recordLoopResult(action, "accept", ok ? "success" : "failure", result || {});
   } catch (err) {
     setActionStatus(row, err.message);
     await reportAction(action, "accept", "failure", { error: err.message });
+    recordLoopResult(action, "accept", "failure", { error: err.message });
   }
 }
 
@@ -202,6 +221,7 @@ async function rejectAction(action, row) {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
   setActionStatus(row, "Rejected");
   await reportAction(action, "reject", "blocked", {});
+  recordLoopResult(action, "reject", "blocked", {});
 }
 
 function renderActions(actions = [], blockedActions = []) {
@@ -267,6 +287,9 @@ async function sendPrompt() {
   const prompt = input.value.trim();
   if (!prompt) return;
 
+  // Fresh user prompt clears any active loop from a prior goal.
+  resetLoop();
+
   input.value = "";
   appendMessage("user", prompt);
   $("#sendButton").disabled = true;
@@ -287,6 +310,7 @@ async function sendPrompt() {
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
     renderActions(data.actions || [], data.blocked_actions || []);
+    startLoop(data);
     setConnection("Backend ready");
   } catch (err) {
     appendError(err.message);
@@ -296,6 +320,116 @@ async function sendPrompt() {
     $("#micButton").disabled = false;
     input.focus();
   }
+}
+
+// ── M9 Agentic Continuation Loop ──────────────────────────────────────────
+
+function resetLoop() {
+  state.loop = {
+    active: false,
+    turn_id: null,
+    round_num: 0,
+    round_budget: 3,
+    pending: 0,
+    rejected: false,
+    results: [],
+    stopped: false
+  };
+  const bar = $("#loopBar");
+  if (bar) bar.hidden = true;
+  const counter = $("#roundCounter");
+  if (counter) counter.textContent = "";
+}
+
+function startLoop(data) {
+  const actions = data.actions || [];
+  // Active only when the backend says we're not done AND there's something to do.
+  const willContinue = !data.done && actions.length > 0 && (data.round_remaining || 0) > 0;
+  state.loop.turn_id = data.turn_id || null;
+  state.loop.round_num = data.round_num || 1;
+  state.loop.round_budget = data.round_budget || 3;
+  state.loop.pending = actions.length;
+  state.loop.rejected = false;
+  state.loop.results = [];
+  state.loop.stopped = false;
+  state.loop.active = willContinue;
+
+  const bar = $("#loopBar");
+  if (bar) bar.hidden = !willContinue;
+  const counter = $("#roundCounter");
+  if (counter) {
+    counter.textContent = willContinue
+      ? `Round ${state.loop.round_num}/${state.loop.round_budget}`
+      : "";
+  }
+}
+
+function recordLoopResult(action, verdict, result, finalState) {
+  if (!state.loop.active && state.loop.pending === 0) return;
+  state.loop.results.push({
+    action_id: action.id,
+    verdict,
+    result,
+    final_state: finalState || {},
+    action: { kind: action.kind, target: action.target }
+  });
+  if (verdict === "reject") state.loop.rejected = true;
+  state.loop.pending = Math.max(0, state.loop.pending - 1);
+  if (state.loop.pending === 0 && state.loop.active) {
+    // Defer the continuation so the audit POST + UI status updates flush first.
+    setTimeout(() => continueLoop(), 50);
+  }
+}
+
+async function continueLoop() {
+  if (state.loop.stopped || !state.loop.active || !state.loop.turn_id) {
+    resetLoop();
+    return;
+  }
+  // If the user rejected anything in this round, treat as a stop signal.
+  // Model already heard "no" — don't burn round budget paraphrasing.
+  if (state.loop.rejected) {
+    appendMessage("assistant", "(Loop stopped — at least one action rejected.)");
+    resetLoop();
+    setConnection("Backend ready");
+    return;
+  }
+
+  const counter = $("#roundCounter");
+  if (counter) counter.textContent = `Round ${state.loop.round_num + 1}/${state.loop.round_budget} (continuing)`;
+  setConnection("Continuing");
+
+  try {
+    const body = {
+      parent_turn_id: state.loop.turn_id,
+      source: "chrome_extension",
+      session_id: state.config.sessionId,
+      action_results: state.loop.results
+    };
+    const data = await backendFetch("/chat/continue", { method: "POST", body });
+    const meta = [data.route, data.model, `${data.latency_ms || 0} ms`].filter(Boolean).join(" | ");
+    appendMessage("assistant", cleanReply(data.reply), meta);
+    $("#routeMeta").textContent = meta;
+    renderActions(data.actions || [], data.blocked_actions || []);
+    if (data.done || !(data.actions || []).length) {
+      resetLoop();
+      setConnection("Backend ready");
+    } else {
+      startLoop(data);
+    }
+  } catch (err) {
+    appendError(`Loop continuation failed: ${err.message}`);
+    resetLoop();
+    setConnection("Backend error", "error");
+  }
+}
+
+function stopLoop() {
+  state.loop.stopped = true;
+  state.loop.active = false;
+  appendMessage("assistant", "(Loop stopped by user.)");
+  resetLoop();
+  setConnection("Backend ready");
 }
 
 async function healthCheck() {
@@ -367,6 +501,7 @@ async function init() {
     $("#actionDock").hidden = true;
   });
   $("#openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
+  $("#stopButton")?.addEventListener("click", stopLoop);
   await healthCheck();
   appendMessage("assistant", "Ready.");
 }
