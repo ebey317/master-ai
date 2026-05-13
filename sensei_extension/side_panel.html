@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sensei</title>
+  <link rel="stylesheet" href="side_panel.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Sensei</h1>
+        <p id="connectionState">Checking backend</p>
+      </div>
+      <button id="openOptions" class="icon-button" title="Options" aria-label="Options">...</button>
+    </header>
+
+    <section id="chatLog" class="chat-log" aria-live="polite"></section>
+
+    <section id="actionDock" class="action-dock" hidden>
+      <div class="dock-head">
+        <h2>Actions</h2>
+        <button id="clearActions" class="text-button">Clear</button>
+      </div>
+      <div id="actionList" class="action-list"></div>
+    </section>
+
+    <form id="composer" class="composer">
+      <div class="mode-row">
+        <select id="modeSelect" aria-label="Mode">
+          <option value="review">Review</option>
+          <option value="plan">Plan</option>
+          <option value="auto">Auto</option>
+        </select>
+        <span id="routeMeta" class="route-meta"></span>
+      </div>
+      <textarea id="promptInput" rows="4" placeholder="Ask Sensei"></textarea>
+      <div class="composer-actions">
+        <button id="micButton" class="secondary" type="button">Mic</button>
+        <button id="sendButton" type="submit">Send</button>
+      </div>
+    </form>
+  </main>
+  <script src="side_panel.js"></script>
+</body>
+</html>

@@ -51,10 +51,10 @@
 - **Gate:** open (this is where work comes IN — no gate to enter)
 - **Model:** qwen2.5:7b   ← friendly 7B for teaching, brainstorming, scoping
 - **Artifact:** `~/scripts/pupil.html` (1200 lines, martial-arts belt themes white/yellow/blue/green/purple/brown/black/hacker). Open: `file:///home/elijah/scripts/pupil.html`
-- **Last:** 2026-04-18 — Projects ▾ dropdown added with 6 project cards + 🥋 Dojo Bash Tutor entry. `selectProject()` + `openBashTutor()` JS handlers wired. **Next pickup:** decide whether Pupil should read PROJECTS.md live (fetch) or stay hardcoded.
+- **Last:** 2026-05-12 — M0 Chrome extension bridge landed. `/chat` now runs through non-interactive `api_handle()` around `master_ai.handle()` and returns proposed typed actions; `~/scripts/sensei_extension/` has the MV3 side panel/content-script/options scaffold. **Next pickup:** load the extension unpacked, set `~/.master_ai_extension_token` in options, and test approving/rejecting `BROWSER_*` actions from a live tab.
 - **Goal:** general-audience AI UI for users leveling up (beginner→intermediate→pro); students of the AI arts. Feeds polished artifacts up to Sensei who either masters them or humbles them back.
 - **Tasks:**
-  - [ ] scaffold Pupil UI (separate from Sensei's tmux — lighter, more forgiving)
+  - [x] scaffold Pupil Chrome extension bridge — DONE 2026-05-12: MV3 side panel, service worker, content script, options page, token-aware `/chat` + `/stt`, and `/extension/action_result` audit loop live in `~/scripts/sensei_extension/`.
   - [ ] build greenfield intake ("I want to build X in bash/python")
   - [ ] build brownfield intake (existing code → graduate to production / App Store)
   - [ ] fold in Sensei Companion feature (phone-side check-ins, remote nudges)

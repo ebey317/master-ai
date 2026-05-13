@@ -1,0 +1,266 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f4;
+  --panel: #ffffff;
+  --ink: #1c2220;
+  --muted: #66706a;
+  --line: #dce2dc;
+  --accent: #0f766e;
+  --accent-strong: #0b5f59;
+  --warn: #a16207;
+  --danger: #b42318;
+  --shadow: 0 8px 24px rgba(28, 34, 32, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+select,
+textarea {
+  font: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 18px;
+  font-weight: 720;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.topbar p,
+.route-meta,
+.meta,
+.target,
+.status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.icon-button,
+.text-button,
+button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.icon-button {
+  width: 36px;
+  padding: 0;
+  font-weight: 700;
+}
+
+.text-button {
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+button[type="submit"],
+.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+button[type="submit"]:hover,
+.primary:hover {
+  background: var(--accent-strong);
+}
+
+.secondary {
+  padding: 0 14px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.chat-log {
+  overflow: auto;
+  padding: 14px;
+}
+
+.message {
+  max-width: 92%;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message.user {
+  margin-left: auto;
+  border-color: rgba(15, 118, 110, 0.32);
+  background: #eef8f5;
+}
+
+.message.assistant {
+  margin-right: auto;
+}
+
+.message.error {
+  border-color: rgba(180, 35, 24, 0.35);
+  color: var(--danger);
+}
+
+.meta {
+  display: block;
+  margin-top: 8px;
+}
+
+.action-dock {
+  border-top: 1px solid var(--line);
+  background: #fbfcfa;
+  max-height: 42vh;
+  overflow: auto;
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px 6px;
+}
+
+.action-list {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+
+.action-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.action-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #e7f3ef;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.target {
+  overflow-wrap: anywhere;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.action-buttons button {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.reject {
+  color: var(--danger);
+}
+
+.composer {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.mode-row,
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+select {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 96px;
+  max-height: 220px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+textarea:focus,
+button:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.28);
+  outline-offset: 2px;
+}

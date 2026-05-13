@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sensei Options</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="settings">
+    <header>
+      <h1>Sensei Options</h1>
+      <p id="status">Not saved</p>
+    </header>
+
+    <form id="optionsForm">
+      <label>
+        Backend URL
+        <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8080">
+      </label>
+
+      <label>
+        Master AI Token
+        <input id="token" type="password" autocomplete="off">
+      </label>
+
+      <label>
+        Default Mode
+        <select id="mode">
+          <option value="review">Review</option>
+          <option value="plan">Plan</option>
+          <option value="auto">Auto</option>
+        </select>
+      </label>
+
+      <label>
+        Session ID
+        <input id="sessionId" type="text" autocomplete="off">
+      </label>
+
+      <div class="actions">
+        <button id="generateToken" type="button">Generate Token</button>
+        <button id="testBackend" type="button">Test</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

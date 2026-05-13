@@ -48,6 +48,13 @@ class Kind:
     CREATE = "CREATE"
     EDIT = "EDIT"
     REMEMBER = "REMEMBER"  # 2026-05-11: model self-write to memory
+    # 2026-05-12: Chrome extension M1 surface. Browser-side execution only —
+    # backend proposes, extension dispatches via content script, posts result
+    # to /extension/action_result. Backend never reaches into the DOM directly.
+    BROWSER_CLICK = "BROWSER_CLICK"
+    BROWSER_FILL = "BROWSER_FILL"
+    BROWSER_READ = "BROWSER_READ"
+    BROWSER_NAV = "BROWSER_NAV"
 
 
 class Risk:
@@ -68,7 +75,8 @@ class Status:
     SKIPPED = "skipped"
 
 
-DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER})
+DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER,
+                             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_READ, Kind.BROWSER_NAV})
 
 
 # Heuristic patterns for risk classification. Conservative — false-positives
@@ -95,7 +103,7 @@ _SAFE_RUN_PREFIXES = (
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
-    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT):\s*(.*?)\s*$",
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -231,7 +239,11 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         cwd=cwd,
         created_by_model=model or "",
         source_text=source_text or line,
-        requires_confirm=(kind in (Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT)),
+        requires_confirm=(kind in (
+            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT,
+            Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_READ,
+            Kind.BROWSER_NAV,
+        )),
     )
     classify_risk(action)
     return action

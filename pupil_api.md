@@ -76,18 +76,26 @@ loop.
 
 ### POST /chat
 
-The Pupil chat endpoint. **MVP behavior** in P0.1: direct call into the local
-model via Ollama `/api/generate`, returning a structured shape. **P0.3 hookup**
-moves this to call `master_ai.handle()` so Pupil gets the full Sensei brain
-(routing, blocked-feedback, harvest). The response shape stays the same — only
-the engine behind it changes.
+The Pupil chat endpoint. Calls a non-interactive `master_ai.handle()` wrapper
+so Pupil and the Chrome extension get the full Sensei brain without entering
+the TUI confirmation path. Browser actions are proposed in `actions[]`; the
+extension confirms and dispatches them client-side.
 
 **Request:**
 ```
 {
   "prompt": "what's 2+2?",              // required, non-empty
   "mode": "plan" | "review" | "auto",   // optional; default = current ~/.master_ai_mode
-  "model": "master-ai"                  // optional; default = master-ai
+  "model": "master-ai",                 // optional; default = master-ai
+  "source": "pupil",                    // optional; e.g. chrome_extension
+  "session_id": "browser-session-1",     // optional; keeps short API history
+  "schedule_id": "job-123",             // optional; scheduler correlation
+  "page_context": {                     // optional; browser page context
+    "url": "https://example.com",
+    "title": "Example",
+    "selection": "",
+    "visible_text": "..."
+  }
 }
 ```
 
@@ -98,6 +106,8 @@ the engine behind it changes.
   "route": "local",                     // which lane handled the prompt
   "model": "master-ai",                 // model that produced the reply
   "latency_ms": 7104,                   // wall-clock from request to response
+  "actions": [],                        // proposed TypedAction records, not
+                                        //   executed by the backend
   "blocked_actions": [],                // list of {kind, target, reason} if any
                                         //   directives were blocked during this turn
   "ts": "2026-05-11T14:30:00-04:00"

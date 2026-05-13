@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, threading, time, uuid
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
@@ -32,6 +32,348 @@ def _chats_dir():
 
 # Module-level alias for backwards-compat; per-request handlers should call _chats_dir()
 CHATS_DIR = _DEFAULT_CHATS_DIR
+
+_API_HANDLE_LOCK = threading.Lock()
+_API_HISTORY_LOCK = threading.Lock()
+_API_HISTORIES = {}
+_API_MAX_HISTORY_MESSAGES = 24
+_ACTION_LINE_RE = re.compile(
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _scripts_on_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    return here
+
+
+def _api_session_key(source, session_id):
+    session_id = (session_id or "").strip()
+    if not session_id:
+        return ""
+    source = (source or "pupil").strip()[:80] or "pupil"
+    return f"{source}:{session_id[:160]}"
+
+
+def _trim_api_history(history):
+    if not isinstance(history, list):
+        return []
+    return history[-_API_MAX_HISTORY_MESSAGES:]
+
+
+def _safe_context_text(value, limit=1800):
+    if value is None:
+        return ""
+    text = str(value).replace("\r", " ").strip()
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text
+
+
+def _format_page_context(page_context):
+    if not isinstance(page_context, dict):
+        return ""
+    fields = []
+    for key, limit in (
+        ("url", 500),
+        ("title", 300),
+        ("selection", 1200),
+        ("focused_text", 1200),
+        ("visible_text", 1800),
+    ):
+        val = _safe_context_text(page_context.get(key), limit=limit)
+        if val:
+            fields.append(f"{key}: {val}")
+    if not fields:
+        return ""
+    return "[BROWSER PAGE CONTEXT]\n" + "\n".join(fields)
+
+
+def _api_prompt(prompt, *, source="", page_context=None, schedule_id=""):
+    context = _format_page_context(page_context)
+    if not (source or context or schedule_id):
+        return prompt
+    lines = [
+        "[API REQUEST]",
+        f"source: {_safe_context_text(source or 'pupil', 80)}",
+    ]
+    if schedule_id:
+        lines.append(f"schedule_id: {_safe_context_text(schedule_id, 120)}")
+    lines.extend([
+        "Branch B: do not execute local machine or browser actions inside the backend request.",
+        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, or BROWSER_NAV directives.",
+        "The HTTP API will return directives as actions[] for the extension to confirm.",
+    ])
+    if context:
+        lines.extend(["", context])
+    lines.extend(["", "[USER PROMPT]", prompt])
+    return "\n".join(lines)
+
+
+def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
+    kind = (kind or "").upper()
+    target = (target or "").strip()
+    if not kind or not target:
+        return None
+    risk = "safe" if kind in ("READ", "BROWSER_READ") else "normal"
+    return {
+        "id": str(uuid.uuid4()),
+        "kind": kind,
+        "target": target,
+        "cwd": cwd,
+        "risk": risk,
+        "requires_confirm": True,
+        "timeout_s": 60,
+        "created_by_model": model or "",
+        "source_text": source_text or f"{kind}: {target}",
+        "parsed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "status": "pending_approval",
+        "extras": {},
+    }
+
+
+def _api_parse_actions(reply, *, model="", source="", session_id="", schedule_id="", page_context=None):
+    actions = []
+    seen = set()
+
+    def add(action):
+        if not isinstance(action, dict):
+            return
+        kind = str(action.get("kind") or "").upper()
+        target = str(action.get("target") or "").strip()
+        if not kind or not target:
+            return
+        key = (kind, target)
+        if key in seen:
+            return
+        seen.add(key)
+        action["kind"] = kind
+        action["target"] = target
+        action["status"] = "pending_approval"
+        action["requires_confirm"] = True
+        action.setdefault("id", str(uuid.uuid4()))
+        action.setdefault("created_by_model", model or "")
+        action.setdefault("parsed_at", datetime.now().astimezone().isoformat(timespec="seconds"))
+        extras = action.get("extras") if isinstance(action.get("extras"), dict) else {}
+        extras.update({
+            "api_branch": "B",
+            "source": source or "pupil",
+        })
+        if session_id:
+            extras["session_id"] = session_id
+        if schedule_id:
+            extras["schedule_id"] = schedule_id
+        if isinstance(page_context, dict) and page_context.get("url"):
+            extras["page_url"] = _safe_context_text(page_context.get("url"), 500)
+        action["extras"] = extras
+        actions.append(action)
+
+    try:
+        _scripts_on_path()
+        import typed_actions as _ta
+        for parsed in _ta.parse_reply(reply or "", model=model or "", cwd=os.getcwd()):
+            try:
+                add(parsed.to_dict())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    for raw in (reply or "").splitlines():
+        m = _ACTION_LINE_RE.match(raw)
+        if not m:
+            continue
+        action = _fallback_action(
+            m.group(1),
+            m.group(2),
+            model=model or "",
+            source_text=raw,
+            cwd=os.getcwd(),
+        )
+        add(action)
+
+    return actions
+
+
+def _api_blocked_actions(module, extra_blocked=None):
+    out = []
+    for blocked in (extra_blocked or []):
+        if isinstance(blocked, dict):
+            out.append(blocked)
+    blocked = getattr(module, "_LAST_BLOCKED_ACTION", {}) or {}
+    if isinstance(blocked, dict) and blocked:
+        item = {
+            "kind": str(blocked.get("kind") or "").upper(),
+            "target": blocked.get("command") or blocked.get("path") or "",
+            "reason": blocked.get("reason") or "blocked by Sensei policy",
+        }
+        if blocked.get("audit_kind"):
+            item["audit_kind"] = blocked.get("audit_kind")
+        out.append(item)
+    return out
+
+
+def api_handle(payload):
+    """Non-interactive /chat bridge into master_ai.handle().
+
+    Branch B contract: the backend can propose typed actions, but it must not
+    call the TUI confirmation/execution path. The Chrome extension confirms and
+    dispatches browser actions separately, then reports results back.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("missing prompt")
+    mode_req = (payload.get("mode") or "").strip().lower()
+    if mode_req and mode_req not in ("plan", "review", "auto"):
+        raise ValueError("invalid mode")
+
+    source_raw = payload.get("source")
+    source = _safe_context_text(source_raw or "pupil", 80)
+    prompt_source = _safe_context_text(source_raw or "", 80)
+    session_id = _safe_context_text(payload.get("session_id") or "", 160)
+    schedule_id = _safe_context_text(payload.get("schedule_id") or "", 120)
+    page_context = payload.get("page_context") if isinstance(payload.get("page_context"), dict) else None
+    requested_model = (payload.get("model") or "").strip()
+    t0 = time.time()
+
+    session_key = _api_session_key(source, session_id)
+    with _API_HISTORY_LOCK:
+        history = list(_API_HISTORIES.get(session_key, [])) if session_key else []
+
+    api_user_text = _api_prompt(
+        prompt,
+        source=prompt_source,
+        page_context=page_context,
+        schedule_id=schedule_id,
+    )
+
+    with _API_HANDLE_LOCK:
+        _scripts_on_path()
+        import master_ai as _m
+
+        captured_actions = []
+        captured_blocked = []
+        patches = []
+        prev_mode = getattr(_m, "MODE", "plan")
+        prev_pinned = getattr(_m, "PINNED_MODEL", None)
+
+        def patch(name, value):
+            if hasattr(_m, name):
+                patches.append((name, getattr(_m, name)))
+                setattr(_m, name, value)
+
+        def collect_only(reply, history_ref, streamed=False, continue_after_tools=False):
+            nonlocal captured_actions
+            model = getattr(_m, "LAST_MODEL", "") or requested_model or "master-ai"
+            captured_actions = _api_parse_actions(
+                reply or "",
+                model=model,
+                source=source,
+                session_id=session_id,
+                schedule_id=schedule_id,
+                page_context=page_context,
+            )
+            return reply
+
+        def noninteractive_confirm(cmd="", *args, **kwargs):
+            detail = cmd
+            if not detail and args:
+                detail = args[0]
+            captured_blocked.append({
+                "kind": "ACTION",
+                "target": str(detail or "")[:1000],
+                "reason": "api_handle is non-interactive; action returned for extension confirmation",
+            })
+            try:
+                return _m.RunResult(
+                    "Blocked: API requests do not execute TUI-confirmed actions.",
+                    ok=False,
+                    exit_code=None,
+                    command=str(detail or ""),
+                    error="api_non_interactive",
+                )
+            except Exception:
+                return False
+
+        def noninteractive_create(filepath, content="", *args, **kwargs):
+            captured_blocked.append({
+                "kind": "CREATE",
+                "target": str(filepath or "")[:1000],
+                "reason": "api_handle is non-interactive; create action returned for confirmation",
+            })
+            return False
+
+        def noninteractive_edit(filepath, find_text="", replace_text="", *args, **kwargs):
+            captured_blocked.append({
+                "kind": "EDIT",
+                "target": str(filepath or "")[:1000],
+                "reason": "api_handle is non-interactive; edit action returned for confirmation",
+            })
+            return False
+
+        try:
+            patch("process_reply", collect_only)
+            patch("confirm_run", noninteractive_confirm)
+            patch("confirm_runterm", noninteractive_confirm)
+            patch("confirm_create", noninteractive_create)
+            patch("confirm_edit", noninteractive_edit)
+            patch("_try_desktop_open_intent", lambda user_text: None)
+            patch("_try_open_url_intent", lambda user_text: None)
+            patch("handle_save_refresh", lambda history_ref: None)
+            try:
+                _m._LAST_BLOCKED_ACTION = {}
+            except Exception:
+                pass
+            if mode_req:
+                _m.MODE = mode_req
+            if requested_model and requested_model != "master-ai":
+                _m.PINNED_MODEL = requested_model
+            reply = _m.handle(api_user_text, history)
+            route = getattr(_m, "LAST_ROUTE", "") or "local"
+            model = getattr(_m, "LAST_MODEL", "") or requested_model or "master-ai"
+            if not captured_actions:
+                captured_actions = _api_parse_actions(
+                    reply or "",
+                    model=model,
+                    source=source,
+                    session_id=session_id,
+                    schedule_id=schedule_id,
+                    page_context=page_context,
+                )
+            blocked_actions = _api_blocked_actions(_m, captured_blocked)
+            try:
+                _m._LAST_BLOCKED_ACTION = {}
+            except Exception:
+                pass
+        finally:
+            for name, old in reversed(patches):
+                try:
+                    setattr(_m, name, old)
+                except Exception:
+                    pass
+            try:
+                _m.MODE = prev_mode
+                _m.PINNED_MODEL = prev_pinned
+            except Exception:
+                pass
+
+    if session_key:
+        with _API_HISTORY_LOCK:
+            _API_HISTORIES[session_key] = _trim_api_history(history)
+
+    return {
+        "reply": reply or "",
+        "route": route,
+        "model": model,
+        "latency_ms": int((time.time() - t0) * 1000),
+        "actions": captured_actions,
+        "blocked_actions": blocked_actions,
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
 
 def safe_filename(name):
     name = re.sub(r'[^\w\s-]', '', name).strip()
@@ -616,6 +958,38 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         if self.path.startswith('/sdcpp/'):
             return self._proxy_sdcpp(body=data)
 
+        # /extension/action_result — extension reports outcome of a typed
+        # BROWSER_* dispatch. Audit-only sink (the extension already executed
+        # the action in the tab per Branch B; backend never reaches DOM).
+        # Body: {action_id, verdict: accept|reject|timeout, result: success|
+        # failure|blocked, final_state?}. Requires X-Master-AI-Token when
+        # called from a chrome-extension origin.
+        if self.path == '/extension/action_result':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            try:
+                from pathlib import Path as _P
+                import time as _t
+                rec = {
+                    'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'source': 'extension',
+                    'kind': 'extension_action_result',
+                    'action_id': payload.get('action_id'),
+                    'verdict':   payload.get('verdict'),
+                    'result':    payload.get('result'),
+                    'final_state': payload.get('final_state'),
+                    'raw': payload,
+                }
+                with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                    f.write(json.dumps(rec) + '\n')
+            except Exception:
+                pass  # Audit is observability, not a blocker.
+            return self._json({'ok': True})
+
         # /ask — federated routing endpoint. Accepts {prompt, model?} and runs
         # it through the LOCAL Ollama on this node, returning the response.
         # Auth: X-Mesh-Token header must match the token in ~/.master_ai_mesh.json.
@@ -665,46 +1039,19 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
 
         # Pupil API v1 — see ~/scripts/pupil_api.md.
         # POST /chat — Pupil's same-machine chat endpoint. No mesh-token gate.
-        # P0.1 MVP: direct Ollama generate. P0.3 hooks this up to
-        # master_ai.handle() so Pupil gets the full Sensei brain. Response
-        # shape stays stable across that change.
+        # M0a: non-interactive master_ai.handle() wrapper. It preserves the
+        # v1 response shape while returning proposed actions for extension-side
+        # confirmation; the backend never enters the TUI confirm_run path here.
         if self.path == '/chat':
-            import time as _time
-            import urllib.request as _ureq
-            import urllib.error as _uerr
-            t0 = _time.time()
+            if not self._require_extension_auth():
+                return
             try:
                 payload = json.loads(data or b'{}')
-                prompt = (payload.get('prompt') or '').strip()
-                if not prompt:
-                    self._json({'error': 'missing prompt'}, 400); return
-                model = (payload.get('model') or 'master-ai').strip()
-                mode_req = (payload.get('mode') or '').strip().lower()
-                if mode_req and mode_req not in ('plan', 'review', 'auto'):
-                    self._json({'error': 'invalid mode'}, 400); return
-                body = json.dumps({
-                    'model': model,
-                    'prompt': prompt,
-                    'stream': False,
-                    'options': {'num_predict': 512, 'temperature': 0.7},
-                }).encode()
-                try:
-                    req = _ureq.Request(
-                        'http://127.0.0.1:11434/api/generate',
-                        data=body, headers={'Content-Type': 'application/json'},
-                    )
-                    with _ureq.urlopen(req, timeout=300) as r:
-                        d = json.loads(r.read())
-                except _uerr.URLError:
-                    self._json({'error': 'ollama unreachable'}, 503); return
-                self._json({
-                    'reply': d.get('response', ''),
-                    'route': 'local',
-                    'model': model,
-                    'latency_ms': int((_time.time() - t0) * 1000),
-                    'blocked_actions': [],
-                    'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
-                }); return
+                self._json(api_handle(payload)); return
+            except ValueError as e:
+                msg = str(e)
+                status = 400 if msg in ('missing prompt', 'invalid mode') else 500
+                self._json({'error': msg}, status); return
             except Exception as e:
                 self._json({'error': str(e)}, 500); return
 
@@ -865,6 +1212,8 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self._json({'error': str(e)}, 500); return
 
         if self.path == '/stt':
+            if not self._require_extension_auth():
+                return
             tmp = tempfile.NamedTemporaryFile(suffix='.webm', delete=False)
             tmp.write(data)
             tmp.close()
@@ -1006,9 +1355,61 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         self._json({'error': msg}, 500)
 
     def _cors(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
+        """Origin-aware CORS (M0a hardening 2026-05-12).
+        - chrome-extension://... → echo Origin back; requests must carry X-Master-AI-Token.
+        - Same-origin (no Origin header) → no Allow-Origin needed; browser allows.
+        - Same-host (Pupil from LAN/Tailscale IPs matching request Host) → echo.
+        - Anything else → no Allow-Origin → browser blocks.
+        """
+        origin = self.headers.get('Origin', '') or ''
+        if origin.startswith('chrome-extension://'):
+            self.send_header('Access-Control-Allow-Origin', origin)
+        elif origin:
+            host = self.headers.get('Host', '') or ''
+            try:
+                from urllib.parse import urlsplit
+                o_netloc = urlsplit(origin).netloc
+                if o_netloc and (o_netloc == host or o_netloc.split(':')[0] == host.split(':')[0]):
+                    self.send_header('Access-Control-Allow-Origin', origin)
+            except Exception:
+                pass
+        # else: no Origin header (same-origin) — nothing to echo.
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Master-AI-Token, X-Mesh-Token')
+
+    def _extension_token(self):
+        """Read the shared token from ~/.master_ai_extension_token. Cached on the class."""
+        cls = self.__class__
+        if not hasattr(cls, '_EXT_TOKEN'):
+            try:
+                from pathlib import Path
+                cls._EXT_TOKEN = Path.home().joinpath('.master_ai_extension_token').read_text().strip() or None
+            except Exception:
+                cls._EXT_TOKEN = None
+        return cls._EXT_TOKEN
+
+    def _origin_is_extension(self):
+        return (self.headers.get('Origin', '') or '').startswith('chrome-extension://')
+
+    def _require_extension_auth(self):
+        """If request comes from a chrome-extension origin, require a valid
+        X-Master-AI-Token. Same-origin (Pupil) requests pass without a token.
+        Returns True if the request should proceed; sends 401 and returns False otherwise."""
+        if not self._origin_is_extension():
+            return True  # Same-origin Pupil — legacy trust.
+        sent = self.headers.get('X-Master-AI-Token', '') or ''
+        expected = self._extension_token()
+        if expected and sent and sent == expected:
+            return True
+        self.send_response(401)
+        self._cors()
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        try:
+            self.wfile.write(b'{"error":"extension token required"}')
+        except Exception:
+            pass
+        return False
 
     def _proxy_sdcpp(self, body=b""):
         """Reverse-proxy /sdcpp/* to local sd-server on 127.0.0.1:7860.

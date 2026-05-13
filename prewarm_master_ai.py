@@ -32,9 +32,6 @@ def _generate(model, prompt, timeout=360):
 def main():
     warmups = [
         ("master-ai", "You are Sensei. Reply with the single word: ready."),
-        # Keep the vision model resident too. A text-only prompt is enough to
-        # load llava's weights; the first real image request then skips cold load.
-        ("llava", "Reply with the single word: ready."),
     ]
     ok = []
     failed = []

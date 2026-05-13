@@ -3625,7 +3625,7 @@ def ask_local(messages, model=None, image_path=None):
     # for reasoning. Keeps non-streaming calls (briefings, memory recall)
     # from blocking the input loop for minutes on CPU.
     payload = {"model": model, "messages": messages, "stream": False,
-               "keep_alive": "30m",
+               "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:
@@ -3836,7 +3836,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     globals()["_THINKING_T0"] = _t0
     messages = _inject_few_shot(messages, model)
     payload = {"model": model, "messages": messages, "stream": True,
-               "keep_alive": "30m",
+               "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:

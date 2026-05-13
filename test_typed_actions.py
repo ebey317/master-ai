@@ -25,11 +25,17 @@ class KindAndRiskConstants(unittest.TestCase):
         # REMEMBER added 2026-05-11 — model self-write to memory.
         self.assertEqual(
             ta.DIRECTIVE_KINDS,
-            frozenset({"RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER"}),
+            frozenset({
+                "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
+                "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+            }),
         )
 
     def test_kind_class_aliases_match(self):
-        for name in ("RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER"):
+        for name in (
+            "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
+            "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+        ):
             self.assertEqual(getattr(ta.Kind, name), name)
 
     def test_risk_constants_are_distinct(self):
@@ -186,6 +192,19 @@ class DirectiveParser(unittest.TestCase):
         a = ta.parse_directive("EDIT: /tmp/foo.py")
         self.assertEqual(a.kind, "EDIT")
 
+    def test_parse_browser_action_line(self):
+        a = ta.parse_directive("BROWSER_CLICK: button[aria-label='Search']")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_CLICK")
+        self.assertEqual(a.target, "button[aria-label='Search']")
+        self.assertTrue(a.requires_confirm)
+
+    def test_parse_browser_read_line(self):
+        a = ta.parse_directive("BROWSER_READ: main")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_READ")
+        self.assertEqual(a.target, "main")
+
     def test_lowercase_keyword_accepted(self):
         a = ta.parse_directive("run: ls")
         self.assertEqual(a.kind, "RUN")
@@ -220,12 +239,13 @@ class ReplyParser(unittest.TestCase):
             "RUN: df -h\n"
             "Then create a backup:\n"
             "CREATE: /tmp/backup.txt\n"
+            "BROWSER_READ: main\n"
             "Then start the service.\n"
             "RUNTERM: htop\n"
         )
         actions = ta.parse_reply(reply, model="master-ai")
-        self.assertEqual(len(actions), 3)
-        self.assertEqual([a.kind for a in actions], ["RUN", "CREATE", "RUNTERM"])
+        self.assertEqual(len(actions), 4)
+        self.assertEqual([a.kind for a in actions], ["RUN", "CREATE", "BROWSER_READ", "RUNTERM"])
         self.assertEqual(actions[0].target, "df -h")
 
     def test_parse_reply_skips_inline_mentions(self):
