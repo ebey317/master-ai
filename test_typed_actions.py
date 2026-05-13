@@ -28,6 +28,7 @@ class KindAndRiskConstants(unittest.TestCase):
             frozenset({
                 "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
                 "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+                "BROWSER_SCREENSHOT",
             }),
         )
 
@@ -35,6 +36,7 @@ class KindAndRiskConstants(unittest.TestCase):
         for name in (
             "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
             "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+            "BROWSER_SCREENSHOT",
         ):
             self.assertEqual(getattr(ta.Kind, name), name)
 
@@ -204,6 +206,13 @@ class DirectiveParser(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(a.kind, "BROWSER_READ")
         self.assertEqual(a.target, "main")
+
+    def test_parse_browser_screenshot_line(self):
+        a = ta.parse_directive("BROWSER_SCREENSHOT: viewport")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_SCREENSHOT")
+        self.assertEqual(a.target, "viewport")
+        self.assertTrue(a.requires_confirm)
 
     def test_lowercase_keyword_accepted(self):
         a = ta.parse_directive("run: ls")

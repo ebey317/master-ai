@@ -100,7 +100,7 @@ function setConnection(text, tone = "") {
 function cleanReply(text) {
   const lines = String(text || "").split(/\n/);
   const cleaned = lines.filter((line) => {
-    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):/i.test(line)
+    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):/i.test(line)
       && !/^\s*<<<(CONTENT|FIND|REPLACE)\s*$/i.test(line)
       && !/^\s*>>>(CONTENT|FIND|REPLACE)\s*$/i.test(line);
   }).join("\n").trim();
@@ -159,6 +159,22 @@ async function sendToContent(tabId, action) {
   }
 }
 
+function truncateDataUrlForAudit(dataUrl) {
+  const text = String(dataUrl || "");
+  return text.length > 200 ? text.slice(0, 200) : text;
+}
+
+function renderScreenshot(row, dataUrl) {
+  if (!row || !dataUrl) return;
+  const existing = row.querySelector(".screenshot-preview");
+  if (existing) existing.remove();
+  const img = document.createElement("img");
+  img.className = "screenshot-preview";
+  img.alt = "Captured browser tab screenshot";
+  img.src = dataUrl;
+  row.appendChild(img);
+}
+
 async function reportAction(action, verdict, result, finalState = {}) {
   try {
     await backendFetch("/extension/action_result", {
@@ -198,7 +214,18 @@ async function approveAction(action, row) {
     if (!tab?.id) throw new Error("no active tab");
 
     let result;
-    if (kind === "BROWSER_NAV") {
+    if (kind === "BROWSER_SCREENSHOT") {
+      const capture = await chrome.runtime.sendMessage({ type: "SENSEI_CAPTURE_VISIBLE_TAB" });
+      if (!capture?.ok || !capture?.dataUrl) {
+        throw new Error(capture?.error || "screenshot capture failed");
+      }
+      renderScreenshot(row, capture.dataUrl);
+      result = {
+        ok: true,
+        screenshot: "visible_tab_png",
+        dataUrl: truncateDataUrlForAudit(capture.dataUrl)
+      };
+    } else if (kind === "BROWSER_NAV") {
       const url = normalizeUrl(action.target);
       await chrome.tabs.update(tab.id, { url });
       result = { ok: true, navigated: url };

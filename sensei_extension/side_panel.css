@@ -207,6 +207,15 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.screenshot-preview {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
 .action-buttons {
   display: flex;
   gap: 8px;

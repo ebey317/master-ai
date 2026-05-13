@@ -48,7 +48,7 @@ _API_TURNS_LOCK = threading.Lock()
 _API_DEFAULT_ROUND_BUDGET = 3
 _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
 _ACTION_LINE_RE = re.compile(
-    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):\s*(.*?)\s*$",
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -119,7 +119,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         lines.append(f"continuation_round: {round_num}{budget_str}")
     lines.extend([
         "Branch B: do not execute local machine or browser actions inside the backend request.",
-        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, or BROWSER_NAV directives.",
+        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
     ])
     if round_num and round_num > 1:

@@ -55,6 +55,7 @@ class Kind:
     BROWSER_FILL = "BROWSER_FILL"
     BROWSER_READ = "BROWSER_READ"
     BROWSER_NAV = "BROWSER_NAV"
+    BROWSER_SCREENSHOT = "BROWSER_SCREENSHOT"
 
 
 class Risk:
@@ -76,7 +77,8 @@ class Status:
 
 
 DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER,
-                             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_READ, Kind.BROWSER_NAV})
+                             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_READ, Kind.BROWSER_NAV,
+                             Kind.BROWSER_SCREENSHOT})
 
 
 # Heuristic patterns for risk classification. Conservative — false-positives
@@ -103,7 +105,7 @@ _SAFE_RUN_PREFIXES = (
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
-    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV):\s*(.*?)\s*$",
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -242,7 +244,7 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         requires_confirm=(kind in (
             Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT,
             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_READ,
-            Kind.BROWSER_NAV,
+            Kind.BROWSER_NAV, Kind.BROWSER_SCREENSHOT,
         )),
     )
     classify_risk(action)

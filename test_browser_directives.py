@@ -7,15 +7,16 @@ Test cases (per master-ai-chrome-breezy-ocean.md Step 7):
   2. BROWSER_NAV     — "open example.com"                     → assert action
   3. BROWSER_FILL    — "fill the email field with foo@bar.com" → assert action
   4. BROWSER_READ    — "what's on this page"                  → assert action
-  5a (deterministic) — `_reply_has_done_directive("DONE: x")` → True
+  5. BROWSER_SCREENSHOT — "take a screenshot of this page"       → assert action
+  6a (deterministic) — `_reply_has_done_directive("DONE: x")` → True
                        parser unit test, no model call, no flakiness
-  5b (cloud smoke)   — "Reply with two lines: BROWSER_NAV: https://example.com and DONE: navigated"
+  6b (cloud smoke)   — "Reply with two lines: BROWSER_NAV: https://example.com and DONE: navigated"
                        Groq lane; assert terminal_reason="done_directive"
-  5c (local smoke)   — same as 5b but against rebuilt local master-ai,
+  6c (local smoke)   — same as 6b but against rebuilt local master-ai,
                        gated by LIVE_LOCAL=1
 
 Default lane:  cloud (uses `fast:` prefix so orchestrate() routes to Groq).
-LIVE_LOCAL=1:  swaps cases 1-4 to `local:` and runs case 5c instead of 5b.
+LIVE_LOCAL=1:  swaps cases 1-5 to `local:` and runs case 6c instead of 6b.
 
 Run:
     python3 ~/scripts/test_browser_directives.py
@@ -92,7 +93,7 @@ SAMPLE_PAGE_CONTEXT = {
 
 
 class DoneParserUnitTests(unittest.TestCase):
-    """Case 5a — deterministic parser unit test, no HTTP, no model."""
+    """Case 6a — deterministic parser unit test, no HTTP, no model."""
 
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -127,7 +128,7 @@ class DoneParserUnitTests(unittest.TestCase):
 @unittest.skipIf(LIVE_LOCAL is False and os.environ.get("SKIP_LIVE") == "1",
                  "Live HTTP tests disabled by SKIP_LIVE=1")
 class BrowserDirectiveLiveTests(unittest.TestCase):
-    """Cases 1-4 + 5b/5c — live HTTP against /chat."""
+    """Cases 1-5 + 6b/6c — live HTTP against /chat."""
 
     @classmethod
     def setUpClass(cls):
@@ -175,8 +176,17 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
         self.assertIn("BROWSER_READ", kinds,
                       f"[{LANE_LABEL}] expected BROWSER_READ in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
 
-    def test_5_done_directive_smoke(self):
-        """5b (cloud) / 5c (local) — model emits DONE: explicitly; backend
+    def test_5_browser_screenshot(self):
+        resp = _post_chat(
+            "take a screenshot of this page",
+            page_context=SAMPLE_PAGE_CONTEXT,
+        )
+        kinds = _action_kinds(resp)
+        self.assertIn("BROWSER_SCREENSHOT", kinds,
+                      f"[{LANE_LABEL}] expected BROWSER_SCREENSHOT in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+
+    def test_6_done_directive_smoke(self):
+        """6b (cloud) / 6c (local) — model emits DONE: explicitly; backend
         sets terminal_reason='done_directive'."""
         resp = _post_chat(
             "Please reply with exactly two lines: "

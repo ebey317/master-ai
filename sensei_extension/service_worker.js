@@ -29,9 +29,24 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "SENSEI_ACTIVE_TAB") return false;
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    sendResponse({ tab: tabs?.[0] || null });
-  });
-  return true;
+  if (message?.type === "SENSEI_ACTIVE_TAB") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      sendResponse({ tab: tabs?.[0] || null });
+    });
+    return true;
+  }
+
+  if (message?.type === "SENSEI_CAPTURE_VISIBLE_TAB") {
+    chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        sendResponse({ ok: false, error: err.message || String(err) });
+        return;
+      }
+      sendResponse({ ok: true, dataUrl });
+    });
+    return true;
+  }
+
+  return false;
 });
