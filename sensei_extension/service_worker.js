@@ -37,13 +37,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "SENSEI_CAPTURE_VISIBLE_TAB") {
-    chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
+    const capture = (windowId) => chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
       const err = chrome.runtime.lastError;
       if (err) {
         sendResponse({ ok: false, error: err.message || String(err) });
         return;
       }
       sendResponse({ ok: true, dataUrl });
+    });
+
+    if (Number.isInteger(message.windowId)) {
+      capture(message.windowId);
+      return true;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs?.[0] || null;
+      if (!Number.isInteger(tab?.windowId)) {
+        sendResponse({ ok: false, error: "no active browser window available for screenshot" });
+        return;
+      }
+      capture(tab.windowId);
     });
     return true;
   }

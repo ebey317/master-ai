@@ -47,10 +47,50 @@ _API_TURNS = {}  # {turn_id: {session_key, round_num, round_budget, created_at, 
 _API_TURNS_LOCK = threading.Lock()
 _API_DEFAULT_ROUND_BUDGET = 3
 _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
+_HEALTH_CACHE_LOCK = threading.Lock()
+_HEALTH_CACHE_TTL_S = 3.0
+_HEALTH_CACHE = {"ts": 0.0, "payload": None}
 _ACTION_LINE_RE = re.compile(
     r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
+
+
+def _health_payload():
+    now = time.time()
+    with _HEALTH_CACHE_LOCK:
+        cached = _HEALTH_CACHE.get("payload")
+        if cached and now - float(_HEALTH_CACHE.get("ts") or 0.0) < _HEALTH_CACHE_TTL_S:
+            out = dict(cached)
+            out["cached"] = True
+            return out
+
+    ollama_state = 'down'
+    model_name = 'master-ai'
+    probe_ms = 0
+    t0 = time.time()
+    try:
+        req = urllib.request.Request('http://127.0.0.1:11434/api/tags')
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            json.loads(resp.read().decode())
+        ollama_state = 'active'
+    except Exception:
+        ollama_state = 'down'
+    finally:
+        probe_ms = int((time.time() - t0) * 1000)
+
+    payload = {
+        'ok': True,
+        'ollama': ollama_state,
+        'model': model_name,
+        'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+        'probe_ms': probe_ms,
+        'cached': False,
+    }
+    with _HEALTH_CACHE_LOCK:
+        _HEALTH_CACHE["ts"] = time.time()
+        _HEALTH_CACHE["payload"] = dict(payload)
+    return payload
 
 
 def _scripts_on_path():
@@ -92,6 +132,7 @@ def _format_page_context(page_context):
         ("title", 300),
         ("selection", 1200),
         ("focused_text", 1200),
+        ("interactive_elements", 2400),
         ("visible_text", 1800),
     ):
         val = _safe_context_text(page_context.get(key), limit=limit)
@@ -121,6 +162,8 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         "Branch B: do not execute local machine or browser actions inside the backend request.",
         "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
+        "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.",
+        "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.",
     ])
     if round_num and round_num > 1:
         lines.append(
@@ -362,6 +405,17 @@ def _reply_has_done_directive(reply):
     return False
 
 
+def _api_terminal_state(reply, captured_actions, round_remaining):
+    """Return (done, terminal_reason) for an API turn."""
+    if captured_actions and round_remaining > 0:
+        return False, ""
+    if captured_actions and round_remaining <= 0:
+        return True, "budget"
+    if _reply_has_done_directive(reply):
+        return True, "done_directive"
+    return True, "no_actions"
+
+
 def _api_blocked_actions(module, extra_blocked=None):
     out = []
     for blocked in (extra_blocked or []):
@@ -590,23 +644,10 @@ def api_handle(payload):
         with _API_HISTORY_LOCK:
             _API_HISTORIES[session_key] = _trim_api_history(history)
 
-    # M9 termination signal. Done when:
-    #   · Model emits an explicit `DONE: <summary>` line (priority signal)
-    #   · No more actions proposed (model thinks goal complete)
-    #   · Round budget exhausted
+    # M9 termination signal. Browser actions keep the turn open until the
+    # extension reports real results; DONE is terminal only with no actions.
     round_remaining = max(0, round_budget - round_num)
-    if _reply_has_done_directive(reply):
-        done = True
-        terminal_reason = "done_directive"
-    elif not captured_actions:
-        done = True
-        terminal_reason = "no_actions"
-    elif round_remaining <= 0:
-        done = True
-        terminal_reason = "budget"
-    else:
-        done = False
-        terminal_reason = ""
+    done, terminal_reason = _api_terminal_state(reply, captured_actions, round_remaining)
 
     # Register this turn so a continuation request can find it.
     now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -934,21 +975,7 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # Pupil API v1 — see ~/scripts/pupil_api.md.
         # /health — cheap liveness + Ollama reachability.
         if self.path == '/health':
-            ollama_state = 'down'
-            model_name = 'master-ai'
-            try:
-                req = urllib.request.Request('http://127.0.0.1:11434/api/tags')
-                with urllib.request.urlopen(req, timeout=2) as resp:
-                    json.loads(resp.read().decode())
-                ollama_state = 'active'
-            except Exception:
-                ollama_state = 'down'
-            self._json({
-                'ok': True,
-                'ollama': ollama_state,
-                'model': model_name,
-                'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
-            })
+            self._json(_health_payload())
             return
 
         # /status — richer state for the Pupil status card.

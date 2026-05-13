@@ -14,7 +14,10 @@
   ],
   "host_permissions": [
     "http://127.0.0.1:8080/*",
-    "http://localhost:8080/*"
+    "http://localhost:8080/*",
+    "http://*/*",
+    "https://*/*",
+    "file:///*"
   ],
   "background": {
     "service_worker": "service_worker.js",
@@ -26,18 +29,5 @@
   "side_panel": {
     "default_path": "side_panel.html"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*",
-        "file:///*"
-      ],
-      "js": [
-        "content_script.js"
-      ],
-      "run_at": "document_idle"
-    }
-  ],
   "options_page": "options.html"
 }

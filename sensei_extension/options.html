@@ -38,6 +38,27 @@
         <input id="sessionId" type="text" autocomplete="off">
       </label>
 
+      <section class="permissions">
+        <div>
+          <h2>Browser Permissions</h2>
+          <p>Auto mode runs non-protected browser actions without asking.</p>
+        </div>
+
+        <label>
+          Action Permission Mode
+          <select id="actionPermissionMode">
+            <option value="ask">Ask Before Acting</option>
+            <option value="act">Act Without Asking</option>
+          </select>
+        </label>
+
+        <div class="site-head">
+          <span>Approved Sites</span>
+          <button id="clearApprovedSites" type="button">Clear</button>
+        </div>
+        <ul id="approvedSites" class="site-list"></ul>
+      </section>
+
       <div class="actions">
         <button id="generateToken" type="button">Generate Token</button>
         <button id="testBackend" type="button">Test</button>

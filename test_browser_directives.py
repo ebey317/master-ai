@@ -97,8 +97,9 @@ class DoneParserUnitTests(unittest.TestCase):
 
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from stt_server import _reply_has_done_directive  # noqa: WPS433
+        from stt_server import _api_terminal_state, _reply_has_done_directive  # noqa: WPS433
         self.detect = _reply_has_done_directive
+        self.terminal_state = _api_terminal_state
 
     def test_basic_done_line(self):
         self.assertTrue(self.detect("DONE: navigated to example.com"))
@@ -123,6 +124,29 @@ class DoneParserUnitTests(unittest.TestCase):
         self.assertFalse(self.detect(""))
         self.assertFalse(self.detect(None))
         self.assertFalse(self.detect(123))
+
+    def test_actions_override_premature_done_line(self):
+        done, reason = self.terminal_state(
+            "BROWSER_SCREENSHOT: viewport\nDONE: captured",
+            [{"kind": "BROWSER_SCREENSHOT", "target": "viewport"}],
+            2,
+        )
+        self.assertFalse(done)
+        self.assertEqual(reason, "")
+
+    def test_done_without_actions_is_terminal(self):
+        done, reason = self.terminal_state("DONE: captured", [], 2)
+        self.assertTrue(done)
+        self.assertEqual(reason, "done_directive")
+
+    def test_actions_at_budget_are_terminal(self):
+        done, reason = self.terminal_state(
+            "BROWSER_READ: body",
+            [{"kind": "BROWSER_READ", "target": "body"}],
+            0,
+        )
+        self.assertTrue(done)
+        self.assertEqual(reason, "budget")
 
 
 @unittest.skipIf(LIVE_LOCAL is False and os.environ.get("SKIP_LIVE") == "1",
@@ -187,7 +211,7 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
 
     def test_6_done_directive_smoke(self):
         """6b (cloud) / 6c (local) — model emits DONE: explicitly; backend
-        sets terminal_reason='done_directive'."""
+        keeps pending browser actions non-terminal until extension results land."""
         resp = _post_chat(
             "Please reply with exactly two lines: "
             "BROWSER_NAV: https://example.com "
@@ -197,9 +221,14 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
         reply = resp.get("reply", "")
         self.assertRegex(reply, r"(?m)^\s*DONE:\s*\S",
                          f"[{LANE_LABEL}] expected DONE: line in reply; got reply={reply[:300]!r}")
-        self.assertEqual(resp.get("terminal_reason"), "done_directive",
-                         f"[{LANE_LABEL}] expected terminal_reason=done_directive; "
-                         f"got {resp.get('terminal_reason')!r}; reply={reply[:300]!r}")
+        if resp.get("actions"):
+            self.assertFalse(resp.get("done"),
+                             f"[{LANE_LABEL}] pending actions must not be terminal; "
+                             f"terminal_reason={resp.get('terminal_reason')!r}; reply={reply[:300]!r}")
+        else:
+            self.assertEqual(resp.get("terminal_reason"), "done_directive",
+                             f"[{LANE_LABEL}] expected terminal_reason=done_directive; "
+                             f"got {resp.get('terminal_reason')!r}; reply={reply[:300]!r}")
 
 
 if __name__ == "__main__":

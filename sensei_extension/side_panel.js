@@ -2,14 +2,33 @@ const DEFAULT_CONFIG = {
   backendUrl: "http://127.0.0.1:8080",
   token: "",
   mode: "review",
-  sessionId: ""
+  sessionId: "",
+  actionPermissionMode: "ask",
+  approvedOrigins: [],
+  permissionHistory: []
 };
+
+const REQUEST_TIMEOUTS = {
+  default: 60000,
+  health: 3500,
+  chat: 180000,
+  stt: 180000,
+  audit: 5000
+};
+const PAGE_CONTEXT_TTL_MS = 1500;
+const PAGE_CONTEXT_TEXT_LIMIT = 1800;
+const PAGE_CONTEXT_PROMPT_RE =
+  /\b(browser|button|click|current\s+(page|tab|site)|field|fill|form|link|page|read|screen|screenshot|select|selected|selection|tab|this|visible|website)\b/i;
 
 const state = {
   config: { ...DEFAULT_CONFIG },
   mediaRecorder: null,
   mediaStream: null,
   chunks: [],
+  injectedTabs: new Set(),
+  contextCache: null,
+  auditQueue: [],
+  auditFlushing: false,
   // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
   // proposed actions, the user approves/rejects each one. As each result is
   // reported to /extension/action_result, it's also appended to loop.results.
@@ -41,6 +60,9 @@ function chromeSet(values) {
 async function loadConfig() {
   const stored = await chromeGet(Object.keys(DEFAULT_CONFIG));
   state.config = { ...DEFAULT_CONFIG, ...stored };
+  if (!Array.isArray(state.config.approvedOrigins)) state.config.approvedOrigins = [];
+  if (!Array.isArray(state.config.permissionHistory)) state.config.permissionHistory = [];
+  if (!["ask", "act"].includes(state.config.actionPermissionMode)) state.config.actionPermissionMode = "ask";
   if (!state.config.sessionId) {
     state.config.sessionId = `sensei-${crypto.randomUUID()}`;
     await chromeSet({ sessionId: state.config.sessionId });
@@ -61,9 +83,21 @@ function backendHeaders(extra = {}) {
   };
 }
 
+function requestTimeout(path, options = {}) {
+  if (Number.isFinite(options.timeoutMs)) return options.timeoutMs;
+  if (path === "/health") return REQUEST_TIMEOUTS.health;
+  if (path === "/stt") return REQUEST_TIMEOUTS.stt;
+  if (path === "/extension/action_result") return REQUEST_TIMEOUTS.audit;
+  if (path === "/chat" || path === "/chat/continue") return REQUEST_TIMEOUTS.chat;
+  return REQUEST_TIMEOUTS.default;
+}
+
 async function backendFetch(path, options = {}) {
   let body = options.body;
   const headers = backendHeaders(options.headers || {});
+  const timeoutMs = requestTimeout(path, options);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   if (body !== undefined && !(body instanceof Blob) && typeof body !== "string") {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
@@ -72,12 +106,25 @@ async function backendFetch(path, options = {}) {
     headers["Content-Type"] = body.type || "application/octet-stream";
   }
 
-  const res = await fetch(`${state.config.backendUrl}${path}`, {
-    method: options.method || (body === undefined ? "GET" : "POST"),
-    headers,
-    body
-  });
-  const text = await res.text();
+  let res;
+  let text;
+  try {
+    res = await fetch(`${state.config.backendUrl}${path}`, {
+      method: options.method || (body === undefined ? "GET" : "POST"),
+      headers,
+      body,
+      signal: controller.signal
+    });
+    text = await res.text();
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
   let data = {};
   try {
     data = text ? JSON.parse(text) : {};
@@ -126,18 +173,93 @@ function appendError(text) {
   appendMessage("error", text);
 }
 
+async function timed(timings, key, fn) {
+  const start = performance.now();
+  try {
+    return await fn();
+  } finally {
+    timings[key] = Math.round(performance.now() - start);
+  }
+}
+
+function formatMeta(data, timings = {}) {
+  const parts = [data.route, data.model];
+  if (Number.isFinite(data.latency_ms)) parts.push(`${data.latency_ms} ms server`);
+  if (Number.isFinite(timings.context)) parts.push(`ctx ${timings.context} ms`);
+  if (Number.isFinite(timings.total)) parts.push(`${timings.total} ms client`);
+  return parts.filter(Boolean).join(" | ");
+}
+
+function promptNeedsPageContext(prompt) {
+  return PAGE_CONTEXT_PROMPT_RE.test(String(prompt || ""));
+}
+
 async function activeTab() {
   const result = await chrome.runtime.sendMessage({ type: "SENSEI_ACTIVE_TAB" });
   return result?.tab || null;
 }
 
-async function pageContext() {
-  const tab = await activeTab();
+function canInjectIntoTab(tab) {
+  return Boolean(tab?.id && /^(https?:|file:)/i.test(String(tab.url || "")));
+}
+
+function contextCacheKey(tab, includeVisibleText) {
+  return `${tab.id}:${tab.url || ""}:${includeVisibleText ? "full" : "shell"}`;
+}
+
+function invalidatePageContext(tabId = null) {
+  if (!tabId || state.contextCache?.tabId === tabId) state.contextCache = null;
+  if (tabId) state.injectedTabs.delete(tabId);
+}
+
+async function ensureContentScript(tab, timings = {}) {
+  if (!canInjectIntoTab(tab)) return false;
+  if (state.injectedTabs.has(tab.id)) return true;
+
+  try {
+    const ping = await chrome.tabs.sendMessage(tab.id, { type: "SENSEI_PING" });
+    if (ping?.ok) {
+      state.injectedTabs.add(tab.id);
+      return true;
+    }
+  } catch (_err) {
+    // Missing content script is expected with lazy injection.
+  }
+
+  await timed(timings, "inject", async () => {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content_script.js"] });
+  });
+  state.injectedTabs.add(tab.id);
+  return true;
+}
+
+async function pageContext(prompt = "", timings = {}) {
+  const tab = await timed(timings, "tab", activeTab);
   if (!tab?.id) return {};
   const fallback = { url: tab.url || "", title: tab.title || "" };
+  const includeVisibleText = promptNeedsPageContext(prompt);
+  const key = contextCacheKey(tab, includeVisibleText);
+  if (state.contextCache?.key === key && performance.now() - state.contextCache.ts < PAGE_CONTEXT_TTL_MS) {
+    return state.contextCache.value;
+  }
+
+  if (!includeVisibleText || !canInjectIntoTab(tab)) {
+    state.contextCache = { key, tabId: tab.id, ts: performance.now(), value: fallback };
+    return fallback;
+  }
+
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "SENSEI_PAGE_CONTEXT" });
-    return response?.page_context || fallback;
+    await ensureContentScript(tab, timings);
+    const response = await timed(timings, "context", () => chrome.tabs.sendMessage(tab.id, {
+      type: "SENSEI_PAGE_CONTEXT",
+      options: {
+        includeVisibleText,
+        visibleTextLimit: PAGE_CONTEXT_TEXT_LIMIT
+      }
+    }));
+    const value = response?.page_context || fallback;
+    state.contextCache = { key, tabId: tab.id, ts: performance.now(), value };
+    return value;
   } catch (_err) {
     return fallback;
   }
@@ -150,13 +272,56 @@ function normalizeUrl(target) {
   return raw;
 }
 
-async function sendToContent(tabId, action) {
+function currentExecutionMode() {
+  const selected = $("#modeSelect")?.value || state.config.mode || "review";
+  if (selected === "auto") return "act";
+  return state.config.actionPermissionMode || "ask";
+}
+
+function originForUrl(url) {
   try {
-    return await chrome.tabs.sendMessage(tabId, { type: "SENSEI_EXECUTE_ACTION", action });
-  } catch (_firstErr) {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["content_script.js"] });
-    return chrome.tabs.sendMessage(tabId, { type: "SENSEI_EXECUTE_ACTION", action });
+    const parsed = new URL(url);
+    return parsed.origin;
+  } catch (_err) {
+    return "";
   }
+}
+
+function actionOrigin(action, tab) {
+  const kind = String(action?.kind || "").toUpperCase();
+  if (kind === "BROWSER_NAV") {
+    const target = normalizeUrl(action.target);
+    const origin = originForUrl(target);
+    if (origin) return origin;
+  }
+  return originForUrl(tab?.url || "");
+}
+
+async function rememberPermission(decision, origin, action) {
+  const entry = {
+    ts: new Date().toISOString(),
+    decision,
+    origin: origin || "",
+    kind: action?.kind || "",
+    target: String(action?.target || "").slice(0, 300)
+  };
+  state.config.permissionHistory = [entry, ...(state.config.permissionHistory || [])].slice(0, 100);
+  await chromeSet({ permissionHistory: state.config.permissionHistory });
+}
+
+async function allowOrigin(origin, action) {
+  if (!origin) return;
+  if (!state.config.approvedOrigins.includes(origin)) {
+    state.config.approvedOrigins = [...state.config.approvedOrigins, origin].sort();
+    await chromeSet({ approvedOrigins: state.config.approvedOrigins });
+  }
+  await rememberPermission("always_allow_site", origin, action);
+}
+
+async function sendToContent(tab, action, timings = {}) {
+  const ready = await ensureContentScript(tab, timings);
+  if (!ready) throw new Error("cannot access this tab");
+  return chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action });
 }
 
 function truncateDataUrlForAudit(dataUrl) {
@@ -175,21 +340,38 @@ function renderScreenshot(row, dataUrl) {
   row.appendChild(img);
 }
 
-async function reportAction(action, verdict, result, finalState = {}) {
+function reportAction(action, verdict, result, finalState = {}) {
+  state.auditQueue.push({
+    action_id: action.id,
+    action,
+    verdict,
+    result,
+    final_state: finalState,
+    gated_by: action?.gated_by || action?.classification?.gated_by || null
+  });
+  flushAuditQueue();
+}
+
+async function flushAuditQueue() {
+  if (state.auditFlushing) return;
+  state.auditFlushing = true;
   try {
-    await backendFetch("/extension/action_result", {
-      method: "POST",
-      body: {
-        action_id: action.id,
-        action,
-        verdict,
-        result,
-        final_state: finalState,
-        gated_by: action?.gated_by || action?.classification?.gated_by || null
+    while (state.auditQueue.length) {
+      const payload = state.auditQueue[0];
+      try {
+        await backendFetch("/extension/action_result", {
+          method: "POST",
+          body: payload,
+          timeoutMs: REQUEST_TIMEOUTS.audit
+        });
+      } catch (err) {
+        appendError(`Action audit failed: ${err.message}`);
+      } finally {
+        state.auditQueue.shift();
       }
-    });
-  } catch (err) {
-    appendError(`Action audit failed: ${err.message}`);
+    }
+  } finally {
+    state.auditFlushing = false;
   }
 }
 
@@ -233,14 +415,24 @@ function gateLabel(gatedBy) {
   return `gated_by: ${reason}`;
 }
 
-async function approveAction(action, row) {
+function shouldAutoRunAction(action, origin = "") {
+  const kind = String(action?.kind || "").toUpperCase();
+  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") return true;
+  if (!kind.startsWith("BROWSER_")) return false;
+  if (action?.classification?.requires_confirm) return false;
+  if (origin && state.config.approvedOrigins.includes(origin)) return true;
+  return currentExecutionMode() === "act";
+}
+
+async function approveAction(action, row, permissionDecision = "allow_once") {
   const kind = String(action.kind || "").toUpperCase();
+  const timings = {};
   setActionStatus(row, "Running");
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
 
   if (!kind.startsWith("BROWSER_")) {
     setActionStatus(row, "Not executable in the browser");
-    await reportAction(action, "accept", "blocked", { reason: "unsupported by extension" });
+    reportAction(action, "accept", "blocked", { reason: "unsupported by extension" });
     recordLoopResult(action, "accept", "blocked", { reason: "unsupported by extension" });
     return;
   }
@@ -248,12 +440,17 @@ async function approveAction(action, row) {
   try {
     const tab = await activeTab();
     if (!tab?.id) throw new Error("no active tab");
+    const origin = actionOrigin(action, tab);
+    if (permissionDecision !== "auto") await rememberPermission(permissionDecision, origin, action);
 
     let result;
     if (kind === "BROWSER_SCREENSHOT") {
-      const capture = await chrome.runtime.sendMessage({ type: "SENSEI_CAPTURE_VISIBLE_TAB" });
+      const capture = await chrome.runtime.sendMessage({
+        type: "SENSEI_CAPTURE_VISIBLE_TAB",
+        windowId: tab.windowId
+      });
       if (!capture?.ok || !capture?.dataUrl) {
-        throw new Error(capture?.error || "screenshot capture failed");
+        throw new Error(capture?.error || "screenshot capture failed; try reopening the side panel from this tab");
       }
       renderScreenshot(row, capture.dataUrl);
       result = {
@@ -265,17 +462,21 @@ async function approveAction(action, row) {
       const url = normalizeUrl(action.target);
       await chrome.tabs.update(tab.id, { url });
       result = { ok: true, navigated: url };
+      invalidatePageContext(tab.id);
     } else {
-      result = await sendToContent(tab.id, action);
+      result = await sendToContent(tab, action, timings);
+      invalidatePageContext(tab.id);
     }
 
     const ok = Boolean(result?.ok);
-    setActionStatus(row, ok ? "Done" : (result?.error || "Failed"));
-    await reportAction(action, "accept", ok ? "success" : "failure", result || {});
-    recordLoopResult(action, "accept", ok ? "success" : "failure", result || {});
+    const suffix = timings.inject ? ` (${timings.inject} ms inject)` : "";
+    setActionStatus(row, ok ? `Done${suffix}` : (result?.error || "Failed"));
+    const finalState = { ...(result || {}), permission: permissionDecision, origin };
+    reportAction(action, "accept", ok ? "success" : "failure", finalState);
+    recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
   } catch (err) {
     setActionStatus(row, err.message);
-    await reportAction(action, "accept", "failure", { error: err.message });
+    reportAction(action, "accept", "failure", { error: err.message });
     recordLoopResult(action, "accept", "failure", { error: err.message });
   }
 }
@@ -283,14 +484,17 @@ async function approveAction(action, row) {
 async function rejectAction(action, row) {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
   setActionStatus(row, "Rejected");
-  await reportAction(action, "reject", "blocked", {});
+  const tab = await activeTab().catch(() => null);
+  await rememberPermission("decline", actionOrigin(action, tab), action);
+  reportAction(action, "reject", "blocked", {});
   recordLoopResult(action, "reject", "blocked", {});
 }
 
-function renderActions(actions = [], blockedActions = []) {
+async function renderActions(actions = [], blockedActions = []) {
   const dock = $("#actionDock");
   const list = $("#actionList");
   list.textContent = "";
+  const tab = await activeTab().catch(() => null);
 
   const all = [
     ...actions.map((action) => {
@@ -306,6 +510,8 @@ function renderActions(actions = [], blockedActions = []) {
   for (const action of all) {
     const row = document.createElement("section");
     row.className = "action-item";
+    const origin = actionOrigin(action, tab);
+    const autoRun = !action.blocked && shouldAutoRunAction(action, origin);
 
     const main = document.createElement("div");
     main.className = "action-main";
@@ -317,18 +523,30 @@ function renderActions(actions = [], blockedActions = []) {
     const buttons = document.createElement("div");
     buttons.className = "action-buttons";
 
-    if (!action.blocked) {
+    if (!action.blocked && !autoRun) {
       const approve = document.createElement("button");
       approve.className = "primary";
       approve.type = "button";
-      approve.textContent = "Approve";
-      approve.addEventListener("click", () => approveAction(action, row));
+      approve.textContent = "Allow once";
+      approve.addEventListener("click", () => approveAction(action, row, "allow_once"));
       buttons.appendChild(approve);
+
+      if (origin && !action.classification?.requires_confirm) {
+        const always = document.createElement("button");
+        always.className = "secondary";
+        always.type = "button";
+        always.textContent = "Always allow site";
+        always.addEventListener("click", async () => {
+          await allowOrigin(origin, action);
+          approveAction(action, row, "always_allow_site");
+        });
+        buttons.appendChild(always);
+      }
 
       const reject = document.createElement("button");
       reject.className = "reject";
       reject.type = "button";
-      reject.textContent = "Reject";
+      reject.textContent = "Decline";
       reject.addEventListener("click", () => rejectAction(action, row));
       buttons.appendChild(reject);
     }
@@ -347,10 +565,14 @@ function renderActions(actions = [], blockedActions = []) {
 
     const status = document.createElement("div");
     status.className = "status";
-    status.textContent = action.blocked ? (action.reason || "Blocked") : "Pending";
+    status.textContent = action.blocked ? (action.reason || "Blocked") : (autoRun ? "Queued" : "Waiting for permission");
 
     row.append(main, target, policy, status);
     list.appendChild(row);
+
+    if (autoRun) {
+      setTimeout(() => approveAction(action, row, "auto"), 0);
+    }
   }
 }
 
@@ -358,6 +580,8 @@ async function sendPrompt() {
   const input = $("#promptInput");
   const prompt = input.value.trim();
   if (!prompt) return;
+  const timings = {};
+  const totalStart = performance.now();
 
   // Fresh user prompt clears any active loop from a prior goal.
   resetLoop();
@@ -369,20 +593,22 @@ async function sendPrompt() {
   setConnection("Thinking");
 
   try {
-    const ctx = await pageContext();
+    const ctx = await pageContext(prompt, timings);
     const body = {
       prompt,
       mode: $("#modeSelect").value,
       source: "chrome_extension",
       session_id: state.config.sessionId,
-      page_context: ctx
+      page_context: ctx,
+      client_timings: { ...timings }
     };
-    const data = await backendFetch("/chat", { method: "POST", body });
-    const meta = [data.route, data.model, `${data.latency_ms || 0} ms`].filter(Boolean).join(" | ");
+    const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
+    timings.total = Math.round(performance.now() - totalStart);
+    const meta = formatMeta(data, timings);
+    startLoop(data);
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
-    renderActions(data.actions || [], data.blocked_actions || []);
-    startLoop(data);
+    await renderActions(data.actions || [], data.blocked_actions || []);
     setConnection("Backend ready");
   } catch (err) {
     appendError(err.message);
@@ -415,8 +641,8 @@ function resetLoop() {
 
 function startLoop(data) {
   const actions = data.actions || [];
-  // Active only when the backend says we're not done AND there's something to do.
-  const willContinue = !data.done && actions.length > 0 && (data.round_remaining || 0) > 0;
+  // Browser actions are pending work even if a model mistakenly emitted DONE.
+  const willContinue = actions.length > 0 && (data.round_remaining || 0) > 0;
   state.loop.turn_id = data.turn_id || null;
   state.loop.round_num = data.round_num || 1;
   state.loop.round_budget = data.round_budget || 3;
@@ -449,7 +675,7 @@ function recordLoopResult(action, verdict, result, finalState) {
   if (verdict === "reject") state.loop.rejected = true;
   state.loop.pending = Math.max(0, state.loop.pending - 1);
   if (state.loop.pending === 0 && state.loop.active) {
-    // Defer the continuation so the audit POST + UI status updates flush first.
+    // Defer the continuation so UI status updates flush first.
     setTimeout(() => continueLoop(), 50);
   }
 }
@@ -471,24 +697,31 @@ async function continueLoop() {
   const counter = $("#roundCounter");
   if (counter) counter.textContent = `Round ${state.loop.round_num + 1}/${state.loop.round_budget} (continuing)`;
   setConnection("Continuing");
+  const timings = {};
+  const totalStart = performance.now();
 
   try {
     const body = {
       parent_turn_id: state.loop.turn_id,
       source: "chrome_extension",
       session_id: state.config.sessionId,
-      action_results: state.loop.results
+      action_results: state.loop.results,
+      client_timings: {
+        audit_queue_depth: state.auditQueue.length
+      }
     };
-    const data = await backendFetch("/chat/continue", { method: "POST", body });
-    const meta = [data.route, data.model, `${data.latency_ms || 0} ms`].filter(Boolean).join(" | ");
+    const data = await timed(timings, "chat", () => backendFetch("/chat/continue", { method: "POST", body }));
+    timings.total = Math.round(performance.now() - totalStart);
+    const meta = formatMeta(data, timings);
+    startLoop(data);
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
-    renderActions(data.actions || [], data.blocked_actions || []);
-    if (data.done || !(data.actions || []).length) {
+    await renderActions(data.actions || [], data.blocked_actions || []);
+    if (!(data.actions || []).length) {
       resetLoop();
       setConnection("Backend ready");
-    } else {
-      startLoop(data);
+    } else if (!state.loop.active) {
+      setConnection("Backend ready");
     }
   } catch (err) {
     appendError(`Loop continuation failed: ${err.message}`);
@@ -555,8 +788,28 @@ async function toggleMic() {
   }
 }
 
+function installTabCacheInvalidation() {
+  chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+    if (changeInfo.url || changeInfo.status === "loading") invalidatePageContext(tabId);
+  });
+  chrome.tabs.onRemoved?.addListener((tabId) => invalidatePageContext(tabId));
+  chrome.tabs.onActivated?.addListener(() => {
+    state.contextCache = null;
+  });
+}
+
+async function prewarmActiveTab() {
+  try {
+    const tab = await activeTab();
+    await ensureContentScript(tab, {});
+  } catch (_err) {
+    // Prewarming is best-effort; restricted browser pages still use fallback context.
+  }
+}
+
 async function init() {
   await loadConfig();
+  installTabCacheInvalidation();
   $("#composer").addEventListener("submit", (event) => {
     event.preventDefault();
     sendPrompt();
@@ -575,7 +828,8 @@ async function init() {
   });
   $("#openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
   $("#stopButton")?.addEventListener("click", stopLoop);
-  await healthCheck();
+  prewarmActiveTab();
+  healthCheck();
   appendMessage("assistant", "Ready.");
 }
 
