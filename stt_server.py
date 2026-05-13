@@ -123,9 +123,220 @@ def _safe_context_text(value, limit=1800):
     return text
 
 
-def _format_page_context(page_context):
-    if not isinstance(page_context, dict):
+# ─── RANK 1: page_context prompt-injection defense ───────────────────────────
+# Plan: ~/.claude/plans/auto-did-not-actually-stateful-wozniak.md
+# Step order is fixed: (1) strip bidi/zero-width, (2) collapse whitespace inside
+# candidate uppercase tokens, (3) match case-insensitively against the sentinel
+# list, (4) replace inline with [scrubbed directive]. Inline replace keeps page
+# understanding intact; whole-field omission would trigger compensatory
+# hallucination. Audit log records pattern names + counts only — never the
+# scrubbed bytes.
+
+_BIDI_ZWSP_CHARS = (
+    "​‌‍‎‏"   # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "‪‫‬‭‮"   # LRE, RLE, PDF, LRO, RLO
+    "⁦⁧⁨⁩"         # LRI, RLI, FSI, PDI
+    "﻿"                            # BOM
+)
+_BIDI_ZWSP_RE = re.compile(f"[{_BIDI_ZWSP_CHARS}]")
+
+# Full sentinel set surfaced by Pre-Check #1 (handoff doc 2026-05-13).
+_DIRECTIVE_VERBS = (
+    # Order: longest first so RUNTERM matches before RUN.
+    "RUNTERM", "REMEMBER", "BROWSER",  # BROWSER handled separately below
+    "CREATE", "READ", "EDIT", "THINK", "DONE", "RUN", "ASK",
+)
+# Strip the BROWSER placeholder — it gets its own pattern that allows the
+# `_<SUFFIX>` shape (`BROWSER_CLICK:`, `BROWSER_NAV:`, etc.).
+_VERB_LIST = tuple(v for v in _DIRECTIVE_VERBS if v != "BROWSER")
+
+
+def _build_verb_pattern(verb):
+    """Standard form: `\\bVERB\\s*:` — case-insensitive.
+
+    Catches `RUN:`, `Run:`, `run:`, `RUN  :`. Does NOT catch `R U N :` —
+    that's the spaced-obfuscation form handled by `_build_spaced_verb_pattern`.
+    Per-verb literal match avoids the greedy-consumption bug where a long
+    English phrase ending in a verb gets matched as a single candidate and
+    returned unchanged (swallowing the inner directive verbatim).
+    """
+    return re.compile(rf'\b{re.escape(verb)}\s*:', flags=re.IGNORECASE)
+
+
+def _build_spaced_verb_pattern(verb):
+    """Spaced-obfuscation form: each letter separated by exactly one whitespace.
+
+    Catches `R U N :` (space between each char). Requires AT LEAST one space
+    between each pair of letters (using `[ \\t]` not `[ \\t]?`) so it doesn't
+    overlap with the standard pattern — the standard pattern already catches
+    `RUN:`. 8-char-window constraint is implicit: a 3-letter verb with single
+    spaces = 5 chars; a 7-letter verb = 13 chars (still tight).
+    """
+    spaced = r'[ \t]'.join(re.escape(c) for c in verb)
+    return re.compile(rf'\b{spaced}\s*:', flags=re.IGNORECASE)
+
+
+_VERB_PATTERNS = [
+    (verb + ":", _build_verb_pattern(verb)) for verb in _VERB_LIST
+]
+# Spaced-obfuscation patterns only apply to verbs of length >= 2 (single-letter
+# verbs would have no internal whitespace gap to detect).
+_SPACED_VERB_PATTERNS = [
+    (verb + ":", _build_spaced_verb_pattern(verb))
+    for verb in _VERB_LIST if len(verb) >= 2
+]
+
+# BROWSER_<UPPER+UNDERSCORE>: — `BROWSER_CLICK:`, `BROWSER_NAV:`, etc.
+# Internal whitespace not handled here (rare obfuscation form).
+_BROWSER_PATTERN = re.compile(
+    r'\bBROWSER_[A-Z_]+\s*:',
+    flags=re.IGNORECASE,
+)
+
+_BLOCK_MARKERS = (
+    "<<<CONTENT", ">>>CONTENT",
+    "<<<FIND", ">>>FIND",
+    "<<<REPLACE", ">>>REPLACE",
+)
+_BLOCK_MARKER_RE = re.compile(
+    "|".join(re.escape(m) for m in _BLOCK_MARKERS),
+    flags=re.IGNORECASE,
+)
+
+# <PLAN READY> matched FIRST so <PLAN> doesn't shadow it.
+_PLAN_MARKERS = ("<PLAN READY>", "</PLAN>", "<PLAN>")
+_PLAN_MARKER_RE = re.compile(
+    "|".join(re.escape(m) for m in _PLAN_MARKERS),
+    flags=re.IGNORECASE,
+)
+
+_SCRUB_REPLACEMENT = "[scrubbed directive]"
+
+
+def _sanitize_pass(text):
+    """Return (sanitized_text, list_of_pattern_names_fired_in_order).
+
+    Pattern names are stable identifiers used in the audit log — never the
+    scrubbed bytes themselves. Caller may dedupe; this function preserves
+    every firing in order so cross-field accumulation is honest.
+    """
+    if not text:
+        return text or "", []
+    fired = []
+
+    # Step 1 — strip bidi/zero-width controls.
+    cleaned = _BIDI_ZWSP_RE.sub("", text)
+    if cleaned != text:
+        fired.append("bidi_strip")
+
+    # Step 2 — scrub standard verb forms (`RUN:`, `RUNTERM:`, etc.) case-
+    # insensitively. Per-verb literal match avoids the greedy-candidate bug
+    # where a long English phrase ending in `<verb>:` matched as one
+    # candidate and returned unchanged, swallowing the inner directive.
+    for verb_name, pattern in _VERB_PATTERNS:
+        def _scrub_verb(m, vn=verb_name):
+            fired.append(vn)
+            return _SCRUB_REPLACEMENT
+        cleaned = pattern.sub(_scrub_verb, cleaned)
+
+    # Step 2b — spaced-obfuscation forms (`R U N :`). Separate pass so the
+    # standard pattern's behavior is unchanged.
+    for verb_name, pattern in _SPACED_VERB_PATTERNS:
+        def _scrub_spaced(m, vn=verb_name):
+            fired.append(vn)
+            return _SCRUB_REPLACEMENT
+        cleaned = pattern.sub(_scrub_spaced, cleaned)
+
+    # Step 3 — BROWSER_<SUFFIX>: directives.
+    def _scrub_browser(m):
+        token = re.sub(r'\s+', '', m.group(0).upper()).rstrip(':')
+        fired.append(f"{token}:")
+        return _SCRUB_REPLACEMENT
+    cleaned = _BROWSER_PATTERN.sub(_scrub_browser, cleaned)
+
+    # Step 4 — block markers (`<<<CONTENT`, `>>>CONTENT`, etc.).
+    def _scrub_block(m):
+        fired.append(m.group(0).upper())
+        return _SCRUB_REPLACEMENT
+    cleaned = _BLOCK_MARKER_RE.sub(_scrub_block, cleaned)
+
+    # Step 5 — plan markers (`<PLAN READY>` matched FIRST so `<PLAN>` doesn't
+    # shadow it; that ordering lives in the regex alternation order).
+    def _scrub_plan(m):
+        fired.append(m.group(0).upper())
+        return _SCRUB_REPLACEMENT
+    cleaned = _PLAN_MARKER_RE.sub(_scrub_plan, cleaned)
+
+    return cleaned, fired
+
+
+def _sanitize_page_context_field(value, field_name, fired_acc, fields_acc):
+    """Per-field sanitize. Mutates fired_acc (list) and fields_acc (set)."""
+    if value is None:
         return ""
+    cleaned, fired = _sanitize_pass(str(value))
+    if fired:
+        fired_acc.extend(fired)
+        fields_acc.add(field_name)
+    return cleaned
+
+
+def _sanitize_assembled_context_block(text, fired_acc, fields_acc):
+    """Post-assembly sanitize. Catches cross-field directive splits where a
+    hostile page placed half a directive in one field and half in an adjacent
+    field — concatenation only assembles them after _format_page_context joins."""
+    cleaned, fired = _sanitize_pass(text)
+    if fired:
+        fired_acc.extend(fired)
+        fields_acc.add("_assembled_block")
+    return cleaned
+
+
+def _write_sanitize_audit(*, request_id, source, scrub_meta):
+    """Write one audit row when page_context sanitization fired anything.
+
+    Schema (every field required by plan):
+      ts, kind, request_id, source, scrub_count, patterns, fields.
+    Audit log NEVER stores raw scrubbed bytes — pattern names + counts only,
+    so the log itself cannot become a secondary leak surface for hostile page
+    content. Test #7 enforces this.
+    """
+    if not scrub_meta or scrub_meta.get("count", 0) == 0:
+        return
+    rec = {
+        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "kind": "page_context_sanitize",
+        "request_id": (request_id or "")[:160],
+        "source": (source or "")[:80],
+        "scrub_count": int(scrub_meta.get("count", 0)),
+        "patterns": list(scrub_meta.get("patterns", [])),
+        "fields": list(scrub_meta.get("fields", [])),
+    }
+    try:
+        from pathlib import Path as _P
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
+    except Exception:
+        pass
+
+
+def _format_page_context(page_context):
+    """Format browser page_context dict to model-facing text.
+
+    Returns (formatted_text, scrub_meta) where scrub_meta is:
+      {"count": int, "patterns": list[str], "fields": list[str]}.
+
+    Per-field sanitization runs BEFORE the per-field cap so the directive
+    pattern can't be split by the cap. Assembled-block sanitization runs AFTER
+    field concatenation to catch cross-field directive splits.
+    """
+    scrub_meta = {"count": 0, "patterns": [], "fields": []}
+    if not isinstance(page_context, dict):
+        return "", scrub_meta
+
+    fired_acc = []
+    fields_acc = set()
+
     fields = []
     for key, limit in (
         ("url", 500),
@@ -135,17 +346,54 @@ def _format_page_context(page_context):
         ("interactive_elements", 2400),
         ("visible_text", 1800),
     ):
-        val = _safe_context_text(page_context.get(key), limit=limit)
+        raw = page_context.get(key)
+        if raw is None:
+            continue
+        sanitized = _sanitize_page_context_field(raw, key, fired_acc, fields_acc)
+        val = _safe_context_text(sanitized, limit=limit)
         if val:
             fields.append(f"{key}: {val}")
     if not fields:
-        return ""
-    return "[BROWSER PAGE CONTEXT]\n" + "\n".join(fields)
+        if fired_acc:
+            # Even with no formatted fields, audit truthfully if scrubbing fired.
+            scrub_meta.update(_finalize_scrub_meta(fired_acc, fields_acc))
+        return "", scrub_meta
+
+    block = "[BROWSER PAGE CONTEXT]\n" + "\n".join(fields)
+    block = _sanitize_assembled_context_block(block, fired_acc, fields_acc)
+
+    if fired_acc:
+        scrub_meta.update(_finalize_scrub_meta(fired_acc, fields_acc))
+    return block, scrub_meta
+
+
+def _finalize_scrub_meta(fired_acc, fields_acc):
+    """Dedupe pattern names (preserve order) and sort fields for stable audit."""
+    seen = set()
+    unique_patterns = []
+    for p in fired_acc:
+        if p not in seen:
+            seen.add(p)
+            unique_patterns.append(p)
+    return {
+        "count": len(fired_acc),
+        "patterns": unique_patterns,
+        "fields": sorted(fields_acc),
+    }
 
 
 def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
-                action_results=None, round_num=1, round_budget=None):
-    context = _format_page_context(page_context)
+                action_results=None, round_num=1, round_budget=None,
+                request_id=""):
+    context, scrub_meta = _format_page_context(page_context)
+    # Audit even if no formatted context survived (e.g., every field was empty
+    # after sanitize) — the scrub still happened and Elijah needs the row.
+    if scrub_meta.get("count", 0) > 0:
+        _write_sanitize_audit(
+            request_id=request_id,
+            source=source or "pupil",
+            scrub_meta=scrub_meta,
+        )
     results_block = _format_action_results(action_results)
     if not (source or context or schedule_id or results_block):
         return prompt
@@ -173,6 +421,9 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
             "(empty actions[] = goal complete)."
         )
     if context:
+        if scrub_meta.get("count", 0) > 0:
+            lines.append("")
+            lines.append(f"[SAFETY: {scrub_meta['count']} page-context tokens scrubbed]")
         lines.extend(["", context])
     if results_block:
         lines.extend(["", results_block])
@@ -528,6 +779,7 @@ def api_handle(payload):
         action_results=action_results,
         round_num=round_num,
         round_budget=round_budget,
+        request_id=turn_id,
     )
 
     with _API_HANDLE_LOCK:

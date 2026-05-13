@@ -7,6 +7,50 @@ const FOCUSED_TEXT_LIMIT = 1200;
 const INTERACTIVE_LIMIT = 80;
 const SKIP_TEXT_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "CANVAS"]);
 
+// ─── RANK 1 page_context sanitizer — client defense-in-depth.
+// Mirrors stt_server.py contract bit-exact (same step order, same scrub
+// targets, same replacement literal). Server re-runs all of this on receipt
+// and Test #8 in the server suite pins that the server alone is sufficient,
+// so any client divergence is caught. Spec lives in:
+// ~/.claude/plans/auto-did-not-actually-stateful-wozniak.md.
+const _BIDI_ZWSP_RE = /[​‌‍‎‏‪-‮⁦-⁩﻿]/g;
+const _DIRECTIVE_VERBS = [
+  // Order: longest-first so RUNTERM matches before RUN.
+  "RUNTERM", "REMEMBER", "CREATE", "READ", "EDIT",
+  "THINK", "DONE", "RUN", "ASK",
+];
+const _SCRUB_REPLACEMENT = "[scrubbed directive]";
+
+function _escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function _verbRe(verb) {
+  return new RegExp(`\\b${_escapeRegex(verb)}\\s*:`, "gi");
+}
+function _spacedVerbRe(verb) {
+  const spaced = verb.split("").map(_escapeRegex).join("[ \\t]");
+  return new RegExp(`\\b${spaced}\\s*:`, "gi");
+}
+const _VERB_PATTERNS = _DIRECTIVE_VERBS.map(_verbRe);
+const _SPACED_VERB_PATTERNS = _DIRECTIVE_VERBS
+  .filter((v) => v.length >= 2)
+  .map(_spacedVerbRe);
+const _BROWSER_RE = /\bBROWSER_[A-Z_]+\s*:/gi;
+const _BLOCK_MARKER_RE = /<<<CONTENT|>>>CONTENT|<<<FIND|>>>FIND|<<<REPLACE|>>>REPLACE/gi;
+// <PLAN READY> matched first so <PLAN> doesn't shadow it.
+const _PLAN_MARKER_RE = /<PLAN READY>|<\/PLAN>|<PLAN>/gi;
+
+function sanitizePageString(text) {
+  if (!text) return text || "";
+  let cleaned = String(text).replace(_BIDI_ZWSP_RE, "");
+  for (const pattern of _VERB_PATTERNS) cleaned = cleaned.replace(pattern, _SCRUB_REPLACEMENT);
+  for (const pattern of _SPACED_VERB_PATTERNS) cleaned = cleaned.replace(pattern, _SCRUB_REPLACEMENT);
+  cleaned = cleaned.replace(_BROWSER_RE, _SCRUB_REPLACEMENT);
+  cleaned = cleaned.replace(_BLOCK_MARKER_RE, _SCRUB_REPLACEMENT);
+  cleaned = cleaned.replace(_PLAN_MARKER_RE, _SCRUB_REPLACEMENT);
+  return cleaned;
+}
+
 function clipText(value, limit) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!limit || text.length <= limit) return text;
@@ -85,13 +129,16 @@ function elementRole(el) {
 }
 
 function elementName(el) {
-  return clipText([
+  const raw = clipText([
     el.getAttribute("aria-label"),
     el.getAttribute("title"),
     el.getAttribute("placeholder"),
     el.value,
     el.textContent
   ].filter(Boolean).join(" "), 120);
+  // Defense-in-depth: scrub directive-shaped tokens before the value leaves
+  // the page. Server re-runs the same sanitizer on receipt.
+  return sanitizePageString(raw);
 }
 
 function selectorFor(el) {
