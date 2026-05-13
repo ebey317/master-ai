@@ -149,6 +149,7 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
         """Same protection for <<<FIND>>>FIND and <<<REPLACE>>>REPLACE."""
         orig_edit = master_ai.confirm_edit
         master_ai.confirm_edit = lambda p, f, r: True
+        # Need a READ before EDIT (P1.6 contract)
         try:
             master_ai.process_reply(
                 "READ: /tmp/notes-test.md\n"

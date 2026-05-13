@@ -44,13 +44,20 @@ def write_summary(
     if findings:
         lines.extend(["", "## Findings"])
         for finding in findings[:50]:
-            lines.append(f"- {finding.summary} risk={finding.risk} ids={', '.join(finding.item_ids[:4])}")
+            count = len(finding.item_ids)
+            lines.append(f"- {finding.summary}")
+            lines.append(f"    safety  : {finding.risk}")
+            lines.append(f"    matches : {count} file(s)")
     if actions:
         lines.extend(["", "## Planned Actions"])
         for action in actions[:100]:
-            lines.append(
-                f"- {action.action_type} lane={action.lane} from `{action.source_path}` to `{action.destination_path}`"
-            )
+            what, why, safety = _plain_action(action)
+            lines.append(f"- **{what}**")
+            lines.append(f"    why     : {why}")
+            lines.append(f"    safety  : {safety}")
+            lines.append(f"    where   : `{action.source_path}`")
+            if action.destination_path:
+                lines.append(f"    moves to: `{action.destination_path}`")
 
     # Storage Waste Report — biggest files, oldest files, by-category
     # breakdown, reclaim totals. No new mutations; pure analytics over

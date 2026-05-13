@@ -225,15 +225,18 @@ def _auto_extract_lesson(target, action=None) -> FireResult:
     audit_kind = (action.get("audit_kind") or "").upper()
     if not blocked_target or not reason:
         return FireResult()
+    # Skip uninteresting / no-lesson cases
     if "POLICY" in audit_kind or "FENCE" in audit_kind:
         return FireResult()
     if "EMPTY" in audit_kind or "MISSING" in audit_kind:
         return FireResult()
+    # Rate limit
     global _EXTRACT_COUNT_SESSION
     with _EXTRACT_LOCK:
         if _EXTRACT_COUNT_SESSION >= _EXTRACT_MAX_PER_SESSION:
             return FireResult()
         _EXTRACT_COUNT_SESSION += 1
+    # Fire async so the user isn't blocked
     import threading
     threading.Thread(
         target=_extract_lesson_worker,
@@ -244,19 +247,21 @@ def _auto_extract_lesson(target, action=None) -> FireResult:
     return FireResult()
 
 
+# Rate-limit globals for the auto-extract hook
 import threading as _threading
 _EXTRACT_LOCK = _threading.Lock()
 _EXTRACT_COUNT_SESSION = 0
 _EXTRACT_MAX_PER_SESSION = 10
-_EXTRACT_LESSON_MODEL = "qwen2.5:3b"
+_EXTRACT_LESSON_MODEL = "qwen2.5:3b"   # fast small model; falls back below
 _EXTRACT_LESSON_TIMEOUT_S = 12
 _EXTRACT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
 
 def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
-    """Background worker — asks the small local model for a one-line
+    """Background worker: asks the small local model for a one-line
     lesson from a blocked action, stores it via confirm_remember() if
-    the model returns something usable. All exceptions swallowed."""
+    the model returns something usable. All exceptions swallowed —
+    failure is invisible by design."""
     prompt = (
         f"A {kind or 'tool'} action was BLOCKED by safeguards.\n"
         f"Action: {target[:200]}\n"
@@ -291,9 +296,13 @@ def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
     lesson_line = (lesson.splitlines() or [""])[0].strip()
     if lesson_line.upper().strip().rstrip(".!:") == "SKIP":
         return
+    # Strip directive prefix if the model wrapped it
     lesson_line = re.sub(r'^\s*REMEMBER:\s*', '', lesson_line, flags=re.IGNORECASE).strip()
+    # Sanity bounds
     if len(lesson_line) < 10 or len(lesson_line) > 200:
         return
+    # Store via master_ai's path so it goes through confirm_remember's
+    # validation + dedup + MEMORY_FILE write.
     try:
         import sys
         import os as _os

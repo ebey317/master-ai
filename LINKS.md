@@ -70,6 +70,7 @@ pasted key belongs to — no "is this Groq?" questions.
 |----------------|---------------------------------------------|-----------------------------------------------------------|
 | **Groq**       | <https://console.groq.com/keys>             | `fast:` prefix · Llama 3.3 70B at ~400 tok/s · daily quota |
 | **OpenRouter** | <https://openrouter.ai/keys>                | `deep:` prefix · DeepSeek R1, Hermes 405B · one key, many models |
+| **Cerebras**   | <https://cloud.cerebras.ai/>                | `cerebras:` prefix · direct gpt-oss-120b provider lane |
 | **Gemini**     | <https://aistudio.google.com/app/apikey>    | Google grounded search · current-events accuracy · vision |
 
 ### Tier B — additional free options (more keys = more fallback paths)
@@ -77,7 +78,6 @@ pasted key belongs to — no "is this Groq?" questions.
 | Provider          | Signup URL                                    | What it adds                                         |
 |-------------------|-----------------------------------------------|------------------------------------------------------|
 | **xAI / Grok**    | <https://console.x.ai/>                       | Free credits · recent training data · current events |
-| **Cerebras**      | <https://cloud.cerebras.ai/>                  | Very fast Llama inference · free tier               |
 | **Hugging Face**  | <https://huggingface.co/settings/tokens>      | Free inference API · thousands of open models        |
 | **Together AI**   | <https://api.together.xyz/>                   | Free credits · open models · decent quota            |
 | **Mistral**       | <https://console.mistral.ai/>                 | Mistral models · free tier                           |

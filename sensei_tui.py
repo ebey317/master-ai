@@ -62,6 +62,7 @@ HISTORY_FILE = str(Path.home() / ".master_ai_history")
 COMMAND_MENU_HINTS = {
     "hub": "open full command menu",
     "help": "quick reference",
+    "controls": "terminal shortcuts and copy/paste rules",
     "tips": "show practical command tips",
     "model": "pick active model",
     "model auto": "return model routing to automatic",
@@ -180,7 +181,7 @@ COMMAND_MENU_HINTS = {
 
 COMMAND_MENU_GROUPS = {
     ",": [
-        "hub", "help", "tips",
+        "hub", "help", "controls", "tips",
         "update", "master update", "refresh", "restart",
         "save session", "load summary", "load session", "transcript", "log",
         "preview", "clear", "clear history", "clear cache",
@@ -282,7 +283,7 @@ class PunctCommandCompleter(Completer):
             )
 
 LEGEND_WORDS = [
-    "hub", "help", "tips", "model", "mode plan", "chats", "tts",
+    "hub", "help", "controls", "tips", "model", "mode plan", "chats", "tts",
     "transcript", "log", "comma", "semicolon", "period", "slash",
     "e=edit label",
 ]
@@ -303,7 +304,9 @@ IDLE_TIPS = [
     "'clear cache' if Sensei is serving the same cached answer",
     "'doctor' shows URLs, services, mode, mouse, and current task",
     "'chats' to browse saved sessions",
-    "'up' / 'down' scrolls output; 'top' / 'bottom' jumps",
+    "PageUp / PageDown scroll output by a full visible page",
+    "'up' / 'down' scroll output; 'top' / 'bottom' jumps",
+    "Shift+Tab opens the settings bucket when input is empty",
     "'mouse remote' for phone scrolling; 'mouse local' for drag-copy",
     "'refresh' soft-reloads the engine; 'kick' forces a supervisor respawn",
     "'e' edits this thread's label",
@@ -934,6 +937,24 @@ class SenseiApp:
         def _paste(event):
             event.current_buffer.insert_text(event.data)
 
+        @kb.add("s-tab", filter=has_focus(self._input))
+        def _shift_tab(event):
+            """Terminal-standard reverse navigation.
+
+            If the completion menu is open, move backward through choices.
+            If the input is empty, open the settings/mode bucket (`;`) so
+            Shift+Tab gives the user a universal "controls/settings" entry
+            without silently changing execution mode.
+            """
+            buf = self._input.buffer
+            state = getattr(buf, "complete_state", None)
+            if state and getattr(state, "completions", None):
+                buf.complete_previous()
+                return
+            if not buf.text:
+                buf.insert_text(";")
+            buf.start_completion(select_first=False)
+
         # Single scroll binding — Shift+Up / Shift+Down. Elijah's pick
         # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
         # modifier, so terminal key-repeat fires continuous Shift+Up
@@ -942,13 +963,13 @@ class SenseiApp:
         @kb.add("s-up")
         @kb.add("pageup")
         def _scroll_up(event):
-            self._scroll_offset += 8
+            self._scroll_offset += max(8, _term_size().lines - 8)
             event.app.invalidate()
 
         @kb.add("s-down")
         @kb.add("pagedown")
         def _scroll_down(event):
-            self._scroll_offset = max(0, self._scroll_offset - 8)
+            self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
             event.app.invalidate()
 
         @kb.add("home")

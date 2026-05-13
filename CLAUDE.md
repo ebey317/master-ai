@@ -1,8 +1,49 @@
 # Master AI Runtime Notes
 
-Last updated: 2026-05-03
+Last updated: 2026-05-11
 
 This repo is Elijah's local-first AI agent stack. It runs standalone on this machine and does not require Claude/Codex relay wiring for normal operation.
+
+
+## 2026-05-11 — P0-P2 roadmap landed
+
+Claude handoff claimed 13 commits, but local `git log` shows 11 P0-P2 commits on top of `22f2e21`. Do not invent missing hashes; if two were squashed, recover from reflog before citing them. The verified local stack is:
+
+| Commit | Summary | Notes |
+|--------|---------|-------|
+| `8919d38` | Pupil HTTP API contract | `stt_server.py` exposes `/health`, `/status`, `/chat`, `/events`, `/mode`, `/voice`; `pupil_api.md` and `test_pupil_api.py` define the contract. |
+| `c1e282a` | Router boundary + golden tests | New `router.route()` / `RouteDecision`; golden tests cover chat/code/filesystem/current events/vision/terminal visual/reasoning/system-query/weather/messy voice; vision negation + system-query harvest recording landed. |
+| `b9ccc2c` | Typed action envelope + jsonl audit | New public surface `typed_actions.TypedAction`; `typed_actions.parse_reply()` and `~/.master_ai_audit_typed.jsonl` provide structured audit records, but executor dispatch still uses legacy regex buckets. |
+| `56e07ca` | Adaptive slicer | Existing symbol slicer now scales context by density and intent; preserves `_extract_target_symbols` / `_slice_around_symbol` path. |
+| `2376cca` | Per-route history budgets | Route-specific prompt budgets reduce local-context drag without changing public prompts. |
+| `c7586d4` | Reasoning surface | Adds `reason fast|standard|deep|max` / `reason:` path over `sensei_reasoning_loop.run_reasoning_loop()`. Outputs must stay inert prose, not executable directives. |
+| `22bf7aa` | Hooks system | New public surface `hooks.fire()` plus config-driven pre/post events. Hook blocks feed `[HOOK BLOCKED]` back into history. |
+| `ca3f813` | Coding task loop | Enforces READ before EDIT and adds syntax verification paths for edited shell/python content. |
+| `3f695ee` | Observability dashboard | New public surface `observability.summarize()`; `stats` command and Pupil `/metrics` summarize route/model/audit/block/fallback data. |
+| `579174a` | Subagent registry + 6 builtins | New public surface `subagent_registry.run()`; builtins include `code_reviewer`, `context_inspector`, `directive_simulator`, `file_finder`, `spend_reporter`, `test_runner`. Subagent outputs are inert JSON, not executable replies. |
+| `3257750` | Read fence + approval TTL/cwd | `_read_path_ok` blocks secret paths/symlink escapes; approval entries have `ts`, `cwd`, and TTL while legacy bare approvals remain compatibility entries. |
+
+### Public surfaces added
+
+- `router.route(history, user_text, image_path=None)` returns a normalized route decision and keeps `master_ai.orchestrate()` behind a small importable boundary.
+- `typed_actions.TypedAction` is the internal action envelope for `RUN`, `RUNTERM`, `READ`, `CREATE`, `EDIT`; current usage is audit/preview, not full dispatch.
+- `hooks.fire(event, action, ...)` is the event hook bus for pre/post tool behavior.
+- `subagent_registry.run(name, task, context=None)` dispatches typed specialized agents and returns inert structured data.
+- `observability.summarize(limit=500)` powers raw CLI `stats` and Pupil `/metrics`.
+
+### Verification notes from Codex
+
+- `bash ~/scripts/sensei_selftest.sh` passed: 110 PASS, 0 WARN, 0 FAIL.
+- `agent_standards_score()` now returns 95; `format_agent_standards()` reports PASS=17 WARN=2 FAIL=0.
+- Remaining WARNs stay honest: `typed tool boundary` remains WARN because `process_reply()` still regex-parses free model text before dispatch; `sandbox boundary` remains WARN because shell commands still run on the user machine without least-privilege process isolation.
+- Do not call this 100/100 or Anthropic-certified until typed dispatch is end-to-end and real sandboxing exists.
+- Live gap found 2026-05-11: raw CLI `agents ...` block references `user_text` before assignment; live Sensei TUI routes `stats`/`/stats`/`agents ...` to the model instead of the command handlers. Fix command-surface routing before deeper executor refactors.
+- Live Pupil gap found 2026-05-11: `/metrics` works after `master-ai-ui.service` restart, but `test_pupil_api.py` crashed the service on `/chat` with `RemoteDisconnected` followed by connection refusals until systemd restart.
+- Dirty working-tree comments in parser/safety tests may still describe the pre-P2.2 WARN set; runtime truth is the standards report, not those stale comments. Preserve dirty pile unless Elijah explicitly asks to clean it.
+
+### Typed tool boundary next phase
+
+Shadow parse started 2026-05-11: `process_reply()` now populates `_LAST_TYPED_ACTIONS` from `typed_actions.parse_reply()` while leaving legacy dispatch unchanged. Next add multi-line CREATE/EDIT coverage to `typed_actions`, source-pin legacy-vs-typed equivalence tests, and flip READ → RUN/RUNTERM → CREATE/EDIT one kind at a time. Remove regex fallback only after live Sensei/Pupil smoke passes.
 
 ## 2026-05-03 — Six-commit routing/policy hardening pass
 

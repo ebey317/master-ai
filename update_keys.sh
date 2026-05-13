@@ -90,6 +90,7 @@ KNOWN = [
     ('groq',        'Groq',              'console.groq.com/keys',                    'Fast free cloud AI — recommended'),
     ('openai',      'OpenAI',            'platform.openai.com/api-keys',             'GPT-4o — most capable'),
     ('openrouter',  'OpenRouter',        'openrouter.ai/keys',                       'Free llama fallback'),
+    ('cerebras',    'Cerebras',          'cloud.cerebras.ai',                        'Direct gpt-oss-120b lane — fast free tier'),
     ('deepseek',    'DeepSeek R1',       'platform.deepseek.com/api-keys',           'Reasoning model — best for complex tasks'),
     ('gumroad',     'Gumroad',           'app.gumroad.com/settings/advanced',        'Sell Master AI — Access Token'),
     ('huggingface', 'HuggingFace',       'huggingface.co/settings/tokens',           'Model downloads'),
@@ -249,6 +250,23 @@ def test_openrouter(k):
     with urllib.request.urlopen(req,timeout=15) as r:
         return json.loads(r.read())['choices'][0]['message']['content'].strip()
 
+def test_cerebras(k):
+    # Try Qwen3-235B preview first (the configured cerebras default);
+    # fall back to llama3.1-8b which is the always-on Cerebras free model
+    # so accounts without preview access still verify green.
+    for model in ('qwen-3-235b-a22b-instruct-2507', 'llama3.1-8b'):
+        p = json.dumps({'model':model,'messages':[{'role':'user','content':'Reply with exactly two words: key working'}],'max_tokens':10,'stream':False}).encode()
+        req = urllib.request.Request('https://api.cerebras.ai/v1/chat/completions',data=p,
+            headers={'Content-Type':'application/json','Authorization':f'Bearer {k}','User-Agent':'python-requests/2.31.0'})
+        try:
+            with urllib.request.urlopen(req,timeout=15) as r:
+                return json.loads(r.read())['choices'][0]['message']['content'].strip() + f' [{model}]'
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                continue
+            raise
+    raise RuntimeError('no usable Cerebras model for this account')
+
 def test_deepseek(k):
     p = json.dumps({'model':'deepseek-reasoner','messages':[{'role':'user','content':'Reply with exactly two words: key working'}],'max_tokens':10,'stream':False}).encode()
     req = urllib.request.Request('https://api.deepseek.com/v1/chat/completions',data=p,
@@ -256,7 +274,7 @@ def test_deepseek(k):
     with urllib.request.urlopen(req,timeout=60) as r:
         return json.loads(r.read())['choices'][0]['message']['content'].strip()
 
-tests = {'groq':test_groq,'gemini':test_gemini,'anthropic':test_anthropic,'openai':test_openai,'openrouter':test_openrouter,'deepseek':test_deepseek}
+tests = {'groq':test_groq,'gemini':test_gemini,'anthropic':test_anthropic,'openai':test_openai,'openrouter':test_openrouter,'cerebras':test_cerebras,'deepseek':test_deepseek}
 # Alternate-slot support: 'groq_routing' / 'openrouter_backup' / etc. →
 # strip the suffix and test against the parent service.
 base_field = field
@@ -351,9 +369,10 @@ main() {
                     echo -e "  ${Y}11)${W} Serper         ${D}serper.dev${X}"
                     echo -e "  ${Y}12)${W} xAI / Grok     ${D}console.x.ai${X}"
                     echo -e "  ${Y}13)${W} Fireworks AI   ${D}fireworks.ai${X}"
-                    echo -e "  ${Y}14)${W} Other (custom name)${X}"
+                    echo -e "  ${Y}14)${W} Cerebras AI    ${D}cloud.cerebras.ai${X}"
+                    echo -e "  ${Y}15)${W} Other (custom name)${X}"
                     echo ""
-                    echo -ne "  ${C}Choose (1-14): ${X}"
+                    echo -ne "  ${C}Choose (1-15): ${X}"
                     read -r SVC_CHOICE
                     case "$SVC_CHOICE" in
                         1)  FIELD="groq";         LABEL="Groq" ;;
@@ -369,7 +388,8 @@ main() {
                         11) FIELD="serper";       LABEL="Serper" ;;
                         12) FIELD="xai";          LABEL="xAI / Grok" ;;
                         13) FIELD="fireworks";    LABEL="Fireworks AI" ;;
-                        14)
+                        14) FIELD="cerebras";     LABEL="Cerebras AI" ;;
+                        15)
                             echo -ne "  ${C}Service name (lowercase, no spaces): ${X}"
                             read -r FIELD
                             LABEL="$FIELD"

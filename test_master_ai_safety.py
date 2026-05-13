@@ -423,6 +423,8 @@ class StandardsReportSurfacesGapsTests(_Base):
     def test_output_caps_is_pass(self):
         # P2.3 documented the existing caps: READ slice cap 8000 chars
         # per file, tool RESULT cap 12000 chars in _format_tool_result.
+        # Char caps == byte caps for ASCII and safe over-estimate for
+        # UTF-8 multibyte; no traversal risk from byte miscount.
         report = master_ai.format_agent_standards()
         pass_block = [
             line
@@ -438,7 +440,8 @@ class StandardsReportSurfacesGapsTests(_Base):
         # P2.2 landed is_approved() + save_approved(cwd, scope) with TTL
         # (24h default) + cwd scope. Legacy bare-command lines preserved
         # as match-everywhere/no-expiry so existing user approvals still
-        # work (graceful migration).
+        # work (graceful migration). Test was test_approval_expiry_stays_warn
+        # pre-P2.2.
         report = master_ai.format_agent_standards()
         pass_block = [
             line
@@ -485,10 +488,10 @@ class WeightedScoreTests(_Base):
             score,
             95,
             "Score above 95 means a remaining-work WARN was promoted without "
-            "evidence; check that typed-tool-boundary/sandbox-boundary have "
-            "actually shipped before claiming Anthropic-grade. P2.3 + P2.2 "
-            "raised the floor from 87→95 (read fence + output caps + approval "
-            "TTL); a real sandbox + typed-only executor needed for 100.",
+            "evidence; check that typed-tool-boundary/sandbox-boundary/"
+            "approval-expiry have actually shipped before claiming "
+            "Anthropic-grade. P2.3 raised the floor from 87→92 (read fence + "
+            "output caps); P2.2 + a real sandbox would be needed for 100.",
         )
 
     def test_score_not_rendered_as_fail_line(self):

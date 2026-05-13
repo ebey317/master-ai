@@ -727,10 +727,11 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertEqual(self.calls[2], ("runterm", "bash /tmp/sensei-visual.sh"))
 
     def test_agent_standards_reports_gaps_without_certifying(self):
-        # P2.3 + P2.2 flipped three WARNs to PASS by shipping
-        # _read_path_ok + the existing 8000/12000-char caps + is_approved
-        # TTL/cwd. Two WARNs remain by honest-claim rule: typed tool
-        # boundary and sandbox boundary (no real isolation yet).
+        # P2.3 flipped read-path-fence + output-caps to PASS by shipping
+        # _read_path_ok + documenting the existing 8000/12000-char caps.
+        # Three WARNs remain: typed tool boundary, sandbox boundary,
+        # approval expiry. The first two are honest-claim holds per
+        # feedback_real_fixes_not_option_menus.md.
         report = master_ai.format_agent_standards()
         self.assertIn("Not an Anthropic certification", report)
         self.assertIn("SCORE", report)

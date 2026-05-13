@@ -43,6 +43,17 @@ Local mode is the system default. Cloud is opt-in: `fast:` / `deep:` prefix per-
 
 ---
 
+## Interaction Standards
+
+Sensei and Pupil share one product identity but they do NOT share one low-level control model:
+
+- **Sensei is terminal/TUI.** It follows established terminal, tmux, and prompt_toolkit conventions: Tab / Shift+Tab completion, PageUp / PageDown page scrolling, Home / End jump, Up / Down command history, terminal-owned Ctrl+Shift+C / Ctrl+Shift+V copy/paste, and `mouse local` to preserve drag-select/right-click copy.
+- **Pupil is browser/web.** It follows established HTML/browser conventions: native Tab / Shift+Tab focus order, visible focus states, right-click context menu, Ctrl+C / Ctrl+V copy/paste, touch/long-press selection, browser scrolling, and form/dialog behavior.
+
+Do not reinvent platform controls. Add product-specific behavior on top of the host surface, not instead of it. The source-of-truth contract is `~/scripts/INTERACTION_STANDARDS.md`; user-facing discovery is `controls` / `shortcuts` in Sensei and the Shortcuts panel in Pupil.
+
+---
+
 ## Routing
 
 Requests are classified and routed:

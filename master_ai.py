@@ -77,9 +77,9 @@ try:
     atexit.register(readline.write_history_file, _HIST)
 
     _COMPLETIONS = [
-        "hub", "menu", "home", "help", "tips", "model", "model auto", "model local", "model stats",
+        "hub", "menu", "home", "help", "controls", "shortcuts", "tips", "model", "model auto", "model local", "model stats",
         "model master-ai", "model qwen", "model qwen2.5:3b", "model llava",
-        "model groq", "model fireworks", "model deepseek-r1", "model hermes-405b",
+        "model groq", "model fireworks", "model cerebras", "model deepseek-r1", "model hermes-405b",
         "model gpt-oss-120b", "model nemotron", "model qwen3-coder", "model gemini",
         "model openrouter", "model openai", "model anthropic",
         "mode plan", "mode review", "mode auto",
@@ -92,7 +92,7 @@ try:
         "mouse remote", "mouse local", "mouse status",
         "projects", "apps", "autotips", "slideshow", "tour",
         "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
-        "commands", "?",
+        "commands", "controls", "shortcuts", "?",
         "tts on", "tts off", "tts",
         "hints", "project", "attach ", "search ", "dl ", "image: ", "image status ", "image latest",
         "git", "git status",
@@ -271,6 +271,7 @@ MODEL_MENU = [
     # ── CLOUD (free tiers — tokens tracked) ──
     ("groq",               "☁ FREE · Llama 3.3 70B — fastest"),
     ("fireworks",          "☁ BYOK · DeepSeek V3.1 — Fireworks"),
+    ("cerebras",           "☁ FREE · Qwen3-235B preview — Cerebras direct"),
     ("deepseek-r1",        "☁ FREE · DeepSeek R1 — reasoning"),
     ("hermes-405b",        "☁ FREE · Hermes 405B — biggest free model"),
     ("gpt-oss-120b",       "☁ FREE · GPT-OSS 120B — OpenAI open source"),
@@ -285,6 +286,7 @@ MODEL_MENU = [
 CLOUD_MODEL_KEYS = {
     "groq": "groq",
     "fireworks": "fireworks",
+    "cerebras": "cerebras",
     "deepseek-r1": "openrouter",
     "hermes-405b": "openrouter",
     "gpt-oss-120b": "openrouter",
@@ -2347,8 +2349,11 @@ def orchestrate(history, user_text, image_path=None):
     keys_now = load_keys()
     have_groq   = bool((keys_now.get('groq') or '').strip())
     have_fireworks = bool((keys_now.get('fireworks') or '').strip())
+    have_cerebras = bool((keys_now.get('cerebras') or '').strip())
     have_or     = bool((keys_now.get('openrouter') or '').strip())
     have_gemini = bool((keys_now.get('gemini') or '').strip())
+    # Cerebras is intentionally opt-in for now (`cerebras:` / `model cerebras`),
+    # not part of the automatic cloud fallback policy.
     any_cloud   = have_groq or have_fireworks or have_or or have_gemini
 
     # 1. Context pressure — save & refresh before we blow context
@@ -2380,6 +2385,10 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "cloud", "model": "fireworks",
                 "stripped_text": stripped[10:].strip(),
                 "reason": "explicit 'fireworks:' → Fireworks"}
+    if low.startswith("cerebras:") and have_cerebras:
+        return {"route": "cloud", "model": "cerebras",
+                "stripped_text": stripped[9:].strip(),
+                "reason": "explicit 'cerebras:' → Cerebras"}
     if low.startswith("deep:"):
         if have_or:
             return {"route": "cloud_deep", "model": "deepseek-r1",
@@ -3652,7 +3661,7 @@ def ask_local(messages, model=None, image_path=None):
             result = json.loads(resp.read())
             response_text = result["message"]["content"]
             # Harvest this call so future identical questions don't re-run it
-            if harvest is not None and response_text:
+            if harvest is not None and response_text and not image_path:
                 try:
                     last_user = next((m.get("content", "") for m in reversed(messages)
                                       if m.get("role") == "user"), "")
@@ -3947,7 +3956,7 @@ def ask_local_stream(messages, model=None, image_path=None):
             mm, ss = divmod(int(total_s), 60)
             print(f"{D}  [local timing] ttft={ttft_s:.1f}s total={mm}:{ss:02d}{X}")
         # Harvest this call — streaming or not, the assembled answer is the payload
-        if harvest is not None and result:
+        if harvest is not None and result and not image_path:
             try:
                 last_user = next((m.get("content", "") for m in reversed(messages)
                                   if m.get("role") == "user"), "")
@@ -4303,6 +4312,66 @@ def _ask_openrouter(messages, model, label, timeout=60):
             _cloud_trip_network(e, 60)
         return None
 
+def _ask_cerebras(messages, model, label, timeout=60):
+    """Generic Cerebras caller with token tracking."""
+    provider_key = f"cerebras/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("cerebras")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [cerebras/{label}]")
+    payload = {"model": model, "messages": messages}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://api.cerebras.ai/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            tokens = result.get("usage", {}).get("total_tokens", 0)
+            if tokens:
+                try:
+                    kf = str(Path.home() / ".master_ai_keys")
+                    with open(kf) as _rf:
+                        kd = json.load(_rf)
+                    from datetime import date as _d
+                    today = _d.today().isoformat()
+                    if kd.get("cerebras_tokens_date") != today:
+                        kd["cerebras_tokens_today"] = 0
+                        kd["cerebras_tokens_date"] = today
+                    kd["cerebras_tokens_today"] = kd.get("cerebras_tokens_today", 0) + tokens
+                    with open(kf, "w") as _wf:
+                        json.dump(kd, _wf, indent=2)
+                    os.chmod(kf, 0o600)
+                except Exception:
+                    pass
+            return result["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
+                429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"CEREBRAS_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        elif code == 404:
+            _cloud_trip(provider_key, "model unavailable", 300)
+        return None
+    except Exception as e:
+        log(f"CEREBRAS_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+def ask_cloud_cerebras(messages):
+    return _ask_cerebras(messages, "qwen-3-235b-a22b-instruct-2507", "qwen3-235b", timeout=60)
+
+def ask_cloud_cerebras_llama8b(messages):
+    return _ask_cerebras(messages, "llama3.1-8b", "llama3.1-8b", timeout=30)
+
 def ask_cloud_openrouter_405b(messages):
     return _ask_openrouter(messages, "nousresearch/hermes-3-llama-3.1-405b:free", "hermes-405B", timeout=90)
 
@@ -4342,6 +4411,7 @@ def ask_cloud(messages, provider="groq"):
     fn_map = {
         "groq":         ask_cloud_groq,
         "fireworks":    ask_cloud_fireworks_dsv3,
+        "cerebras":     ask_cloud_cerebras,
         "deepseek-r1":  ask_cloud_openrouter_r1,
         "gemini":       ask_cloud_gemini,
         "hermes-405b":  ask_cloud_openrouter_405b,
@@ -4372,10 +4442,16 @@ def ask_cloud(messages, provider="groq"):
     if r:
         _record(r, provider)
         return r
+    provider_fallbacks = []
+    if provider == "cerebras":
+        # Qwen3-235B is a preview model on Cerebras — drop to the always-on
+        # llama3.1-8b on the same provider before leaving the lane.
+        provider_fallbacks.append(("cerebras-llama8b", ask_cloud_cerebras_llama8b))
+
     # Prefer providers that have actually been succeeding for this setup.
     # OpenRouter free models have been returning 404/rate-limit bursts, while
     # Fireworks has been the most reliable cloud lane in recent metrics.
-    fallback_order = [
+    fallback_order = provider_fallbacks + [
         ("fireworks",   ask_cloud_fireworks_dsv3),
         ("groq",        ask_cloud_groq),
         ("gemini",      ask_cloud_gemini),
@@ -4385,7 +4461,11 @@ def ask_cloud(messages, provider="groq"):
         ("gpt-oss-120b",ask_cloud_openrouter_gptoss),
         ("openrouter",  ask_cloud_openrouter),
     ]
+    seen_fallbacks = set()
     for used_model, fn in fallback_order:
+        if used_model in seen_fallbacks:
+            continue
+        seen_fallbacks.add(used_model)
         _t0 = time.time()
         r = fn(messages)
         _router_metric("model_call", model=used_model, route="cloud",
@@ -4567,6 +4647,7 @@ _ROUTE_HISTORY_BUDGETS = {
     "vision":    12000,    # local llava
     "default":   28000,    # legacy local cap (pre-P1.2)
 }
+
 
 # Dispatch table for non-local routes. Lookup form (not `if` chain) keeps
 # route name literals out of `if`-branch bodies, which the auto-context
@@ -5039,6 +5120,7 @@ def _parse_approved_line(line):
     if not line.strip():
         return None
     if "\t" not in line:
+        # Legacy bare command.
         return (0, _APPROVED_GLOBAL_SCOPE, line)
     parts = line.split("\t", 2)
     if len(parts) != 3:
@@ -5093,6 +5175,7 @@ def is_approved(cmd, cwd=None, max_age_s=_APPROVED_DEFAULT_TTL_S):
         if entry_cmd != cmd:
             continue
         if ts == 0:
+            # Legacy bare line — match-everywhere, no-expiry.
             return True
         if entry_cwd not in (_APPROVED_GLOBAL_SCOPE, cwd):
             continue
@@ -5113,6 +5196,8 @@ def save_approved(cmd, cwd=None, scope="cwd"):
         existing = APPROVED_FILE.read_text().splitlines()
     except Exception:
         existing = []
+    # De-dupe: drop any prior entry with the same cmd+cwd. Keeps the
+    # file from growing forever; TTL refresh works by re-writing.
     keep = []
     for line in existing:
         parsed = _parse_approved_line(line)
@@ -5618,7 +5703,7 @@ def run_tutorial():
         ("Projects",
          "project ~/myapp\n  → sets the active project; I'll scan the file structure\n  → all my commands will run relative to that directory"),
         ("Scrolling the chat",
-         "up          → scroll chat output up one page (typed word)\ndown        → scroll down one page\nup 3        → scroll up 3 pages\ntop         → jump to the oldest message\nbottom      → jump back to the latest (auto-follow)\nlast        → re-print the last AI reply inline\n\nThe input box stays pinned at the bottom — scrolling never moves your cursor.\nOn a phone where mouse wheel is unreliable, typed words work every time."),
+         "PageUp      → scroll chat output up one visible page\nPageDown    → scroll down one visible page\nup          → scroll up one page (typed word)\ndown        → scroll down one page\nup 3        → scroll up 3 pages\ntop         → jump to the oldest message\nbottom      → jump back to the latest (auto-follow)\nlast        → re-print the last AI reply inline\n\nThe input box stays pinned at the bottom — scrolling never moves your cursor.\nOn a phone where mouse wheel is unreliable, typed words work every time."),
         ("Hints and Help",
          "help        → quick reference card\nhints off   → disable these tips\nhints on    → re-enable tips\ntutorial    → replay this walkthrough"),
     ]
@@ -5766,7 +5851,7 @@ def show_model_menu():
     else:
         print(f"{BC}  ║{X}  {C}Routing: {G}AUTO{X}  {D}(smart routing by task type){X}")
     print(f"{BC}  ╚{'═'*width}╝{X}")
-    print(f"\n  {D}Direct commands: model local · model groq · model deepseek-r1 · model stats · model auto{X}\n")
+    print(f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}\n")
     choice = input(f"  {C}Select (1-{len(MODEL_MENU)} or auto): {X}").strip().lower()
     if choice in ("auto", "a", ""):
         ok, msg = _pin_model_choice("auto")
@@ -6266,6 +6351,8 @@ def show_help():
             ("v",                    "record voice (5 sec)"),
             ("r <secs>",             "record for N seconds"),
             ("<text> + Enter",       "send message directly — no prefix needed"),
+            ("Tab / Shift+Tab",      "complete forward/backward through choices"),
+            ("PageUp / PageDown",    "scroll output by one visible page"),
             (", ; . /",              "punctuation buckets to explore"),
             ("↑ / ↓",               "scroll command history"),
             ("← →",                 "move cursor within line"),
@@ -6326,11 +6413,24 @@ def show_help():
             ("clear approved",       "wipe auto-approved list"),
         ]),
         ("HOW TO SCROLL", [
+            ("PageUp",               "scroll up one visible page"),
+            ("PageDown",             "scroll down one visible page"),
             ("up",                   "scroll up one page"),
             ("down",                 "scroll down one page"),
             ("top",                  "jump to the beginning"),
             ("bottom",               "jump to latest"),
             ("copy",                 "copy last AI reply to clipboard"),
+            ("mouse local",          "terminal drag-select/right-click copy"),
+            ("mouse remote",         "phone/RustDesk scrolling and taps"),
+        ]),
+        ("CONTROLS", [
+            ("controls",             "show the full Sensei/Pupil control map"),
+            ("Sensei",               "terminal/TUI: tmux, prompt_toolkit, terminal copy"),
+            ("Pupil",                "browser/web: HTML focus, right-click, touch, copy/paste"),
+            ("Ctrl+Shift+C/V",       "terminal copy/paste; Sensei should not steal it"),
+            ("Shift+Insert",         "terminal paste fallback where supported"),
+            ("Pupil Ctrl+C/V",       "native browser copy/paste"),
+            ("Pupil Tab order",      "native browser focus order and visible focus"),
         ]),
         ("RECOVERY", [
             ("doctor",               "live health card: services, URLs, mode, mouse, task"),
@@ -6346,6 +6446,7 @@ def show_help():
             ("hints on / off",       "toggle contextual tips"),
             ("tutorial",             "replay the feature walkthrough"),
             ("help",                 "show this card"),
+            ("controls",             "show terminal + browser control standards"),
             ("help hide <name>",     "hide a slide (e.g. 'help hide SCROLL')"),
             ("help show <name>",     "re-enable a hidden slide"),
             ("help reset",           "show every slide again"),
@@ -6504,6 +6605,7 @@ def show_tips():
     row("approved",        "show auto-approved command list")
     row("clear approved",  "wipe approved commands (AI will ask again)")
     row("accessibility",   "toggle no-mouse / phone mode settings")
+    row("controls",        "terminal + browser copy/paste, scroll, and focus rules")
     row("help",            "full command reference card")
     row("tips",            "this screen")
     row("x",               "exit (saves session automatically)")
@@ -6512,6 +6614,8 @@ def show_tips():
     section("POWER TIPS")
     blank()
     row("Tab",             "auto-complete any command; punctuation buckets narrow faster")
+    row("Shift+Tab",       "reverse completion; empty input opens settings bucket")
+    row("PageUp/PageDown", "scroll the Sensei output by one visible page")
     row("↑ / ↓",          "scroll through command history")
     row("file mentions",   "AI auto-reads files you name in your message")
     row("RUN: / READ:",    "AI can run commands and read files for you")
@@ -6531,6 +6635,7 @@ def show_commands():
         ("Just type", "Ask for anything in plain English"),
         ("hub / menu / home", "open the full command menu"),
         ("help", "quick reference"),
+        ("controls", "terminal + browser control standards"),
         ("tips", "practical command tips"),
         ("mode plan", "Think first. Nothing runs until you approve"),
         ("mode review", "Ask before each file edit or command"),
@@ -6561,6 +6666,37 @@ def show_commands():
         print(f"{BC}  ║{X}  {Y}{cmd:<19}{X} {C}{desc:<42}{X}{BC}║{X}")
     print(f"{BC}  ╚{'═' * width}╝{X}")
     print(f"  {D}Tip: you can ignore commands and just say what you want built.{X}\n")
+
+def show_controls():
+    """Standards-based control map for Sensei and Pupil.
+
+    Sensei is terminal/TUI. Pupil is browser/web. They share product language,
+    not the same low-level input model.
+    """
+    rows = [
+        ("Sensei", "terminal/TUI controls; respects tmux and terminal copy/paste"),
+        ("Pupil", "browser controls; normal HTML, right-click, touch, Tab order"),
+        ("Tab", "complete commands / move through visible terminal choices"),
+        ("Shift+Tab", "move backward in choices; empty input opens settings bucket"),
+        ("PageUp/PageDown", "scroll Sensei output by one visible page"),
+        ("Home/End", "jump Sensei output to top / bottom"),
+        ("Up/Down", "input command history in Sensei"),
+        ("mouse local", "terminal drag-select, right-click, Ctrl+Shift+C/V copy/paste"),
+        ("mouse remote", "phone/RustDesk wheel scrolling and taps inside Sensei"),
+        ("Ctrl+Shift+C/V", "terminal emulator copy/paste; Sensei must not steal it"),
+        ("Shift+Insert", "terminal paste fallback where supported"),
+        ("Pupil copy/paste", "native browser Ctrl+C/Ctrl+V, right-click, long-press"),
+        ("Pupil Tab", "native browser focus order; Shift+Tab moves backward"),
+    ]
+    width = 78
+    print(f"\n{BC}  ╔{'═' * width}╗{X}")
+    print(f"{BC}  ║{X}  {BW}MASTER AI — Interaction Standards{X}{' ' * (width - 35)}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * width}╣{X}")
+    for key, desc in rows:
+        print(f"{BC}  ║{X}  {Y}{key:<18}{X} {C}{_fit_text(desc, 55):<55}{X}{BC}║{X}")
+    print(f"{BC}  ╚{'═' * width}╝{X}")
+    print(f"  {D}Source: ~/scripts/INTERACTION_STANDARDS.md{X}")
+    print(f"  {D}Rule: do not reinvent platform controls; use the standard surface behavior.{X}\n")
 
 def show_buckets():
     """Quick reference for the punctuation command buckets."""
@@ -7753,7 +7889,9 @@ def agent_standards_checks():
 
     # P2.3 landed output caps. READ slice capped at 8000 chars per file;
     # tool output (RUN/RUNTERM result feedback) capped at 12000 chars
-    # in _format_tool_result.
+    # in _format_tool_result. Char caps are byte caps for ASCII and a
+    # safe over-estimate for UTF-8 multibyte (no path-traversal risk
+    # from byte miscount).
     add("PASS",
         "output caps",
         "READ slice cap 8000 chars/file; tool RESULT cap 12000 chars in _format_tool_result")
@@ -7852,7 +7990,7 @@ def show_doctor():
     mem_count = _doctor_count_lines(MEMORY_FILE)
     approved_count = _doctor_count_lines(APPROVED_FILE)
     task_count = active_task_count()
-    cloud_count = sum(1 for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'] if KEYS.get(k))
+    cloud_count = sum(1 for k in ['anthropic', 'cerebras', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'] if KEYS.get(k))
     tts_pref = "ON" if TTS_ENABLED else "OFF"
     probe_rows = []
 
@@ -8669,6 +8807,22 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         return out
 
     lines = _join_shell_continuations(raw_lines)
+
+    # Typed-tool-boundary migration, phase 1: shadow parse only.
+    # Keep legacy dispatch unchanged while exposing the parsed TypedAction
+    # envelopes for tests/observability and future kind-by-kind flips.
+    try:
+        import typed_actions as _ta
+        typed_shadow = _ta.parse_reply(
+            "\n".join(lines),
+            model=globals().get("_LAST_MODEL", ""),
+            cwd=os.getcwd(),
+        )
+        globals()["_LAST_TYPED_ACTIONS"] = [a.to_dict() for a in typed_shadow]
+        globals()["_LAST_TYPED_ACTIONS_ERROR"] = ""
+    except Exception as e:
+        globals()["_LAST_TYPED_ACTIONS"] = []
+        globals()["_LAST_TYPED_ACTIONS_ERROR"] = str(e)
 
     # Strip surrounding backticks/quotes from extracted commands — local
     # models sometimes wrap commands in `backticks` or 'quotes'. Shell
@@ -9599,9 +9753,9 @@ def startup_check():
               f"{_count(APPROVED_FILE)} auto-approved commands{X}")
 
     # Cloud keys
-    cloud_ok = any(KEYS.get(k) for k in ['anthropic', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'])
+    cloud_ok = any(KEYS.get(k) for k in ['anthropic', 'cerebras', 'deepseek', 'fireworks', 'gemini', 'groq', 'openai', 'openrouter'])
     if cloud_ok and not tui_mode:
-        print(f"  {G}✅ Cloud AI     {C}keys loaded (Groq / Fireworks / OpenAI / OpenRouter){X}")
+        print(f"  {G}✅ Cloud AI     {C}keys loaded (Groq / Fireworks / Cerebras / OpenAI / OpenRouter){X}")
     elif not cloud_ok:
         print(f"  {Y}⚠  Cloud AI     {C}no keys found — local Ollama only{X}")
 
@@ -11425,6 +11579,10 @@ def main():
             show_commands()
             continue
 
+        if lo in ("controls", "shortcuts", "keyboard shortcuts", "terminal controls"):
+            show_controls()
+            continue
+
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -12205,7 +12363,7 @@ def main():
 
         # ── Keys ──────────────────────────────────────────────
         if lo == "keys":
-            known = [('groq','Groq'),('fireworks','Fireworks'),('gemini','Gemini'),
+            known = [('groq','Groq'),('fireworks','Fireworks'),('cerebras','Cerebras'),('gemini','Gemini'),
                      ('openrouter','OpenRouter'),('openai','OpenAI'),('anthropic','Anthropic'),
                      ('deepseek','DeepSeek'),('gumroad','Gumroad')]
             print(f"\n{C}  API Keys:{X}")
@@ -12293,6 +12451,34 @@ def main():
                 print(f"  {C}Cloud send: {pending}{X}\n")
             else:
                 print(f"\n  {G}🔓 Turn not marked private. Cloud sends unrestricted.{X}\n")
+            continue
+
+        # ── Job Seeker — personal job application wizard ────────
+        # Spawns ~/scripts/jobseeker.sh in a new gnome-terminal window.
+        # Wizard reads ~/jobseeker/profile.yaml, asks the per-job 4-5
+        # questions, generates a tailored cover via master-ai, builds
+        # the portfolio packet + answer sheet under ~/jobseeker/.
+        if lo in ("jobseeker", "job seeker"):
+            script = os.path.expanduser("~/scripts/jobseeker.sh")
+            if not os.path.isfile(script):
+                print(f"  {W}Job Seeker not installed at {script}{X}\n")
+                continue
+            try:
+                subprocess.Popen(
+                    ["gnome-terminal", "--title=Job Seeker",
+                     "--geometry=100x32", "--",
+                     "bash", "-c",
+                     f"{script}; echo; read -p 'Press Enter to close...'"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                print(f"\n  {G}🥷 Job Seeker launching in a new terminal window…{X}")
+                print(f"  {C}Asks: company, job title, posting (optional), distance, start date.{X}")
+                print(f"  {C}Output saved under ~/jobseeker/ (cover + packet PDF + answer sheet).{X}\n")
+            except FileNotFoundError:
+                print(f"  {W}gnome-terminal not found — fallback: bash {script}{X}\n")
+            except Exception as e:
+                print(f"  {W}Job Seeker failed to launch: {e}{X}\n")
             continue
 
         if lo in ("router", "router stats"):
