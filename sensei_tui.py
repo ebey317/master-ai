@@ -970,9 +970,19 @@ class SenseiApp:
             except ValueError:
                 idx = -1
             nxt = cycle[(idx + 1) % len(cycle)]
-            buf.text = f"mode {nxt}"
-            buf.cursor_position = len(buf.text)
-            buf.validate_and_handle()
+            # Mirror the Enter handler's submit path (line 854 _submit) — the
+            # buffer's accept_handler isn't wired, so validate_and_handle()
+            # is a no-op here. We have to dispatch through self._on_submit
+            # directly, same as a real Enter press would.
+            text = f"mode {nxt}"
+            self._input.text = ""
+            self._scroll_offset = 0
+            self.write(f"\n\033[1m> {text}\033[0m\n")
+            if self._on_submit:
+                t = threading.Thread(
+                    target=self._safe_dispatch, args=(text,), daemon=True,
+                )
+                t.start()
 
         # Single scroll binding — Shift+Up / Shift+Down. Elijah's pick
         # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
