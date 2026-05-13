@@ -1,0 +1,21 @@
+# A/B prompt set for few-shot harness.
+# One prompt per line. Blanks and # lines are skipped.
+# Aim: provoke directive-shape (RUN/READ/CREATE/EDIT) where the local
+# 7b historically describes in prose. Plus a couple of pure-chat controls.
+
+# --- Directive-edit asks (should emit EDIT:) ---
+Add a docstring to the top of ~/scripts/harvest.py explaining what the lookup() threshold means.
+Change the timeout in ask_local from 600 to 720 in master_ai.py.
+
+# --- Directive-create asks (should emit CREATE:) ---
+Write a one-shot bash script at ~/scripts/show_harvest_size.sh that prints the line count and byte size of ~/.master_ai_harvest.jsonl.
+Create a Python file at /tmp/hello_voice.py that prints "hello, Elijah" three times.
+
+# --- System-state queries (should emit RUN:) ---
+Where is the master_ai.py file on this machine?
+What is currently using port 8080?
+Is ollama running right now?
+
+# --- Pure chat / opinion (control — must NOT emit a directive) ---
+In one sentence, what's the difference between a router and an orchestrator in this codebase?
+Why does Master AI use a local model by default instead of cloud?
