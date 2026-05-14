@@ -197,9 +197,18 @@ function appendWarning(text) {
   appendMessage("error", `⚠ ${text}`);
 }
 
-function maybeWarnSilentClaim(reply, actions) {
+// DONE: directives at column 0 mean the loop terminated cleanly; the
+// model is reporting on already-completed actions, not trying to emit
+// new ones. False-positives in those rounds (e.g., "DONE: Screenshot
+// captured successfully") were firing the warning even though the
+// actual action already ran in an earlier round.
+const DONE_DIRECTIVE_RE = /^\s*DONE:\s*\S/m;
+
+function maybeWarnSilentClaim(reply, actions, data) {
   if (Array.isArray(actions) && actions.length > 0) return;
   const text = String(reply || "");
+  if (DONE_DIRECTIVE_RE.test(text)) return;
+  if (data && (data.done === true || data.terminal_reason)) return;
   if (!CLAIMED_BROWSER_ACTION_RE.test(text)) return;
   appendWarning(
     "Model claimed a browser action but didn't emit a directive. " +
@@ -687,7 +696,7 @@ async function sendPrompt() {
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
     await renderActions(data.actions || [], data.blocked_actions || []);
-    maybeWarnSilentClaim(data.reply, data.actions || []);
+    maybeWarnSilentClaim(data.reply, data.actions || [], data);
     setConnection("Backend ready");
   } catch (err) {
     appendError(err.message);
@@ -796,7 +805,7 @@ async function continueLoop() {
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
     await renderActions(data.actions || [], data.blocked_actions || []);
-    maybeWarnSilentClaim(data.reply, data.actions || []);
+    maybeWarnSilentClaim(data.reply, data.actions || [], data);
     if (!(data.actions || []).length) {
       resetLoop();
       setConnection("Backend ready");
