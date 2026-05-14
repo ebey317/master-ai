@@ -1150,6 +1150,39 @@ class DirectiveParserTests(unittest.TestCase):
         finally:
             master_ai.load_memory = orig
 
+    def test_chrome_extension_envelope_does_not_misroute_to_link_lookup(self):
+        # Witnessed 2026-05-14: "can you fill out an application from start to
+        # finish?" on indeed.com routed to link_lookup because the envelope-wide
+        # word_set / low picked up "url:", `link "..."` aria labels, "Learn
+        # more", and "find" from [BROWSER PAGE CONTEXT] chrome — the user's
+        # actual prompt had none of those words. Sibling to commit 3c83e8e
+        # which patched the explicit-prefix half of the same envelope-leak
+        # trap. Routing must consult only the [USER PROMPT] section for
+        # content-based shortcircuits.
+        envelope = (
+            "[API REQUEST]\n"
+            "source: chrome_extension\n"
+            "Branch B: do not execute local machine or browser actions inside the backend request.\n"
+            "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.\n"
+            "\n"
+            "[BROWSER PAGE CONTEXT]\n"
+            "url: https://www.indeed.com/\n"
+            "title: Job Search | Indeed\n"
+            "interactive_elements: 1. link \"Indeed Home\" selector=#indeed-globalnav-logo\n"
+            "2. link \"My jobs\" selector=a\n"
+            "3. link \"Messages\" selector=a\n"
+            "4. link \"Learn more\" selector=a\n"
+            "visible_text: Home Find salaries Show me jobs Learn more Find a job url\n"
+            "\n"
+            "[USER PROMPT]\n"
+            "can you fill out an application from start to finish?"
+        )
+        decision = master_ai.orchestrate([], envelope)
+        self.assertNotEqual(
+            decision.get("route"), "link_lookup",
+            f"router misrouted form-fill prompt to link_lookup; envelope chrome words leaked. decision={decision!r}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

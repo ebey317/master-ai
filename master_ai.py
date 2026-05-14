@@ -2441,6 +2441,8 @@ def orchestrate(history, user_text, image_path=None):
     else:
         user_section = stripped
     user_section_low = user_section.lower()
+    user_section_words = user_section.split()
+    user_section_word_set = set(w.lower().strip(".,!?") for w in user_section_words)
 
     def _strip_prefix(prefix_len):
         """Return user_text with the leading routing prefix removed from
@@ -2556,7 +2558,7 @@ def orchestrate(history, user_text, image_path=None):
                 "synth_reply": desk_synth,
                 "reason": "desktop-app launch pattern → synthesized RUN: directive (registry-handled)"}
 
-    if _looks_link_lookup(low, word_set):
+    if _looks_link_lookup(user_section_low, user_section_word_set):
         return {"route": "link_lookup",
                 "query": stripped,
                 "reason": "link/source request → live search, no guessed URLs"}
