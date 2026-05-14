@@ -521,34 +521,91 @@ def _duplicate_failure_reason(action_results):
 
 
 def _format_action_results(action_results):
-    """Format extension-reported action outcomes into a prompt block (M9 loop)."""
+    """Format extension-reported action outcomes into [PREVIOUS ROUND RESULTS].
+
+    Phase 1 commit 1.4: emit the typed envelope shape (with observed_tab_url
+    + error_code) via typed_actions.format_envelope_row. The next round's
+    model sees ground truth — if observed_tab_url doesn't match the URL it
+    tried to navigate to, the navigation didn't happen. Falls back to the
+    legacy compact format when typed_actions isn't available or a row's
+    shape is incompatible (e.g., from older side_panel builds).
+    """
     if not isinstance(action_results, list) or not action_results:
         return ""
-    rows = []
-    for ar in action_results[:20]:  # Cap to keep prompt bounded.
-        if not isinstance(ar, dict):
-            continue
-        kind = str((ar.get("action") or {}).get("kind") or ar.get("kind") or "").upper()
-        target = str((ar.get("action") or {}).get("target") or ar.get("target") or "")[:300]
-        verdict = str(ar.get("verdict") or "").lower()
-        result = str(ar.get("result") or "").lower()
-        final_state = ar.get("final_state") or {}
-        detail = ""
-        if isinstance(final_state, dict):
-            for key in ("error", "text", "value", "navigated", "reason"):
-                v = final_state.get(key)
-                if v:
-                    detail = f" — {key}: {_safe_context_text(str(v), 240)}"
-                    break
-        # M9.2: irreversible-action heuristic label from the extension. When
-        # present, surface it to the model so the next round's reasoning
-        # acknowledges the safety category that the user explicitly approved.
-        gated_by = ar.get("gated_by") if isinstance(ar.get("gated_by"), str) else None
-        gated = f" (gated by {gated_by})" if gated_by else ""
-        rows.append(f"  · {kind} {target!r} → verdict={verdict} result={result}{gated}{detail}")
-    if not rows:
+
+    try:
+        _scripts_on_path()
+        import typed_actions as _ta
+        envelopes = []
+        for ar in action_results[:20]:
+            if not isinstance(ar, dict):
+                continue
+            try:
+                env = _ta.make_envelope_from_side_panel_payload(ar)
+                envelopes.append(_ta.format_envelope_row(env))
+            except Exception:
+                # Per-row failure: degrade to a single legacy line for that
+                # row, keep going on the rest.
+                envelopes.append(_format_action_result_legacy(ar))
+        if not envelopes:
+            return ""
+        return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(envelopes)
+    except Exception:
+        # typed_actions unavailable (shouldn't happen in normal deployment);
+        # fall back to legacy formatting for all rows.
+        rows = [_format_action_result_legacy(ar) for ar in action_results[:20]
+                if isinstance(ar, dict)]
+        rows = [r for r in rows if r]
+        if not rows:
+            return ""
+        return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
+
+
+def _audit_approve_action(action_id, action, verdict, envelope):
+    """Write a per-action audit row for /extension/approve_action dispatches.
+
+    Mirrors the existing /extension/action_result audit shape but tags
+    `kind: extension_approve_action` so analytics can distinguish backend-
+    dispatched approvals from browser-dispatched outcomes.
+    """
+    try:
+        from pathlib import Path as _P
+        import time as _t
+        rec = {
+            'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+            'source': 'extension',
+            'kind': 'extension_approve_action',
+            'action_id': action_id,
+            'verdict': verdict,
+            'envelope': envelope,
+            'action': action,
+        }
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
+    except Exception:
+        pass
+
+
+def _format_action_result_legacy(ar):
+    """Original compact format. Kept as a fallback when the typed envelope
+    can't be constructed (older side_panel builds, malformed rows, etc.)."""
+    if not isinstance(ar, dict):
         return ""
-    return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
+    kind = str((ar.get("action") or {}).get("kind") or ar.get("kind") or "").upper()
+    target = str((ar.get("action") or {}).get("target") or ar.get("target") or "")[:300]
+    verdict = str(ar.get("verdict") or "").lower()
+    result = str(ar.get("result") or "").lower()
+    final_state = ar.get("final_state") or {}
+    detail = ""
+    if isinstance(final_state, dict):
+        for key in ("error", "text", "value", "navigated", "reason"):
+            v = final_state.get(key)
+            if v:
+                detail = f" — {key}: {_safe_context_text(str(v), 240)}"
+                break
+    gated_by = ar.get("gated_by") if isinstance(ar.get("gated_by"), str) else None
+    gated = f" (gated by {gated_by})" if gated_by else ""
+    return f"  · {kind} {target!r} → verdict={verdict} result={result}{gated}{detail}"
 
 
 def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
@@ -1955,6 +2012,161 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except Exception:
                 pass  # Audit is observability, not a blocker.
             return self._json({'ok': True})
+
+        # /extension/approve_action — Review-mode per-action approval for
+        # backend-dispatched directives (RUN/RUNTERM/READ/CREATE/EDIT).
+        # Phase 1 commit 1.4 of the dispatcher plan. side_panel.js posts
+        # this when the user clicks Allow on a non-BROWSER_* action card
+        # in Review mode (or on a sensitivity-gated action in Auto mode).
+        # Returns an ActionResult-shaped dict so side_panel can feed it
+        # back into the M9 loop's action_results[] for the next round.
+        #
+        # Body: {action_id, action: {kind, target, content?, find?, replace?},
+        #        verdict: 'accept'|'reject', mode_at_decision}.
+        # Requires X-Master-AI-Token.
+        if self.path == '/extension/approve_action':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+
+            action = payload.get('action') if isinstance(payload.get('action'), dict) else {}
+            verdict = str(payload.get('verdict') or 'accept').lower()
+            mode_at = str(payload.get('mode_at_decision') or 'review').lower()
+            kind = str(action.get('kind') or '').upper()
+            target = str(action.get('target') or '')
+            action_id = str(payload.get('action_id') or action.get('id') or '')
+
+            # Reject path: short-circuit; no dispatch.
+            if verdict in ('reject', 'decline'):
+                envelope = {
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'blocked', 'executed': False,
+                    'error_code': 'user_declined',
+                    'error_message': 'User declined the action in Review mode.',
+                    'mode_at_emission': mode_at,
+                }
+                _audit_approve_action(action_id, action, verdict, envelope)
+                return self._json({'ok': True, 'envelope': envelope})
+
+            # BROWSER_* should be dispatched by side_panel.js directly, not
+            # through this endpoint. If one arrives here it's a wire bug;
+            # return a clear error envelope.
+            if kind.startswith('BROWSER_'):
+                envelope = {
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'failure', 'executed': False,
+                    'error_code': 'wrong_dispatcher',
+                    'error_message': 'BROWSER_* actions dispatch via the content script, not /extension/approve_action.',
+                    'mode_at_emission': mode_at,
+                }
+                _audit_approve_action(action_id, action, verdict, envelope)
+                return self._json({'ok': False, 'envelope': envelope}, 400)
+
+            # Dispatch one local action. Mirrors the chrome_extension auto-mode
+            # block in api_handle; refactor into shared _dispatch_local_action
+            # is a deferred follow-up to keep this commit focused.
+            try:
+                _scripts_on_path()
+                import master_ai as _m
+            except Exception as _e:
+                envelope = {
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'failure', 'executed': False,
+                    'error_code': 'backend_unavailable',
+                    'error_message': f'master_ai import failed: {_e}',
+                    'mode_at_emission': mode_at,
+                }
+                _audit_approve_action(action_id, action, verdict, envelope)
+                return self._json({'ok': False, 'envelope': envelope}, 500)
+
+            # Force auto-mode semantics for this single dispatch — user has
+            # already approved, so master_ai's interactive prompts should
+            # bypass. Restore MODE afterward.
+            prev_mode = getattr(_m, 'MODE', 'plan')
+            _m.MODE = 'auto'
+            status, executed = 'failure', False
+            error_code = None
+            error_message = None
+            output_text = None
+            try:
+                if kind == 'RUN':
+                    _r = _m.confirm_run(target)
+                    if _r is None:
+                        error_code, error_message = 'dispatcher_blocked', 'RUN refused by safeguard'
+                    else:
+                        executed = True
+                        output_text = (getattr(_r, 'stdout', '') or '')[:2000]
+                        if getattr(_r, 'ok', True):
+                            status = 'success'
+                        else:
+                            status = 'failure'
+                            error_code = 'nonzero_exit'
+                            error_message = f'exit_code={getattr(_r, "exit_code", None)}'
+                elif kind == 'RUNTERM':
+                    _m.confirm_runterm(target)
+                    executed = True
+                    status = 'success'
+                    output_text = f'[RUNTERM] dispatched: {target}'
+                elif kind == 'READ':
+                    expanded = os.path.expanduser(target)
+                    if hasattr(_m, '_read_path_ok'):
+                        ok, reason = _m._read_path_ok(expanded)
+                        if not ok:
+                            status, error_code, error_message = 'blocked', 'permission_required', reason
+                        else:
+                            try:
+                                with open(expanded, 'r', errors='replace') as f:
+                                    content = f.read()
+                                executed = True
+                                status = 'success'
+                                output_text = content[:4000]
+                            except Exception as e:
+                                status = 'failure'
+                                error_code = 'read_error'
+                                error_message = str(e)[:240]
+                elif kind == 'CREATE':
+                    content_body = action.get('content') or action.get('body') or ''
+                    ok = _m.confirm_create(target, content_body)
+                    executed = bool(ok)
+                    status = 'success' if ok else 'failure'
+                    if not ok:
+                        error_code = 'dispatcher_blocked'
+                        error_message = 'CREATE refused (path fence or safeguard)'
+                elif kind == 'EDIT':
+                    find = action.get('find') or action.get('find_text') or ''
+                    replace = action.get('replace') or action.get('replace_text') or ''
+                    ok = _m.confirm_edit(target, find, replace)
+                    executed = bool(ok)
+                    status = 'success' if ok else 'failure'
+                    if not ok:
+                        error_code = 'dispatcher_blocked'
+                        error_message = 'EDIT refused (path fence or safeguard)'
+                else:
+                    status = 'failure'
+                    error_code = 'unsupported_kind'
+                    error_message = f'kind {kind!r} not dispatched here'
+            except Exception as e:
+                status = 'failure'
+                error_code = 'dispatch_exception'
+                error_message = f'{type(e).__name__}: {e}'[:240]
+            finally:
+                try:
+                    _m.MODE = prev_mode
+                except Exception:
+                    pass
+
+            envelope = {
+                'action_id': action_id, 'kind': kind, 'target': target[:300],
+                'status': status, 'executed': executed,
+                'error_code': error_code, 'error_message': error_message,
+                'observed_text': output_text,
+                'mode_at_emission': mode_at,
+            }
+            _audit_approve_action(action_id, action, verdict, envelope)
+            return self._json({'ok': status == 'success', 'envelope': envelope})
 
         # /ask — federated routing endpoint. Accepts {prompt, model?} and runs
         # it through the LOCAL Ollama on this node, returning the response.
