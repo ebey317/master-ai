@@ -876,6 +876,78 @@ def api_handle(payload):
                     page_context=page_context,
                 )
             blocked_actions = _api_blocked_actions(_m, captured_blocked)
+
+            # Chrome extension auto mode — server-side dispatch for non-BROWSER
+            # directives. The extension only knows how to execute BROWSER_*;
+            # RUN/RUNTERM/READ/CREATE/EDIT get run here through the real
+            # master_ai handlers. Auto-mode gates still apply (policy,
+            # cleanup-safety, blocked-patterns, hallucination guard, sudo
+            # handoff, TTY-refusal for destructive). BROWSER_* stays in
+            # captured_actions for the extension to dispatch on the page;
+            # local output gets appended to the reply text.
+            effective_mode = (mode_req or getattr(_m, "MODE", "plan") or "plan").lower()
+            if source == "chrome_extension" and effective_mode == "auto":
+                _real = {n: o for n, o in patches}
+                for _name in ("confirm_run", "confirm_runterm", "confirm_create", "confirm_edit"):
+                    if _name in _real:
+                        setattr(_m, _name, _real[_name])
+                _m.MODE = "auto"
+                _server_out = []
+                _browser_only = []
+                for _action in captured_actions:
+                    _kind = (_action.get("kind") or "").upper()
+                    _target = _action.get("target") or ""
+                    if _kind.startswith("BROWSER_"):
+                        _browser_only.append(_action)
+                        continue
+                    try:
+                        if _kind == "RUN":
+                            _r = _m.confirm_run(_target)
+                            if _r is None:
+                                _server_out.append(f"$ {_target}\n[blocked or refused]")
+                            else:
+                                _stdout = getattr(_r, "stdout", "") or ""
+                                _ok = getattr(_r, "ok", True)
+                                _suffix = "" if _ok else " (exit nonzero)"
+                                _server_out.append(f"$ {_target}{_suffix}\n{_stdout}".rstrip())
+                        elif _kind == "RUNTERM":
+                            _m.confirm_runterm(_target)
+                            _server_out.append(f"[RUNTERM] dispatched: {_target}")
+                        elif _kind == "READ":
+                            _expanded = os.path.expanduser(_target)
+                            if hasattr(_m, "_read_path_ok"):
+                                try:
+                                    _read_ok, _reason = _m._read_path_ok(_expanded)
+                                except Exception:
+                                    _read_ok, _reason = True, ""
+                                if not _read_ok:
+                                    _server_out.append(f"[READ {_target}] blocked: {_reason}")
+                                    continue
+                            try:
+                                with open(_expanded, "r", errors="replace") as _f:
+                                    _content = _f.read()
+                                if len(_content) > 4000:
+                                    _content = _content[:4000] + f"\n... [truncated, {len(_content)} chars total]"
+                                _server_out.append(f"READ {_target}:\n{_content}")
+                            except Exception as _e:
+                                _server_out.append(f"[READ {_target}] error: {_e}")
+                        elif _kind == "CREATE":
+                            _content_body = _action.get("content") or _action.get("body") or ""
+                            _ok = _m.confirm_create(_target, _content_body)
+                            _server_out.append(f"[CREATE {_target}] {'written' if _ok else 'blocked or refused'}")
+                        elif _kind == "EDIT":
+                            _find = _action.get("find") or _action.get("find_text") or ""
+                            _replace = _action.get("replace") or _action.get("replace_text") or ""
+                            _ok = _m.confirm_edit(_target, _find, _replace)
+                            _server_out.append(f"[EDIT {_target}] {'applied' if _ok else 'blocked or refused'}")
+                        else:
+                            _browser_only.append(_action)
+                    except Exception as _e:
+                        _server_out.append(f"[{_kind} {_target}] dispatch error: {_e}")
+                if _server_out:
+                    reply = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
+                captured_actions = _browser_only
+
             try:
                 _m._LAST_BLOCKED_ACTION = {}
             except Exception:

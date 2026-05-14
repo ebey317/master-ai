@@ -11,7 +11,7 @@ const DEFAULT_CONFIG = {
 const REQUEST_TIMEOUTS = {
   default: 60000,
   health: 3500,
-  chat: 180000,
+  chat: 600000,
   stt: 180000,
   audit: 5000
 };
@@ -431,9 +431,9 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
 
   if (!kind.startsWith("BROWSER_")) {
-    setActionStatus(row, "Not executable in the browser");
-    reportAction(action, "accept", "blocked", { reason: "unsupported by extension" });
-    recordLoopResult(action, "accept", "blocked", { reason: "unsupported by extension" });
+    setActionStatus(row, "Backend-only — switch to Auto mode to dispatch");
+    reportAction(action, "accept", "blocked", { reason: "non-browser action; backend dispatches in auto mode" });
+    recordLoopResult(action, "accept", "blocked", { reason: "non-browser action; backend dispatches in auto mode" });
     return;
   }
 
