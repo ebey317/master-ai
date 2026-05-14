@@ -785,6 +785,8 @@ def api_handle(payload):
     with _API_HANDLE_LOCK:
         _scripts_on_path()
         import master_ai as _m
+        import capabilities as _caps
+        import verifiers as _verifiers  # noqa: F401  -- resolved lazily by Capability.resolve_verifier(), imported here so import errors surface at request time, not mid-dispatch
 
         captured_actions = []
         captured_blocked = []
@@ -900,6 +902,72 @@ def api_handle(payload):
                     if _kind.startswith("BROWSER_"):
                         _browser_only.append(_action)
                         continue
+
+                    # Registry consultation BEFORE generic dispatch. Matched
+                    # capability owns the execution path (executor + verifier
+                    # + audit metadata). Unmatched falls through to legacy
+                    # dispatch below — keeps the registry opt-in during
+                    # phase 1.
+                    _decision = _caps.get_registry().lookup(_kind, _target)
+                    if _decision.capability is not None:
+                        _cap = _decision.capability
+                        _action["capability"] = _cap.name
+                        _action["decision_reason"] = _decision.reason
+                        if not _decision.allow:
+                            _server_out.append(f"[{_cap.name}] refused: {_decision.reason}")
+                            _action["verification_result"] = None
+                            _action["blocked_reason"] = _decision.reason
+                            continue
+                        if _decision.requires_confirmation:
+                            # Don't execute server-side; surface as action
+                            # card to the extension for confirm UI. Phase 2
+                            # wires the actual confirm surface in side_panel.
+                            _action["requires_confirmation"] = True
+                            _action["risk_tier"] = _cap.risk_tier
+                            _browser_only.append(_action)
+                            continue
+                        try:
+                            _executor = _cap.resolve_executor()
+                            # Prefer verify_target when the registry extracted
+                            # a specific argument (e.g., bare app name for
+                            # desktop.launch_app); otherwise pass the raw
+                            # directive target.
+                            _exec_arg = _decision.verify_target if _decision.verify_target else _target
+                            _exec_result = _executor(_exec_arg)
+                            _exec_stdout = getattr(_exec_result, "stdout", "") or ""
+                            _verifier = _cap.resolve_verifier()
+                            _verify_result = _verifier(
+                                _decision.verify_target,
+                                max_wait_s=_cap.verification_policy.max_wait_s,
+                                poll_ms=_cap.verification_policy.poll_ms,
+                            )
+                            _action["verification_result"] = {
+                                "ok": _verify_result.ok,
+                                "observed": _verify_result.observed,
+                                "elapsed_ms": _verify_result.elapsed_ms,
+                                "reason": _verify_result.reason,
+                            }
+                            _lines = [f"$ {_target}"]
+                            if _exec_stdout.strip():
+                                _lines.append(_exec_stdout.rstrip())
+                            if _verify_result.ok:
+                                _lines.append(
+                                    f"[{_cap.name}] verified: {_verify_result.observed} "
+                                    f"({_verify_result.elapsed_ms}ms)"
+                                )
+                            else:
+                                _lines.append(
+                                    f"[{_cap.name}] not verified: {_verify_result.reason}"
+                                )
+                            _server_out.append("\n".join(_lines))
+                        except Exception as _e:
+                            _action["verification_result"] = None
+                            _action["executor_error"] = str(_e)
+                            _server_out.append(
+                                f"[{_cap.name}] dispatch error: {type(_e).__name__}: {_e}"
+                            )
+                        continue
+
                     try:
                         if _kind == "RUN":
                             _r = _m.confirm_run(_target)

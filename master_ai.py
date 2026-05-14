@@ -931,6 +931,30 @@ def _launch_desktop_argv(argv, label="desktop app"):
         log(f"DESKTOP_OPEN_ERROR: {argv} {e}")
         return RunResult(output=f"desktop open failed: {e}", ok=False, exit_code=1, command=" ".join(map(str, argv)), error=str(e))
 
+def launch_desktop_app_safely(app_name):
+    """Capability registry executor for desktop.launch_app.
+
+    Routes around confirm_run's run_command path because bash + backgrounded
+    GUI apps leak inherited stdout/stderr pipes and Python's capture_output
+    blocks indefinitely on read. Uses _launch_desktop_argv (Popen + DEVNULL
+    + start_new_session=True) which is the correct shape for detached GUI
+    launches.
+
+    The registry has already validated app_name against
+    capabilities.DESKTOP_APP_ALLOWLIST; this function adds a defense-in-depth
+    name check before invoking Popen.
+    """
+    if not isinstance(app_name, str) or not re.match(r"^[a-z][a-z0-9_-]{0,40}$", app_name):
+        return RunResult(
+            output=f"invalid app name: {app_name!r}",
+            ok=False,
+            exit_code=1,
+            command=str(app_name),
+            error="invalid_app_name",
+        )
+    return _launch_desktop_argv([app_name], label=app_name)
+
+
 def _desktop_launch_from_command(cmd):
     """Return argv for GUI/browser/app commands that must not be wrapped in a terminal."""
     try:
@@ -1955,6 +1979,62 @@ def _reply_has_directive(reply):
     return False
 
 
+def _desktop_launch_short_circuit(text, low, words):
+    """Match 'open/launch/start <app>' for apps in the capability registry's
+    DESKTOP_APP_ALLOWLIST. Returns a synth reply with a RUN: directive that
+    bypasses the LLM, so cloud models can't refuse the launch with
+    "extension is browser-only" reflex language. The registry's
+    desktop.launch_app capability then handles execution + verification when
+    api_handle sees the RUN.
+
+    Conservative match: app token must be in the allowlist, and the prompt
+    must follow the open/launch/start shape with no extra adverbs or flags.
+    Anything richer (custom args, app names not in allowlist) falls through
+    to the LLM, which can still emit RUN: in those cases.
+    """
+    if not text:
+        return None
+    # API wrapper extraction: stt_server._api_prompt() wraps user prompts
+    # with "[API REQUEST]\n...\n[USER PROMPT]\n<actual prompt>" before
+    # handing them to handle(). The short-circuit must match the actual
+    # prompt at the tail, not the wrapper header.
+    work = (low or "").strip()
+    marker = "[user prompt]"
+    idx = work.rfind(marker)
+    if idx >= 0:
+        work = work[idx + len(marker):].strip()
+    t = work.rstrip("?.!")
+    if not t or len(t) > 100:
+        return None
+
+    m = re.match(
+        r"^(?:please\s+)?"
+        r"(?:open|launch|start|fire\s+up|run)\s+"
+        r"(?:the\s+)?(?:app\s+|application\s+)?"
+        r"([a-z][a-z0-9_-]{1,40})"
+        r"(?:\s+(?:app|application|please))?$",
+        t,
+    )
+    if not m:
+        return None
+
+    app = m.group(1)
+
+    try:
+        import capabilities as _caps  # lazy to avoid cycles
+        allowed = _caps.DESKTOP_APP_ALLOWLIST
+    except Exception:
+        return None
+
+    if app not in allowed:
+        return None
+
+    return (
+        f"Launching {app} via the registered desktop.launch_app capability.\n"
+        f"RUN: {app} &"
+    )
+
+
 def _is_system_state_question(low):
     """Lightweight classifier — true if the user is asking a system-state Q
     (file/process/port/service status, installed package, file listing,
@@ -2427,6 +2507,20 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "system_query",
                 "synth_reply": synth,
                 "reason": "system query pattern → synthesized RUN: directive"}
+
+    # 2d. Desktop-app launch short-circuit. Catches "open/launch/start <app>"
+    # for apps in the capability registry's allowlist and synthesizes
+    # RUN: <app> &. Bypasses cloud models that refuse with "I'm a browser
+    # extension, I can't launch local apps" reflex language. The registry's
+    # desktop.launch_app capability handles execution + process verification
+    # when api_handle parses the synthesized RUN. Built 2026-05-13 after the
+    # cloud lane refused "open hypnotix" even with FULL PALETTE OVERRIDE in
+    # CLOUD_SYSTEM — architecture beats prompting.
+    desk_synth = _desktop_launch_short_circuit(stripped, low, words)
+    if desk_synth:
+        return {"route": "desktop_launch",
+                "synth_reply": desk_synth,
+                "reason": "desktop-app launch pattern → synthesized RUN: directive (registry-handled)"}
 
     if _looks_link_lookup(low, word_set):
         return {"route": "link_lookup",
@@ -10480,7 +10574,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "assistant", "content": resp})
         return resp
 
-    if decision["route"] in ("system_query", "weather"):
+    if decision["route"] in ("system_query", "weather", "desktop_launch"):
         # Deterministic terminal task — synth_reply contains a
         # RUN:/RUNTERM: directive that process_reply parses and executes through the
         # same path an LLM-emitted RUN: would use (mode-aware confirmation,
