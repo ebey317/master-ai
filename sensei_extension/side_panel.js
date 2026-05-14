@@ -179,12 +179,19 @@ function appendError(text) {
 // with empty actions[]. Pattern is intentionally narrower than just
 // "screenshot|click|fill" — pairs the verb with a target noun to reduce
 // false positives on incidental chat use.
-// Two patterns OR'd together:
+// Three patterns OR'd together:
 //   (1) self-contained verb phrases that include their own target noun
 //       (e.g., "took a screenshot", "navigated to", "opened the page")
 //   (2) verb-then-target pairs within 40 chars (e.g., "clicked the
 //       Sign in button" — the noun isn't adjacent to the verb).
-const CLAIMED_BROWSER_ACTION_RE = /(?:\b(?:captur(?:ed|ing)|took (?:a |the )?(?:screenshot|snapshot|picture|photo)|taking (?:a |the )?(?:screenshot|snapshot|picture|photo)|screenshot(?:ted|ed)?|navigated to|opened (?:the |this )?(?:page|tab|link|url|site|website))\b)|(?:\b(?:clicked|filled (?:in |out )?(?:the )?|typed (?:into )?(?:the )?|pressed (?:the )?|scrolled (?:to |up |down )?)\b.{0,40}\b(?:button|link|field|form|input|tab|key|enter|return|escape|element|icon|email|password|down|up|bottom|top)\b)/i;
+//   (3) any literal BROWSER_<verb> mention. Covers [BROWSER_SCREENSHOT],
+//       "BROWSER_SCREENSHOT", `BROWSER_SCREENSHOT`, and anywhere the
+//       model wraps/quotes the directive instead of emitting it at
+//       column 0 (witnessed live 2026-05-14 from local master-ai on
+//       pinterest.com — model returned "[BROWSER_SCREENSHOT] url: ...").
+//       The parser only matches ^\s*BROWSER_X: so any non-column-0 or
+//       wrapped form needs the warning path.
+const CLAIMED_BROWSER_ACTION_RE = /(?:\b(?:captur(?:ed|ing)|took (?:a |the )?(?:screenshot|snapshot|picture|photo)|taking (?:a |the )?(?:screenshot|snapshot|picture|photo)|screenshot(?:ted|ed)?|navigated to|opened (?:the |this )?(?:page|tab|link|url|site|website))\b)|(?:\b(?:clicked|filled (?:in |out )?(?:the )?|typed (?:into )?(?:the )?|pressed (?:the )?|scrolled (?:to |up |down )?)\b.{0,40}\b(?:button|link|field|form|input|tab|key|enter|return|escape|element|icon|email|password|down|up|bottom|top)\b)|(?:BROWSER_(?:NAV|CLICK|FILL|READ|SCREENSHOT|WAIT|SCROLL|KEY))/i;
 
 function appendWarning(text) {
   appendMessage("error", `⚠ ${text}`);
