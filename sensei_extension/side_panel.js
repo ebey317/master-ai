@@ -580,6 +580,26 @@ async function sendPrompt() {
   const input = $("#promptInput");
   const prompt = input.value.trim();
   if (!prompt) return;
+
+  // Bridge-state gate: if the heartbeat shows the backend unreachable,
+  // refuse with a structured "would have sent" message rather than fake
+  // success or a generic network-error stack trace. The user sees both
+  // their prompt (so they know it was received) and the honest failure.
+  // Phase 1 negative-test gate per
+  // ~/.claude/plans/reactive-waddling-papert.md.
+  const bridge = bridgeState();
+  if (!bridge.ok) {
+    appendMessage("user", prompt);
+    input.value = "";
+    const detail = bridge.lastError || "no heartbeat";
+    appendError(
+      `Bridge unreachable (${detail}). Would have sent: "${prompt}". ` +
+      `Restart master-ai-ui.service to reconnect, then try again.`,
+    );
+    setConnection("Bridge unreachable", "error");
+    return;
+  }
+
   const timings = {};
   const totalStart = performance.now();
 
@@ -875,7 +895,7 @@ async function init() {
   $("#openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
   $("#stopButton")?.addEventListener("click", stopLoop);
   prewarmActiveTab();
-  healthCheck();
+  startHeartbeat();
   appendMessage("assistant", "Ready.");
 }
 
