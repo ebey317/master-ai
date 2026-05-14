@@ -1,0 +1,1250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masterai.local/schemas/browser-planner/v1",
+  "title": "Master AI - Browser Planner/Executor Contract v1",
+  "description": "Single canonical bundle. Envelopes for the backend planner/executor loop plus strict per-directive args. Planner emits intent plus constraints; executor synthesizes the directive; directive args are validated at the executor boundary before dispatch to the extension. No raw chain-of-thought is ever logged or transmitted.",
+  "$defs": {
+    "StepId": {
+      "type": "string",
+      "pattern": "^s[0-9]{1,4}$",
+      "description": "Monotonically increasing per task. s0..s9999."
+    },
+    "TaskId": {
+      "type": "string",
+      "pattern": "^t[0-9a-f]{8}$"
+    },
+    "ShortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "MediumText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "description": "Pointer into page_signature, round history, or user turn. Planner cites evidence; never invents it.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "page_signature",
+            "round_history",
+            "user_turn",
+            "executor_observation"
+          ]
+        },
+        "locator": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        }
+      },
+      "required": [
+        "source",
+        "locator"
+      ],
+      "additionalProperties": false
+    },
+    "Rationale": {
+      "type": "object",
+      "description": "Compact planner justification. NOT raw chain-of-thought. Hard caps prevent CoT dumping into this field.",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/MediumText",
+          "description": "One- or two-sentence justification for this step."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 0,
+          "maxItems": 4
+        },
+        "uncertainty": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        }
+      },
+      "required": [
+        "reason",
+        "uncertainty"
+      ],
+      "additionalProperties": false
+    },
+    "PageSignature": {
+      "type": "object",
+      "description": "Compact, deterministic page fingerprint the executor returns.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "landmarks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ShortText"
+          },
+          "maxItems": 16
+        },
+        "visible_text_excerpt": {
+          "type": "string",
+          "maxLength": 800,
+          "description": "Up to about 800 chars of distinguishing visible text. Not the full DOM."
+        }
+      },
+      "required": [
+        "url",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "DirectiveType": {
+      "type": "string",
+      "enum": [
+        "BROWSER_NAV",
+        "BROWSER_CLICK",
+        "BROWSER_FILL",
+        "BROWSER_READ",
+        "BROWSER_SCREENSHOT",
+        "BROWSER_WAIT",
+        "BROWSER_SCROLL",
+        "BROWSER_KEY"
+      ]
+    },
+    "ErrorClass": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "selector_not_found",
+        "permission_denied",
+        "rate_limited",
+        "navigation_failed",
+        "directive_unsupported",
+        "executor_could_not_synthesize",
+        "timeout_waiting_for_condition",
+        "auth_session_expired",
+        "unsafe_action_boundary",
+        "repeated_same_failure"
+      ]
+    },
+    "ConstraintsBlock": {
+      "type": "object",
+      "description": "Bounds the executor without dictating selectors. Executor synthesizes the actual directive within these constraints.",
+      "properties": {
+        "allowed_directive_types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DirectiveType"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "must_match_text": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "must_match_role": {
+          "type": "string",
+          "enum": [
+            "link",
+            "button",
+            "textbox",
+            "checkbox",
+            "radio",
+            "combobox",
+            "listitem",
+            "heading",
+            "image",
+            "menuitem",
+            "tab",
+            "option",
+            "any"
+          ]
+        },
+        "avoid_text": {
+          "$ref": "#/$defs/ShortText"
+        },
+        "requires_user_confirmation": {
+          "type": "boolean",
+          "default": false,
+          "description": "True for irreversible actions: submit, purchase, delete, share-permissions. Executor MUST pause and ask."
+        },
+        "max_executor_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1
+        }
+      },
+      "required": [
+        "allowed_directive_types"
+      ],
+      "additionalProperties": false
+    },
+    "BrowserTaskState": {
+      "type": "object",
+      "title": "BrowserTaskState",
+      "description": "Durable per-task record. Lives in stt_server backend state, not chrome.storage.session.",
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/TaskId"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PlannerStep"
+              },
+              {
+                "$ref": "#/$defs/ExecutorObservation"
+              }
+            ]
+          },
+          "maxItems": 64
+        },
+        "current_planner": {
+          "type": "string",
+          "enum": [
+            "fast_lane",
+            "kimi",
+            "r1"
+          ]
+        },
+        "consecutive_soft_fails": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "consecutive_hard_fails": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "round_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50
+        },
+        "round_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50,
+          "default": 20
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_active": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "awaiting_user",
+            "done",
+            "aborted"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "goal",
+        "history",
+        "current_planner",
+        "round_count",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "PlannerStep": {
+      "type": "object",
+      "title": "PlannerStep",
+      "description": "What the planner emits. No directive field: planner emits intent plus constraints; executor synthesizes the directive.",
+      "properties": {
+        "envelope": {
+          "const": "planner_step"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "goal_summary": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "state_assessment": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "executor_instruction": {
+          "$ref": "#/$defs/MediumText",
+          "description": "Natural-language intent for the executor. For example: Open the candidate resume that is already visible on the page. Executor picks the selector."
+        },
+        "constraints": {
+          "$ref": "#/$defs/ConstraintsBlock"
+        },
+        "expected_outcome": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "fallback_hint": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "rationale": {
+          "$ref": "#/$defs/Rationale"
+        },
+        "needs_user_input": {
+          "type": "boolean",
+          "default": false
+        },
+        "user_question": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "prompt": {
+                  "$ref": "#/$defs/MediumText"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ShortText"
+                  },
+                  "minItems": 2,
+                  "maxItems": 6,
+                  "description": "Discrete, page-grounded options. Free-form questions are not allowed."
+                }
+              },
+              "required": [
+                "prompt",
+                "options"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "envelope",
+        "step_id",
+        "goal_summary",
+        "executor_instruction",
+        "constraints",
+        "expected_outcome",
+        "rationale"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "needs_user_input": {
+                "const": true
+              }
+            },
+            "required": [
+              "needs_user_input"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "user_question"
+            ],
+            "properties": {
+              "user_question": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ExecutorDirective": {
+      "type": "object",
+      "title": "ExecutorDirective",
+      "description": "What the executor synthesizes and the extension actually runs. Single source of directive truth. Args are validated per type via the if/then clauses below.",
+      "properties": {
+        "envelope": {
+          "const": "executor_directive"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "type": {
+          "$ref": "#/$defs/DirectiveType"
+        },
+        "args": {
+          "type": "object",
+          "maxProperties": 8
+        },
+        "synthesized_from": {
+          "type": "object",
+          "properties": {
+            "planner_step_id": {
+              "$ref": "#/$defs/StepId"
+            },
+            "executor_model": {
+              "type": "string",
+              "enum": [
+                "fast_lane"
+              ]
+            }
+          },
+          "required": [
+            "planner_step_id",
+            "executor_model"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "envelope",
+        "step_id",
+        "type",
+        "args",
+        "synthesized_from"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_NAV"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserNavArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_CLICK"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserClickArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_FILL"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserFillArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_READ"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserReadArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_SCREENSHOT"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserScreenshotArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_WAIT"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserWaitArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_SCROLL"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserScrollArgs"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "const": "BROWSER_KEY"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "args": {
+                "$ref": "#/$defs/BrowserKeyArgs"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ExecutorObservation": {
+      "type": "object",
+      "title": "ExecutorObservation",
+      "description": "What comes back from the extension. The error_class enum lets the planner reason about structured failure categories instead of user-prompt patterns.",
+      "properties": {
+        "envelope": {
+          "const": "executor_observation"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "soft_fail",
+            "hard_fail"
+          ]
+        },
+        "directive_emitted": {
+          "$ref": "#/$defs/ExecutorDirective"
+        },
+        "observation": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "error_class": {
+          "$ref": "#/$defs/ErrorClass"
+        },
+        "error_quote": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 400,
+          "description": "Verbatim browser/extension error message when present. Never paraphrased."
+        },
+        "page_signature": {
+          "$ref": "#/$defs/PageSignature"
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600000
+        }
+      },
+      "required": [
+        "envelope",
+        "step_id",
+        "status",
+        "directive_emitted",
+        "observation",
+        "error_class",
+        "page_signature"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "ok"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "error_class": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "soft_fail",
+                  "hard_fail"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "error_class": {
+                "not": {
+                  "const": null
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PlannerDone": {
+      "type": "object",
+      "title": "PlannerDone",
+      "description": "Terminal success envelope.",
+      "properties": {
+        "envelope": {
+          "const": "planner_done"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "summary": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "minItems": 1,
+          "maxItems": 6
+        },
+        "user_visible": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Final prose Sensei surfaces to the user."
+        }
+      },
+      "required": [
+        "envelope",
+        "step_id",
+        "summary",
+        "evidence",
+        "user_visible"
+      ],
+      "additionalProperties": false
+    },
+    "PlannerReplan": {
+      "type": "object",
+      "title": "PlannerReplan",
+      "description": "Explicit replan envelope. Distinct from a step so the loop can branch on it without parsing intent out of prose.",
+      "properties": {
+        "envelope": {
+          "const": "planner_replan"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "reason": {
+          "$ref": "#/$defs/MediumText"
+        },
+        "triggered_by": {
+          "type": "string",
+          "enum": [
+            "repeated_failure",
+            "page_state_changed",
+            "user_correction",
+            "constraint_violation"
+          ]
+        },
+        "request_escalation": {
+          "type": "string",
+          "enum": [
+            "none",
+            "to_r1"
+          ],
+          "description": "Kimi can request handoff to R1 when its own replan rate trends high. Loop honors or ignores based on policy."
+        }
+      },
+      "required": [
+        "envelope",
+        "step_id",
+        "reason",
+        "triggered_by"
+      ],
+      "additionalProperties": false
+    },
+    "BrowserNavArgs": {
+      "type": "object",
+      "title": "BrowserNavArgs",
+      "description": "Strict: only http/https URLs. javascript:, data:, file:, chrome://, and chrome-extension: are rejected at the schema boundary.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "maxLength": 2048
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "BrowserClickArgs": {
+      "type": "object",
+      "title": "BrowserClickArgs",
+      "description": "At least one targeting hint, selector, text, or role, is required. exact toggles strict versus substring text match.",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "link",
+            "button",
+            "textbox",
+            "checkbox",
+            "radio",
+            "combobox",
+            "listitem",
+            "heading",
+            "menuitem",
+            "tab",
+            "option"
+          ]
+        },
+        "exact": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "selector"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "role"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    "BrowserFillArgs": {
+      "type": "object",
+      "title": "BrowserFillArgs",
+      "description": "text is required. selector is optional; if omitted, executor targets the currently focused element. To clear a field, set clear_first=true and pass a new value; do not pass empty text.",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "clear_first": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "BrowserReadArgs": {
+      "type": "object",
+      "title": "BrowserReadArgs",
+      "description": "All fields optional. With no selector and no query, returns a visible-page excerpt capped by max_chars.",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 16000,
+          "default": 4000
+        }
+      },
+      "additionalProperties": false
+    },
+    "BrowserScreenshotArgs": {
+      "type": "object",
+      "title": "BrowserScreenshotArgs",
+      "description": "scope=element requires selector. The dispatcher must call captureVisibleTab from the service worker with windowId, not tabId.",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "viewport",
+            "page",
+            "element"
+          ]
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "scope"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "const": "element"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "selector"
+            ]
+          }
+        }
+      ]
+    },
+    "BrowserWaitArgs": {
+      "type": "object",
+      "title": "BrowserWaitArgs",
+      "description": "selector_* conditions require selector. text_* conditions require text. navigation_complete and network_idle take neither.",
+      "properties": {
+        "condition": {
+          "type": "string",
+          "enum": [
+            "selector_visible",
+            "selector_hidden",
+            "selector_attached",
+            "selector_detached",
+            "text_present",
+            "text_absent",
+            "navigation_complete",
+            "network_idle"
+          ]
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000,
+          "default": 5000
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      },
+      "required": [
+        "condition"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "selector_visible",
+                  "selector_hidden",
+                  "selector_attached",
+                  "selector_detached"
+                ]
+              }
+            },
+            "required": [
+              "condition"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "selector"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "text_present",
+                  "text_absent"
+                ]
+              }
+            },
+            "required": [
+              "condition"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "text"
+            ]
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "condition": {
+                "enum": [
+                  "navigation_complete",
+                  "network_idle"
+                ]
+              }
+            },
+            "required": [
+              "condition"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "not": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "selector"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "text"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "BrowserScrollArgs": {
+      "type": "object",
+      "title": "BrowserScrollArgs",
+      "description": "direction=into_view requires selector and forbids amount. direction=top/bottom forbids amount. direction=up/down accepts optional amount in pixels.",
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": [
+            "up",
+            "down",
+            "top",
+            "bottom",
+            "into_view"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "description": "Pixels. Only valid for direction=up or down."
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "direction"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "direction": {
+                "const": "into_view"
+              }
+            },
+            "required": [
+              "direction"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "selector"
+            ],
+            "not": {
+              "type": "object",
+              "required": [
+                "amount"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "direction": {
+                "enum": [
+                  "top",
+                  "bottom"
+                ]
+              }
+            },
+            "required": [
+              "direction"
+            ]
+          },
+          "then": {
+            "type": "object",
+            "not": {
+              "type": "object",
+              "required": [
+                "amount"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "BrowserKeyArgs": {
+      "type": "object",
+      "title": "BrowserKeyArgs",
+      "description": "Named control keys only. To type text characters, use BROWSER_FILL. BROWSER_KEY is for navigation/control gestures.",
+      "properties": {
+        "key": {
+          "type": "string",
+          "enum": [
+            "Enter",
+            "Escape",
+            "Tab",
+            "Backspace",
+            "Delete",
+            "Space",
+            "ArrowUp",
+            "ArrowDown",
+            "ArrowLeft",
+            "ArrowRight",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+            "F1",
+            "F2",
+            "F3",
+            "F4",
+            "F5",
+            "F6",
+            "F7",
+            "F8",
+            "F9",
+            "F10",
+            "F11",
+            "F12"
+          ]
+        },
+        "modifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "Shift",
+              "Control",
+              "Alt",
+              "Meta"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/BrowserTaskState"
+    },
+    {
+      "$ref": "#/$defs/PlannerStep"
+    },
+    {
+      "$ref": "#/$defs/ExecutorDirective"
+    },
+    {
+      "$ref": "#/$defs/ExecutorObservation"
+    },
+    {
+      "$ref": "#/$defs/PlannerDone"
+    },
+    {
+      "$ref": "#/$defs/PlannerReplan"
+    }
+  ]
+}
