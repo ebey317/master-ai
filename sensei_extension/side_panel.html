@@ -18,17 +18,17 @@
 
     <section id="chatLog" class="chat-log" aria-live="polite"></section>
 
-    <section id="loopBar" class="loop-bar" hidden>
-      <span id="roundCounter" class="round-counter"></span>
-      <button id="stopButton" class="stop-button" type="button">Stop</button>
-    </section>
-
     <section id="actionDock" class="action-dock" hidden>
       <div class="dock-head">
         <h2>Actions</h2>
         <button id="clearActions" class="text-button">Clear</button>
       </div>
       <div id="actionList" class="action-list"></div>
+    </section>
+
+    <section id="loopBar" class="loop-bar" hidden>
+      <span id="roundCounter" class="round-counter"></span>
+      <button id="stopButton" class="stop-button" type="button">Stop</button>
     </section>
 
     <form id="composer" class="composer">
@@ -40,7 +40,7 @@
         </select>
         <span id="routeMeta" class="route-meta"></span>
       </div>
-      <textarea id="promptInput" rows="4" placeholder="Ask Sensei"></textarea>
+      <textarea id="promptInput" rows="3" placeholder="Ask Sensei"></textarea>
       <div class="composer-actions">
         <button id="micButton" class="secondary" type="button">Mic</button>
         <button id="sendButton" type="submit">Send</button>
