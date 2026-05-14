@@ -2425,6 +2425,36 @@ def orchestrate(history, user_text, image_path=None):
     words = stripped.split()
     word_set = set(w.lower().strip(".,!?") for w in words)
 
+    # API-wrapped prompts (chrome_extension / pupil) bury the user's typed
+    # text inside an [API REQUEST] envelope, with the real prompt after the
+    # [USER PROMPT] marker. Explicit cloud-routing prefixes (fast: / deep: /
+    # local: / private: / fireworks: / cerebras:) must be matched against
+    # THAT inner text, not the wrapped envelope — otherwise the prefix is
+    # never detected, execution falls through to content-based short-
+    # circuits, and link_lookup ends up grabbing prompts the user
+    # explicitly tagged for cloud. Witnessed 2026-05-14 on
+    # `fast: take a screenshot of this page` from the chrome extension.
+    _USER_PROMPT_MARK = "[USER PROMPT]"
+    _user_mark_idx = stripped.find(_USER_PROMPT_MARK)
+    if _user_mark_idx >= 0:
+        user_section = stripped[_user_mark_idx + len(_USER_PROMPT_MARK):].lstrip("\n").strip()
+    else:
+        user_section = stripped
+    user_section_low = user_section.lower()
+
+    def _strip_prefix(prefix_len):
+        """Return user_text with the leading routing prefix removed from
+        the user section. When the input is API-wrapped, preserve the
+        envelope head (so [BROWSER PAGE CONTEXT] etc. still reach the
+        downstream model) and only edit the [USER PROMPT] section."""
+        if _user_mark_idx >= 0:
+            head_end = _user_mark_idx + len(_USER_PROMPT_MARK)
+            head = stripped[:head_end]
+            tail = stripped[head_end:].lstrip("\n")
+            tail = tail[prefix_len:].lstrip()
+            return head + "\n" + tail
+        return stripped[prefix_len:].strip()
+
     run_mode = _read_run_mode()
     keys_now = load_keys()
     have_groq   = bool((keys_now.get('groq') or '').strip())
@@ -2456,31 +2486,35 @@ def orchestrate(history, user_text, image_path=None):
             return {"route": "save_refresh",
                     "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK}"}
 
-    # 2. Explicit prefixes — user intent overrides mode
-    if low.startswith("fast:") and have_groq:
+    # 2. Explicit prefixes — user intent overrides mode. Matched against
+    # the user section (after [USER PROMPT]) so API-wrapped prompts honor
+    # the prefix exactly like raw TUI input does.
+    if user_section_low.startswith("fast:") and have_groq:
         return {"route": "cloud_fast", "model": "groq",
-                "stripped_text": stripped[5:].strip(),
+                "stripped_text": _strip_prefix(5),
                 "reason": "explicit 'fast:' → Groq"}
-    if low.startswith("fireworks:") and have_fireworks:
+    if user_section_low.startswith("fireworks:") and have_fireworks:
         return {"route": "cloud", "model": "fireworks",
-                "stripped_text": stripped[10:].strip(),
+                "stripped_text": _strip_prefix(10),
                 "reason": "explicit 'fireworks:' → Fireworks"}
-    if low.startswith("cerebras:") and have_cerebras:
+    if user_section_low.startswith("cerebras:") and have_cerebras:
         return {"route": "cloud", "model": "cerebras",
-                "stripped_text": stripped[9:].strip(),
+                "stripped_text": _strip_prefix(9),
                 "reason": "explicit 'cerebras:' → Cerebras"}
-    if low.startswith("deep:"):
+    if user_section_low.startswith("deep:"):
         if have_or:
             return {"route": "cloud_deep", "model": "deepseek-r1",
-                    "stripped_text": stripped[5:].strip(),
+                    "stripped_text": _strip_prefix(5),
                     "reason": "explicit 'deep:' → DeepSeek-R1"}
         return {"route": "cloud_deep", "model": MODELS["qwen3"],
-                "stripped_text": stripped[5:].strip(),
+                "stripped_text": _strip_prefix(5),
                 "reason": "explicit 'deep:' → qwen3.5:cloud"}
-    if low.startswith("local:") or low.startswith("private:"):
-        prefix_len = 7 if low.startswith("private:") else 6
+    if user_section_low.startswith("local:") or user_section_low.startswith("private:"):
+        # "private:" is 8 chars, "local:" is 6. The previous code used 7
+        # for "private:" which left a stray ":" in the stripped text.
+        prefix_len = 8 if user_section_low.startswith("private:") else 6
         return {"route": "local", "model": MODELS["master"],
-                "stripped_text": stripped[prefix_len:].strip(),
+                "stripped_text": _strip_prefix(prefix_len),
                 "reason": "explicit local/private → local 7b"}
 
     cache_weather_synth = _clear_cache_weather_short_circuit(stripped)
