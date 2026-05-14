@@ -460,12 +460,38 @@ function gateLabel(gatedBy) {
 }
 
 function shouldAutoRunAction(action, origin = "") {
+  // Phase 1 commit 1.3: respect the backend's mode-aware status taxonomy.
+  // The dispatcher (not the model, not the client) decides safe vs sensitive.
+  // Previously this auto-ran BROWSER_READ/SCREENSHOT regardless of mode —
+  // Plan-mode contract violation. Closed.
+  const status = String(action?.status || "").toLowerCase();
   const kind = String(action?.kind || "").toUpperCase();
-  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") return true;
+
+  // Backend status takes precedence. waiting_for_approval / pending_approval
+  // (legacy name) / blocked all mean "do NOT auto-run."
+  if (status === "waiting_for_approval" || status === "pending_approval" || status === "blocked") {
+    return false;
+  }
+
+  // Non-browser actions never dispatch from the side panel. In Auto the
+  // backend already dispatched them server-side; in Review they go through
+  // /extension/approve_action (commit 1.4).
   if (!kind.startsWith("BROWSER_")) return false;
+
+  // Plan + Review: never auto-run, regardless of action kind. Closes the
+  // BROWSER_READ/SCREENSHOT auto-run-in-Plan loophole at the old line 464.
+  const mode = ($("#modeSelect")?.value || state.config.mode || "review").toLowerCase();
+  if (mode !== "auto") return false;
+
+  // Auto: dispatcher already marked sensitive ones as gated_by; respect it.
   if (action?.classification?.requires_confirm) return false;
+  if (action?.gated_by) return false;
+
+  // Auto-mode safe BROWSER_*: approved-origin auto-run, plus READ/SCREENSHOT
+  // (read-only, no page-state change).
   if (origin && state.config.approvedOrigins.includes(origin)) return true;
-  return currentExecutionMode() === "act";
+  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") return true;
+  return false;
 }
 
 async function approveAction(action, row, permissionDecision = "allow_once") {
@@ -515,13 +541,35 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
     const ok = Boolean(result?.ok);
     const suffix = timings.inject ? ` (${timings.inject} ms inject)` : "";
     setActionStatus(row, ok ? `Done${suffix}` : (result?.error || "Failed"));
-    const finalState = { ...(result || {}), permission: permissionDecision, origin };
+    const observedTabUrl = await readObservedTabUrl(tab);
+    const finalState = {
+      ...(result || {}),
+      permission: permissionDecision,
+      origin,
+      observed_tab_url: observedTabUrl,
+    };
     reportAction(action, "accept", ok ? "success" : "failure", finalState);
     recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
   } catch (err) {
+    const observedTabUrl = await readObservedTabUrl(tab);
     setActionStatus(row, err.message);
-    reportAction(action, "accept", "failure", { error: err.message });
-    recordLoopResult(action, "accept", "failure", { error: err.message });
+    reportAction(action, "accept", "failure", { error: err.message, observed_tab_url: observedTabUrl });
+    recordLoopResult(action, "accept", "failure", { error: err.message, observed_tab_url: observedTabUrl });
+  }
+}
+
+// Ground-truth tab URL after an action settles. For BROWSER_NAV the
+// chrome.tabs.update promise resolves before the actual navigation may
+// complete; small settle delay covers the common case. Returns null on
+// failure rather than throwing — observability shouldn't block dispatch.
+async function readObservedTabUrl(tab) {
+  if (!tab?.id) return null;
+  try {
+    await new Promise((r) => setTimeout(r, 75));
+    const refreshed = await chrome.tabs.get(tab.id);
+    return refreshed?.url || null;
+  } catch (_err) {
+    return null;
   }
 }
 
@@ -551,11 +599,19 @@ async function renderActions(actions = [], blockedActions = []) {
   dock.hidden = all.length === 0;
   if (!all.length) return;
 
+  // Mode-aware rendering. Plan mode = inert preview cards (no buttons,
+  // "Plan only" footer). Review / Auto = current behavior, with backend
+  // status taxonomy already honored by shouldAutoRunAction.
+  const currentMode = ($("#modeSelect")?.value || state.config.mode || "review").toLowerCase();
+
   for (const action of all) {
     const row = document.createElement("section");
     row.className = "action-item";
     const origin = actionOrigin(action, tab);
-    const autoRun = !action.blocked && shouldAutoRunAction(action, origin);
+    const backendStatus = String(action?.status || "").toLowerCase();
+    const isPlanned = backendStatus === "planned";
+    const isPlanInert = currentMode === "plan" && isPlanned && !action.blocked;
+    const autoRun = !action.blocked && !isPlanInert && shouldAutoRunAction(action, origin);
 
     const main = document.createElement("div");
     main.className = "action-main";
@@ -567,7 +623,9 @@ async function renderActions(actions = [], blockedActions = []) {
     const buttons = document.createElement("div");
     buttons.className = "action-buttons";
 
-    if (!action.blocked && !autoRun) {
+    // Plan-mode preview cards get no buttons; everything else with a
+    // pending status gets Allow/Decline.
+    if (!action.blocked && !autoRun && !isPlanInert) {
       const approve = document.createElement("button");
       approve.className = "primary";
       approve.type = "button";
@@ -609,7 +667,15 @@ async function renderActions(actions = [], blockedActions = []) {
 
     const status = document.createElement("div");
     status.className = "status";
-    status.textContent = action.blocked ? (action.reason || "Blocked") : (autoRun ? "Queued" : "Waiting for permission");
+    if (action.blocked) {
+      status.textContent = action.reason || "Blocked";
+    } else if (isPlanInert) {
+      status.textContent = "Plan only — preview, not executed";
+    } else if (autoRun) {
+      status.textContent = "Queued";
+    } else {
+      status.textContent = "Waiting for permission";
+    }
 
     row.append(main, target, policy, status);
     list.appendChild(row);
