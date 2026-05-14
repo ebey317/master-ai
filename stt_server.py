@@ -575,9 +575,122 @@ def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
     }
 
 
-def _api_parse_actions(reply, *, model="", source="", session_id="", schedule_id="", page_context=None):
+# ── Dispatcher-owned sensitivity classifier (M9.x) ────────────────────────
+# The model proposes; the dispatcher decides. Static hard gates apply
+# regardless of mode. In Auto, safe→runs, sensitive→downgrade to
+# waiting_for_approval, blocked→never reaches extension. Reused by
+# /extension/approve_action (commit 1.4) and the auto-mode dispatch block
+# at line 903+. Per the no-synth-routes-as-skills rule the model never
+# self-declares safety; this helper is authoritative.
+
+_SENSITIVE_AUTH_RE = re.compile(
+    r"(?i)(?:^|[^a-z])(sign[ _-]?in|sign[ _-]?up|log[ _-]?in|log[ _-]?out|"
+    r"password|passwd|2fa|two[ _-]?factor|oauth|api[._-]?key|grant[ ._-]access|"
+    r"credentials)"
+)
+_SENSITIVE_PAYMENT_RE = re.compile(
+    r"(?i)(?:^|[^a-z])(checkout|cart|pay(?:ment)?|order|buy|purchase|"
+    r"credit[ ._-]?card|debit[ ._-]?card|cvv|cvc|routing[ ._-]?number|"
+    r"bank[ ._-]?account|billing)"
+)
+_SENSITIVE_DESTRUCTIVE_RE = re.compile(
+    r"(?i)(?:^|[^a-z])(delete|remove|destroy|erase|wipe|discard|"
+    r"cancel[ ._-]+(?:account|subscription)|deactivate)"
+)
+_SENSITIVE_PASSWORD_INPUT_RE = re.compile(r'(?i)(input\[type="?password"?\]|name=["\']password["\'])')
+
+
+def _classify_action_sensitivity(action, *, mode, page_url=None):
+    """Return {tier: safe|sensitive|blocked, gated_by, error_code}.
+
+    Dispatcher-owned. The model can describe intent; this helper decides
+    whether the dispatcher executes (safe), downgrades to approval card
+    (sensitive), or refuses outright (blocked). Reused for BROWSER_* and
+    for the safe/sensitive split inside chrome_extension auto-mode.
+    """
+    kind = str(action.get("kind") or "").upper()
+    target = str(action.get("target") or "")
+
+    # BLOCKED tier: things that never reach the extension.
+    if kind in ("RUN", "RUNTERM"):
+        # Reuse typed_actions risk classification + the existing master_ai
+        # is_blocked patterns via the registry path; here we only short-
+        # circuit for the obviously catastrophic patterns the registry
+        # would refuse anyway.
+        # NOTE: no trailing \b on the rm pattern — `/` isn't a word char, so
+        # `\brm\s+-[rRfF]+\s+/\b` would never match `rm -rf /`. Reuse the
+        # shape from typed_actions._HIGH_RISK_RUN_PATTERNS instead.
+        if re.search(r"\brm\s+-[rRfF]+[a-zA-Z]*\s+/|\bmkfs\b|\bdd\s+if=.*\bof=/dev/(sd|nvme)", target):
+            return {"tier": "blocked", "gated_by": "destructive_run", "error_code": "dispatcher_blocked"}
+        if re.search(r"\bcurl\s+[^|]*\|\s*(?:bash|sh)\b|\bwget\s+[^|]*\|\s*(?:bash|sh)\b", target):
+            return {"tier": "blocked", "gated_by": "pipe_to_shell", "error_code": "dispatcher_blocked"}
+
+    # SENSITIVE tier: downgrade to waiting_for_approval even in Auto.
+    if kind == "BROWSER_CLICK":
+        if _SENSITIVE_AUTH_RE.search(target):
+            return {"tier": "sensitive", "gated_by": "auth_click", "error_code": None}
+        if _SENSITIVE_PAYMENT_RE.search(target):
+            return {"tier": "sensitive", "gated_by": "payment_click", "error_code": None}
+        if _SENSITIVE_DESTRUCTIVE_RE.search(target):
+            return {"tier": "sensitive", "gated_by": "destructive_click", "error_code": None}
+
+    if kind == "BROWSER_FILL":
+        if _SENSITIVE_PASSWORD_INPUT_RE.search(target):
+            return {"tier": "sensitive", "gated_by": "password_fill", "error_code": None}
+        # File upload via the file:// extension we'll add in commit 2.1.
+        # Treat any file:// fill as sensitive — uploads cross a trust boundary.
+        if "file://" in target.lower() or "file://" in str(action.get("extras", {})).lower():
+            return {"tier": "sensitive", "gated_by": "file_upload", "error_code": None}
+
+    if kind == "BROWSER_NAV":
+        # Navigating into a payment/auth host is sensitive even if the URL
+        # text doesn't contain the keyword (e.g. accounts.google.com).
+        if re.search(r"(?i)(accounts\.google|login\.|signin\.|auth\.)", target):
+            return {"tier": "sensitive", "gated_by": "auth_nav", "error_code": None}
+        if re.search(r"(?i)(checkout\.|billing\.|payments?\.)", target):
+            return {"tier": "sensitive", "gated_by": "payment_nav", "error_code": None}
+
+    if kind in ("CREATE", "EDIT"):
+        # File writes outside the active approved cwd list. Use the path
+        # as-is; master_ai's _cwd_fence_ok will refuse at dispatch time
+        # too, but surfacing it here lets Review show the gated_by reason.
+        try:
+            expanded = os.path.expanduser(target)
+            home = os.path.expanduser("~")
+            # CREATE/EDIT on system paths, /etc, /usr, etc.: sensitive at least.
+            if expanded.startswith("/etc/") or expanded.startswith("/usr/") or expanded.startswith("/var/"):
+                return {"tier": "sensitive", "gated_by": "system_path_write", "error_code": None}
+            # Writing in user's repo / scripts dir is normal; flag only if outside both home and /tmp.
+            if not (expanded.startswith(home) or expanded.startswith("/tmp/") or expanded.startswith("/var/tmp/")):
+                return {"tier": "sensitive", "gated_by": "out_of_home_write", "error_code": None}
+        except Exception:
+            pass
+
+    if kind in ("RUN", "RUNTERM"):
+        # Arbitrary RUN that doesn't start with a known safe prefix is
+        # sensitive in Auto. The capability registry handles the typed
+        # path; this is the fallback for legacy/untyped commands.
+        try:
+            _scripts_on_path()
+            import typed_actions as _ta
+            safe = any(target.strip().startswith(p) for p in _ta._SAFE_RUN_PREFIXES)
+            if not safe:
+                return {"tier": "sensitive", "gated_by": "arbitrary_run", "error_code": None}
+        except Exception:
+            return {"tier": "sensitive", "gated_by": "arbitrary_run", "error_code": None}
+
+    return {"tier": "safe", "gated_by": None, "error_code": None}
+
+
+def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id="", schedule_id="", page_context=None):
     actions = []
     seen = set()
+    mode_norm = (mode or "plan").lower()
+    if mode_norm not in ("plan", "review", "auto"):
+        mode_norm = "plan"
+    page_url = None
+    if isinstance(page_context, dict):
+        page_url = page_context.get("url")
 
     def add(action):
         if not isinstance(action, dict):
@@ -595,8 +708,47 @@ def _api_parse_actions(reply, *, model="", source="", session_id="", schedule_id
         seen.add(key)
         action["kind"] = kind
         action["target"] = target
-        action["status"] = "pending_approval"
-        action["requires_confirm"] = True
+
+        # Dispatcher-owned sensitivity. Always computed; mode decides how
+        # to use it. Note: blocked actions are dropped entirely below;
+        # they never reach the extension.
+        sens = _classify_action_sensitivity(action, mode=mode_norm, page_url=page_url)
+        action["sensitivity_tier"] = sens["tier"]
+        if sens["gated_by"]:
+            action["gated_by"] = sens["gated_by"]
+
+        if sens["tier"] == "blocked":
+            # Never expose blocked actions to the extension; they're
+            # surfaced to the user via the reply text + audit log only.
+            return
+
+        # Mode → status taxonomy. ResultStatus values from typed_actions.
+        if mode_norm == "plan":
+            action["status"] = "planned"
+            action["executed"] = False
+            action["requires_confirm"] = False  # inert preview, no buttons
+            action["mode_at_emission"] = "plan"
+        elif mode_norm == "review":
+            action["status"] = "waiting_for_approval"
+            action["executed"] = False
+            action["requires_confirm"] = True
+            action["mode_at_emission"] = "review"
+        else:  # auto
+            if sens["tier"] == "sensitive":
+                action["status"] = "waiting_for_approval"
+                action["executed"] = False
+                action["requires_confirm"] = True
+            else:  # safe
+                action["status"] = "planned"  # about to run; side_panel auto-runs
+                action["executed"] = False
+                action["requires_confirm"] = False
+            action["mode_at_emission"] = "auto"
+
+        # Preserve legacy field name for back-compat with older side_panel
+        # builds that read action.status == "pending_approval".
+        if action["status"] == "waiting_for_approval":
+            action.setdefault("legacy_status", "pending_approval")
+
         action.setdefault("id", str(uuid.uuid4()))
         action.setdefault("created_by_model", model or "")
         action.setdefault("parsed_at", datetime.now().astimezone().isoformat(timespec="seconds"))
@@ -710,6 +862,13 @@ def api_handle(payload):
     mode_req = (payload.get("mode") or "").strip().lower()
     if mode_req and mode_req not in ("plan", "review", "auto"):
         raise ValueError("invalid mode")
+    # Compute the effective mode once. Used by _api_parse_actions to set
+    # status taxonomy (planned/waiting_for_approval/running) and by the
+    # chrome_extension auto-mode dispatch block below. Don't recompute
+    # later — that risks drift if _m.MODE shifts during handle().
+    effective_mode = (mode_req or getattr(_m, "MODE", "plan") or "plan").lower()
+    if effective_mode not in ("plan", "review", "auto"):
+        effective_mode = "plan"
 
     source_raw = payload.get("source")
     source = _safe_context_text(source_raw or "pupil", 80)
@@ -816,6 +975,7 @@ def api_handle(payload):
             model = getattr(_m, "LAST_MODEL", "") or requested_model or "master-ai"
             captured_actions = _api_parse_actions(
                 reply or "",
+                mode=effective_mode,
                 model=model,
                 source=source,
                 session_id=session_id,
@@ -883,6 +1043,7 @@ def api_handle(payload):
             if not captured_actions:
                 captured_actions = _api_parse_actions(
                     reply or "",
+                    mode=effective_mode,
                     model=model,
                     source=source,
                     session_id=session_id,
@@ -899,7 +1060,8 @@ def api_handle(payload):
             # handoff, TTY-refusal for destructive). BROWSER_* stays in
             # captured_actions for the extension to dispatch on the page;
             # local output gets appended to the reply text.
-            effective_mode = (mode_req or getattr(_m, "MODE", "plan") or "plan").lower()
+            # effective_mode is computed early at line 866 — shared with
+            # _api_parse_actions so the status taxonomy stays in sync.
             if source == "chrome_extension" and effective_mode == "auto":
                 _real = {n: o for n, o in patches}
                 for _name in ("confirm_run", "confirm_runterm", "confirm_create", "confirm_edit"):
