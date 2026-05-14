@@ -173,6 +173,34 @@ function appendError(text) {
   appendMessage("error", text);
 }
 
+// Phase A.2 — visible warning when the model's reply claims a browser
+// action but emits no directive (silent-failure case from 2026-05-14
+// trace). Catches "I took a screenshot" / "I clicked the button" prose
+// with empty actions[]. Pattern is intentionally narrower than just
+// "screenshot|click|fill" — pairs the verb with a target noun to reduce
+// false positives on incidental chat use.
+// Two patterns OR'd together:
+//   (1) self-contained verb phrases that include their own target noun
+//       (e.g., "took a screenshot", "navigated to", "opened the page")
+//   (2) verb-then-target pairs within 40 chars (e.g., "clicked the
+//       Sign in button" — the noun isn't adjacent to the verb).
+const CLAIMED_BROWSER_ACTION_RE = /(?:\b(?:captur(?:ed|ing)|took (?:a |the )?(?:screenshot|snapshot|picture|photo)|taking (?:a |the )?(?:screenshot|snapshot|picture|photo)|screenshot(?:ted|ed)?|navigated to|opened (?:the |this )?(?:page|tab|link|url|site|website))\b)|(?:\b(?:clicked|filled (?:in |out )?(?:the )?|typed (?:into )?(?:the )?|pressed (?:the )?|scrolled (?:to |up |down )?)\b.{0,40}\b(?:button|link|field|form|input|tab|key|enter|return|escape|element|icon|email|password|down|up|bottom|top)\b)/i;
+
+function appendWarning(text) {
+  appendMessage("error", `⚠ ${text}`);
+}
+
+function maybeWarnSilentClaim(reply, actions) {
+  if (Array.isArray(actions) && actions.length > 0) return;
+  const text = String(reply || "");
+  if (!CLAIMED_BROWSER_ACTION_RE.test(text)) return;
+  appendWarning(
+    "Model claimed a browser action but didn't emit a directive. " +
+    "Try rephrasing concretely (e.g., \"take a screenshot of this page\", " +
+    "\"click the Sign in button\") or switch to Auto mode."
+  );
+}
+
 async function timed(timings, key, fn) {
   const start = performance.now();
   try {
@@ -652,6 +680,7 @@ async function sendPrompt() {
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
     await renderActions(data.actions || [], data.blocked_actions || []);
+    maybeWarnSilentClaim(data.reply, data.actions || []);
     setConnection("Backend ready");
   } catch (err) {
     appendError(err.message);
@@ -760,6 +789,7 @@ async function continueLoop() {
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
     await renderActions(data.actions || [], data.blocked_actions || []);
+    maybeWarnSilentClaim(data.reply, data.actions || []);
     if (!(data.actions || []).length) {
       resetLoop();
       setConnection("Backend ready");
