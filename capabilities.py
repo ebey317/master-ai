@@ -104,7 +104,7 @@ class Decision:
 # Phase 1: a small curated set so the Hypnotix vertical slice is real
 # without exposing arbitrary RUN bypasses. Phase 2 expands this and routes
 # more apps through terminal.run_command with richer schemas.
-DESKTOP_APP_ALLOWLIST = {"hypnotix"}
+DESKTOP_APP_ALLOWLIST = {"hypnotix", "thunderbird"}
 
 
 def _matches_desktop_launch(cmd: str) -> Optional[str]:
