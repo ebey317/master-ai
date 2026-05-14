@@ -554,6 +554,8 @@ def _format_action_results(action_results):
 def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
     kind = (kind or "").upper()
     target = (target or "").strip()
+    if kind == "BROWSER_SCREENSHOT" and not target:
+        target = "viewport"
     if not kind or not target:
         return None
     risk = "safe" if kind in ("READ", "BROWSER_READ") else "normal"
@@ -582,6 +584,9 @@ def _api_parse_actions(reply, *, model="", source="", session_id="", schedule_id
             return
         kind = str(action.get("kind") or "").upper()
         target = str(action.get("target") or "").strip()
+        if kind == "BROWSER_SCREENSHOT" and not target:
+            target = "viewport"
+            action["target"] = target
         if not kind or not target:
             return
         key = (kind, target)

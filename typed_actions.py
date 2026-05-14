@@ -233,6 +233,8 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         return None
     kind = m.group(1).upper()
     target = m.group(2).strip()
+    if kind == "BROWSER_SCREENSHOT" and not target:
+        target = "viewport"
     if not target:
         return None
     action = TypedAction(
