@@ -597,6 +597,29 @@ async function sendPrompt() {
       `Restart master-ai-ui.service to reconnect, then try again.`,
     );
     setConnection("Bridge unreachable", "error");
+
+    // Queue a refusal record so this attempt leaves an audit row when the
+    // bridge recovers. Honest-failure principle: every dispatch attempt
+    // should leave evidence, even when the bridge was unreachable at the
+    // moment of refusal. crypto.randomUUID assigns a stable
+    // correlation_id at refusal time so client clock skew never reorders
+    // the audit trail.
+    state.refusalQueue = state.refusalQueue || [];
+    state.refusalQueue.push({
+      correlation_id: crypto.randomUUID(),
+      ts: new Date().toISOString(),
+      blocked_reason: "bridge_unreachable",
+      prompt: prompt,
+      source: "chrome_extension",
+      session_id: state.config.sessionId,
+      capabilities_fired: [],
+      bridge_error: detail,
+    });
+    // Optimistic flush attempt — almost certainly fails (bridge is down),
+    // but if /health happened to recover between bridgeState() and now,
+    // we don't want to wait for the next heartbeat tick. The heartbeat
+    // recovery edge retries either way.
+    flushRefusalQueue().catch(() => {});
     return;
   }
 
@@ -776,14 +799,43 @@ function bridgeState() {
   };
 }
 
+async function flushRefusalQueue() {
+  // Drains queued bridge-unreachable refusal records to
+  // /extension/refusal_audit. Called on heartbeat recovery so audit rows
+  // get ingested as soon as the bridge is reachable again. Each record
+  // carries its own correlation_id assigned at refusal time so client
+  // and server clocks don't have to agree on ordering.
+  if (!Array.isArray(state.refusalQueue) || state.refusalQueue.length === 0) return;
+  const batch = state.refusalQueue.slice();
+  for (const rec of batch) {
+    try {
+      await backendFetch("/extension/refusal_audit", { method: "POST", body: rec });
+      const idx = state.refusalQueue.indexOf(rec);
+      if (idx >= 0) state.refusalQueue.splice(idx, 1);
+    } catch (_err) {
+      // Bridge flapped down again or endpoint missing on this server
+      // version. Leave the records in queue; next recovery edge will retry.
+      break;
+    }
+  }
+}
+
 async function heartbeat() {
   state.bridge = state.bridge || { lastOkAt: 0, lastError: null };
+  const wasOk = state.bridge.lastOkAt > 0
+    && (performance.now() - state.bridge.lastOkAt) < HEARTBEAT_STALE_MS;
   try {
     const data = await backendFetch("/health");
     if (data.ok) {
       state.bridge.lastOkAt = performance.now();
       state.bridge.lastError = null;
       setConnection("Backend ready");
+      // Recovery edge — flush any refusal records queued during the
+      // unreachable window. Fire-and-forget; flush failures will retry
+      // on the next recovery edge.
+      if (!wasOk) {
+        flushRefusalQueue().catch(() => {});
+      }
     } else {
       state.bridge.lastError = "degraded";
       setConnection("Backend degraded", "error");

@@ -103,10 +103,32 @@ reached the backend.
 
 ### Audit log
 
-The tail you started in setup step 4 should show **no new lines** during
-this attempt. No turn_terminal row, no extension_action_result row. The
-attempt never reached the backend, so the audit trail correctly has no
-record of it.
+The tail you started in setup step 4 should show **no new lines DURING
+the unreachable window**. No turn_terminal row, no extension_action_result
+row. The attempt never reached the backend.
+
+The audit row gets WRITTEN AFTER the bridge recovers, via the extension's
+refusal-queue flush mechanism. After you `systemctl --user start
+master-ai-ui.service` (Recover step below), within ~7 seconds you should
+see ONE new line per refused attempt with this shape:
+
+```json
+{
+  "kind": "extension_refusal",
+  "correlation_id": "<uuid generated at refusal time>",
+  "blocked_reason": "bridge_unreachable",
+  "prompt": "open hypnotix",
+  "capabilities_fired": [],
+  "verification_results": [],
+  "bridge_error": "<the heartbeat's last error, e.g. Failed to fetch>"
+}
+```
+
+This is the honest-failure principle's evidence layer: every dispatch
+attempt leaves a record, even when the bridge was unreachable at the
+moment of refusal. Without this row, audit queries would show silent
+gaps where the user genuinely tried to dispatch but the system can't
+account for the attempt.
 
 ## Pass criteria
 
@@ -121,7 +143,12 @@ All of these must be true:
       received by the side panel)
 - [ ] DevTools Network shows NO `/chat` request fired during the attempt
 - [ ] `pgrep -af hypnotix` returns nothing — no process spawned
-- [ ] No new line appended to `~/.master_ai_audit_typed.jsonl`
+- [ ] During the unreachable window: no new line in `~/.master_ai_audit_typed.jsonl`
+- [ ] After `systemctl --user start master-ai-ui.service`: exactly ONE new
+      `extension_refusal` row per refused attempt, carrying `correlation_id`,
+      `blocked_reason: "bridge_unreachable"`, `prompt: "open hypnotix"`,
+      `capabilities_fired: []`, and `bridge_error` reflecting the heartbeat's
+      last failure message
 
 The honest-failure principle: **the agent must not say it did something
 it could not do, and must not fail silently**. Both halves matter — fake

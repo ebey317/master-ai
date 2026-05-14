@@ -1747,6 +1747,48 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 pass  # Audit is observability, not a blocker.
             return self._json({'ok': True})
 
+        # /extension/refusal_audit — extension reports a dispatch attempt
+        # that was refused client-side BEFORE reaching the backend (e.g.,
+        # heartbeat showed bridge unreachable, so sendPrompt() refused with
+        # a structured "would have sent" message). The extension queues
+        # these locally during the unreachable window and flushes them once
+        # the bridge recovers, so the audit trail records honest-failure
+        # attempts that would otherwise vanish without trace.
+        #
+        # Body: {correlation_id, ts (client), blocked_reason, prompt,
+        # source, session_id, capabilities_fired: []}.
+        # Requires X-Master-AI-Token. Phase 1 audit-discipline gap fix per
+        # ~/.claude/plans/reactive-waddling-papert.md.
+        if self.path == '/extension/refusal_audit':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            try:
+                from pathlib import Path as _P
+                import time as _t
+                rec = {
+                    'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'source': 'extension',
+                    'kind': 'extension_refusal',
+                    'correlation_id': payload.get('correlation_id'),
+                    'client_ts': payload.get('ts'),
+                    'blocked_reason': payload.get('blocked_reason') or 'bridge_unreachable',
+                    'prompt': (payload.get('prompt') or '')[:2000],
+                    'source_label': payload.get('source'),
+                    'session_id': payload.get('session_id'),
+                    'capabilities_fired': payload.get('capabilities_fired') or [],
+                    'verification_results': [],
+                    'raw': payload,
+                }
+                with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                    f.write(json.dumps(rec) + '\n')
+            except Exception:
+                pass  # Audit is observability, not a blocker.
+            return self._json({'ok': True})
+
         # /ask — federated routing endpoint. Accepts {prompt, model?} and runs
         # it through the LOCAL Ollama on this node, returning the response.
         # Auth: X-Mesh-Token header must match the token in ~/.master_ai_mesh.json.
