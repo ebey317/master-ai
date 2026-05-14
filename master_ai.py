@@ -2443,6 +2443,18 @@ def orchestrate(history, user_text, image_path=None):
     user_section_low = user_section.lower()
     user_section_words = user_section.split()
     user_section_word_set = set(w.lower().strip(".,!?") for w in user_section_words)
+    if _user_mark_idx >= 0:
+        # Envelope present: collapse low/words/word_set onto the user section
+        # so every downstream content-based shortcircuit, score function, and
+        # matcher inspects user intent — not [BROWSER PAGE CONTEXT] chrome
+        # (button labels, urls, aria-labels, visible_text). Without this,
+        # CODE_WORDS, ALTER_WORDS, _is_tool_required, _scope_check_question,
+        # _looks_time_sensitive, and the apocalypse-path matchers all leak.
+        # Code that legitimately needs the wrapped envelope still has it as
+        # `stripped`. Sibling to 3c83e8e (explicit-prefix half).
+        low = user_section_low
+        words = user_section_words
+        word_set = user_section_word_set
 
     def _strip_prefix(prefix_len):
         """Return user_text with the leading routing prefix removed from
@@ -2572,12 +2584,12 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "local", "model": MODELS["master"],
                 "reason": "generative video → local fallback (no cloud keys)"}
 
-    tool_required = _is_tool_required(low)
+    tool_required = _is_tool_required(user_section_low)
     work_request = bool(
         tool_required
-        or (word_set & CODE_WORDS)
-        or (word_set & ALTER_WORDS)
-        or any(w in low for w in REASONING_WORDS)
+        or (user_section_word_set & CODE_WORDS)
+        or (user_section_word_set & ALTER_WORDS)
+        or any(w in user_section_low for w in REASONING_WORDS)
     )
 
     # 2b. Harvest cache lookup — if a very similar prompt has been answered

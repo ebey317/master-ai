@@ -1183,6 +1183,54 @@ class DirectiveParserTests(unittest.TestCase):
             f"router misrouted form-fill prompt to link_lookup; envelope chrome words leaked. decision={decision!r}",
         )
 
+    def test_chrome_extension_envelope_does_not_leak_into_tool_required(self):
+        # Sibling probe to the link_lookup fix: words from [BROWSER PAGE
+        # CONTEXT] like "Edit location", "create file", "build app" must
+        # not flip _is_tool_required True when the user's prompt is plain
+        # chat. Pre-fix this misrouted "what time is it?" to
+        # "local / tool-required → Sensei" instead of the chat lane.
+        envelope = (
+            "[API REQUEST]\n"
+            "source: chrome_extension\n"
+            "\n"
+            "[BROWSER PAGE CONTEXT]\n"
+            "visible_text: Edit location create file build app write script make page\n"
+            "\n"
+            "[USER PROMPT]\n"
+            "what time is it?"
+        )
+        decision = master_ai.orchestrate([], envelope)
+        self.assertNotIn(
+            "tool-required", decision.get("reason", ""),
+            f"_is_tool_required leaked from envelope chrome. decision={decision!r}",
+        )
+
+    def test_chrome_extension_envelope_does_not_leak_code_or_alter_words(self):
+        # Same envelope-leak shape for CODE_WORDS and ALTER_WORDS: page
+        # chrome can name "function", "class", "debug", "edit", "create",
+        # etc. without the user wanting code or mutation. work_request
+        # must be computed from the user section, not envelope chrome.
+        envelope = (
+            "[API REQUEST]\n"
+            "source: chrome_extension\n"
+            "\n"
+            "[BROWSER PAGE CONTEXT]\n"
+            "visible_text: function class debug code error fix bug write script "
+            "edit modify refactor install create remove rename build\n"
+            "\n"
+            "[USER PROMPT]\n"
+            "thanks"
+        )
+        # Plain "thanks" should not be treated as work/code/alter intent.
+        # Pre-fix this fell into work_request=True via envelope leak.
+        decision = master_ai.orchestrate([], envelope)
+        reason = decision.get("reason", "")
+        for marker in ("tool-required", "code →", "alter →"):
+            self.assertNotIn(
+                marker, reason,
+                f"envelope chrome leaked into work_request route. marker={marker!r} decision={decision!r}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
