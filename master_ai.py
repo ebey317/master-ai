@@ -10984,6 +10984,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
         f"[MEMORY]\n{memory_content}"
         f"{project_ctx}"
     )
+    # Stamp the assembled prompt for audit correlation. SHA256-of-content is
+    # the source of truth; git-short is paired-when-available. Audit writers
+    # in stt_server read via prompt_versions.current() between requests so
+    # each row carries the exact prompt config that produced its directives.
+    # Phase 1 of ~/.claude/plans/reactive-waddling-papert.md.
+    try:
+        import prompt_versions as _pv
+        _pv.stamp(CLOUD_SYSTEM)
+    except Exception:
+        pass  # versioning is observability; never block prompt assembly
     # Local routes: omit system message — Modelfile's baked-in SYSTEM is KV-cached by Ollama.
     # Sending a dynamic system message (with memory/os_info) changes the prefix every request,
     # invalidating the KV cache and causing 60-120s prefill on every call on CPU.

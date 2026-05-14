@@ -787,10 +787,17 @@ def api_handle(payload):
         import master_ai as _m
         import capabilities as _caps
         import verifiers as _verifiers  # noqa: F401  -- resolved lazily by Capability.resolve_verifier(), imported here so import errors surface at request time, not mid-dispatch
+        import prompt_versions as _pv
 
         captured_actions = []
         captured_blocked = []
         patches = []
+        # Registry-handled actions get aggregated here for audit-row derivation
+        # AFTER the with-block. Each entry is the full _action dict carrying
+        # capability + verification_result metadata. captured_actions is
+        # reassigned to _browser_only mid-dispatch, so registry actions need
+        # their own sibling list to survive that reassignment.
+        _registry_handled = []
         prev_mode = getattr(_m, "MODE", "plan")
         prev_pinned = getattr(_m, "PINNED_MODEL", None)
 
@@ -913,6 +920,12 @@ def api_handle(payload):
                         _cap = _decision.capability
                         _action["capability"] = _cap.name
                         _action["decision_reason"] = _decision.reason
+                        # Record at the top of the decision branch so refused,
+                        # requires_confirmation, and executed branches all
+                        # land in the audit aggregation. The _action dict is
+                        # mutated by reference in each branch below, so at
+                        # audit time this carries the final state.
+                        _registry_handled.append(_action)
                         if not _decision.allow:
                             _server_out.append(f"[{_cap.name}] refused: {_decision.reason}")
                             _action["verification_result"] = None
@@ -1064,13 +1077,34 @@ def api_handle(payload):
     # so behavioral analytics can query terminal_reason ∈ {done_directive,
     # no_actions, budget, duplicate_failure} per goal without filtering noise.
     if done:
+        # Phase 1 audit-column extensions per
+        # ~/.claude/plans/reactive-waddling-papert.md:
+        # - task_id / correlation_id / causation_id: explicit aliases over the
+        #   existing turn_id / turn_root / parent_turn_id so audit queries can
+        #   join across the agentic vocabulary the rest of the system uses.
+        # - capabilities_fired / verification_results: aggregated from
+        #   _registry_handled so a single audit row carries the full evidence
+        #   chain for the turn (capability name + full VerifyResult shape:
+        #   ok, observed, elapsed_ms, reason). Forward-only: old rows without
+        #   these fields stay valid; readers tolerate missing keys.
+        # - prompt_version family: content-hash-first stamping from the
+        #   system-prompt assembly site in master_ai.py, so behavior can be
+        #   correlated to the exact config that produced it.
+        try:
+            import prompt_versions as _pv_audit
+            _pv_dict = _pv_audit.current()
+        except Exception:
+            _pv_dict = {}
         _write_turn_audit({
             "ts": now_iso,
             "source": "api_handle",
             "kind": "turn_terminal",
             "turn_id": turn_id,
+            "task_id": turn_id,
             "turn_root": turn_root or turn_id,
+            "correlation_id": turn_root or turn_id,
             "parent_turn_id": parent_turn_id or None,
+            "causation_id": parent_turn_id or None,
             "round_num": round_num,
             "round_budget": round_budget,
             "terminal_reason": terminal_reason,
@@ -1078,6 +1112,13 @@ def api_handle(payload):
             "model": model,
             "actions_count": len(captured_actions),
             "blocked_count": len(blocked_actions),
+            "capabilities_fired": [a.get("capability") for a in _registry_handled if a.get("capability")],
+            "verification_results": [a.get("verification_result") for a in _registry_handled if a.get("verification_result")],
+            "prompt_version": _pv_dict.get("prompt_version"),
+            "prompt_sha256_short": _pv_dict.get("prompt_sha256_short"),
+            "git_commit_short": _pv_dict.get("git_commit_short"),
+            "registry_version": _pv_dict.get("registry_version"),
+            "safety_policy_version": _pv_dict.get("safety_policy_version"),
         })
 
     return {

@@ -738,13 +738,59 @@ function stopLoop() {
   setConnection("Backend ready");
 }
 
-async function healthCheck() {
+// Bridge heartbeat — recurring /health probe so the side panel knows in
+// near-real-time whether the local backend is reachable. Gates dispatch so
+// prompt submissions don't fake success when the bridge is down. Phase 1 of
+// the agentic-follow-through layer per ~/.claude/plans/reactive-waddling-papert.md.
+const HEARTBEAT_INTERVAL_MS = 7000;
+const HEARTBEAT_STALE_MS = 20000;
+let _heartbeatTimer = null;
+
+function bridgeState() {
+  const last = state.bridge?.lastOkAt || 0;
+  const sinceMs = last > 0 ? performance.now() - last : Infinity;
+  return {
+    ok: last > 0 && sinceMs < HEARTBEAT_STALE_MS,
+    sinceMs,
+    lastError: state.bridge?.lastError || null,
+  };
+}
+
+async function heartbeat() {
+  state.bridge = state.bridge || { lastOkAt: 0, lastError: null };
   try {
     const data = await backendFetch("/health");
-    setConnection(data.ok ? "Backend ready" : "Backend degraded");
+    if (data.ok) {
+      state.bridge.lastOkAt = performance.now();
+      state.bridge.lastError = null;
+      setConnection("Backend ready");
+    } else {
+      state.bridge.lastError = "degraded";
+      setConnection("Backend degraded", "error");
+    }
   } catch (err) {
-    setConnection(`Backend offline: ${err.message}`, "error");
+    state.bridge.lastError = err.message || String(err);
+    setConnection(`Bridge unreachable: ${state.bridge.lastError}`, "error");
   }
+}
+
+function startHeartbeat() {
+  heartbeat();
+  if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+  _heartbeatTimer = setInterval(heartbeat, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeat() {
+  if (_heartbeatTimer) {
+    clearInterval(_heartbeatTimer);
+    _heartbeatTimer = null;
+  }
+}
+
+// Back-compat: callers that used the one-shot healthCheck() get the new
+// heartbeat path. Future code should call startHeartbeat() directly.
+async function healthCheck() {
+  return heartbeat();
 }
 
 async function transcribe(blob) {
