@@ -383,3 +383,174 @@ def make_audit_record(*, kind: str, detail: str,
 def serialize(action: TypedAction) -> str:
     """JSON-encode a TypedAction for jsonl logs."""
     return json.dumps(action.to_dict(), default=str, sort_keys=True)
+
+
+# ── Result envelope ──────────────────────────────────────────────────────
+# Status taxonomy that flows BACK to the model via [PREVIOUS ROUND RESULTS].
+# Distinct from `Status` above (internal lifecycle: PARSED → APPROVED → ...).
+# ResultStatus is the dispatcher's verdict, what the model sees next round.
+# Witnessed 2026-05-14 on a Drive selector loop: the model retried
+# `div[data-tooltip*="..."]` twice after both `result: failure` rounds
+# because the failure shape had no error_code and no observed_tab_url.
+# The envelope fields below are the truth the next round needs.
+
+
+class ResultStatus:
+    PLANNED = "planned"                          # Plan mode preview; not executed
+    WAITING_FOR_APPROVAL = "waiting_for_approval"  # Review (or Auto+sensitive)
+    RUNNING = "running"                          # Auto, safe, in flight
+    SUCCESS = "success"                          # Dispatcher executed; succeeded
+    FAILURE = "failure"                          # Dispatcher executed; failed
+    BLOCKED = "blocked"                          # Dispatcher refused outright
+
+
+RESULT_STATUSES = frozenset({
+    ResultStatus.PLANNED, ResultStatus.WAITING_FOR_APPROVAL, ResultStatus.RUNNING,
+    ResultStatus.SUCCESS, ResultStatus.FAILURE, ResultStatus.BLOCKED,
+})
+
+
+@dataclass
+class ActionResult:
+    """Truthful per-action result fed back to the model.
+
+    The model proposes; the dispatcher decides. Every directive emitted
+    gets one of these envelopes in the next round's [PREVIOUS ROUND
+    RESULTS] block — generalizes the [TOOL BLOCKED] retry pattern from
+    commit 45f6072 (blocked-only feedback) to every-action feedback.
+    """
+    action_id: str
+    kind: str
+    target: str
+    status: str                                  # one of RESULT_STATUSES
+    executed: bool                               # did dispatcher actually run it
+    mode_at_emission: str = "plan"               # plan | review | auto
+    error_code: Optional[str] = None             # permission_required | target_not_found | nav_blocked | timeout | conflict | …
+    error_message: Optional[str] = None
+    observed_tab_url: Optional[str] = None       # ground truth post-action; required for every BROWSER_* result
+    observed_text: Optional[str] = None          # short snippet for READ
+    gated_by: Optional[str] = None               # if downgraded or refused
+    ts: str = field(default_factory=_now_iso)
+    extras: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def make_envelope_from_side_panel_payload(raw: dict) -> ActionResult:
+    """Map side_panel.js's existing /extension/action_result body into an
+    ActionResult. The wire format is stable — `raw` has keys action_id,
+    verdict, result, final_state, action, gated_by. Don't break that
+    shape; translate it.
+    """
+    if not isinstance(raw, dict):
+        raise TypeError("side panel payload must be a dict")
+    raw_action = raw.get("action") or {}
+    kind = str(raw_action.get("kind") or raw.get("kind") or "").upper()
+    target = str(raw_action.get("target") or raw.get("target") or "")
+    action_id = str(raw.get("action_id") or raw_action.get("id") or "")
+    final = raw.get("final_state") if isinstance(raw.get("final_state"), dict) else {}
+    result = str(raw.get("result") or "").lower()
+    verdict = str(raw.get("verdict") or "").lower()
+
+    # Map (verdict, result) → ResultStatus + executed.
+    if verdict == "decline" or verdict == "reject":
+        status, executed = ResultStatus.BLOCKED, False
+        error_code = "user_declined"
+    elif result == "success":
+        status, executed = ResultStatus.SUCCESS, True
+        error_code = None
+    elif result == "failure":
+        status, executed = ResultStatus.FAILURE, True
+        error_code = _infer_error_code(final)
+    elif result == "blocked":
+        status, executed = ResultStatus.BLOCKED, False
+        error_code = "dispatcher_blocked"
+    else:
+        status, executed = ResultStatus.WAITING_FOR_APPROVAL, False
+        error_code = None
+
+    error_message = final.get("error") if isinstance(final, dict) else None
+    if error_message and not isinstance(error_message, str):
+        error_message = str(error_message)
+
+    # observed_tab_url: prefer explicit navigated URL on BROWSER_NAV, else
+    # the page_context's url (the URL the page settled at after action).
+    observed_tab_url = None
+    if isinstance(final, dict):
+        observed_tab_url = (
+            final.get("navigated")
+            or ((final.get("page_context") or {}).get("url") if isinstance(final.get("page_context"), dict) else None)
+            or final.get("observed_tab_url")
+        )
+
+    observed_text = None
+    if isinstance(final, dict):
+        text = final.get("text")
+        if isinstance(text, str):
+            observed_text = text[:240]
+
+    gated_by = raw.get("gated_by") if isinstance(raw.get("gated_by"), str) else None
+    mode_at_emission = str(raw.get("mode_at_emission") or raw_action.get("mode_at_emission") or "auto").lower()
+
+    return ActionResult(
+        action_id=action_id,
+        kind=kind,
+        target=target[:300],
+        status=status,
+        executed=executed,
+        mode_at_emission=mode_at_emission,
+        error_code=error_code,
+        error_message=(error_message[:300] if isinstance(error_message, str) else None),
+        observed_tab_url=(observed_tab_url[:500] if isinstance(observed_tab_url, str) else None),
+        observed_text=observed_text,
+        gated_by=gated_by,
+        extras={"source_payload_keys": sorted(list(raw.keys()))},
+    )
+
+
+def _infer_error_code(final_state: dict) -> Optional[str]:
+    if not isinstance(final_state, dict):
+        return None
+    err = (final_state.get("error") or "").lower() if isinstance(final_state.get("error"), str) else ""
+    if not err:
+        return None
+    if "target not found" in err or "selector not found" in err:
+        return "target_not_found"
+    if "permission" in err or "blocked" in err:
+        return "permission_required"
+    if "timeout" in err or "timed out" in err:
+        return "timeout"
+    if "navigation" in err or "nav" in err:
+        return "nav_blocked"
+    if "conflict" in err or "already has" in err:
+        return "conflict"
+    return "dispatcher_error"
+
+
+def format_envelope_row(env: ActionResult) -> str:
+    """Render one ActionResult as the model-facing text block.
+
+    Schema chosen to fit comfortably inside [PREVIOUS ROUND RESULTS]:
+        · BROWSER_NAV https://drive.google.com
+          status: failure  executed: false
+          error_code: permission_required
+          error_message: ...
+          observed_tab_url: https://www.indeed.com/...
+    """
+    if not isinstance(env, ActionResult):
+        raise TypeError("format_envelope_row expects ActionResult")
+    header = f"  · {env.kind} {env.target}"
+    lines = [header,
+             f"    status: {env.status}  executed: {'true' if env.executed else 'false'}"]
+    if env.error_code:
+        lines.append(f"    error_code: {env.error_code}")
+    if env.error_message:
+        lines.append(f"    error_message: {env.error_message}")
+    if env.observed_tab_url:
+        lines.append(f"    observed_tab_url: {env.observed_tab_url}")
+    if env.observed_text:
+        lines.append(f"    observed_text: {env.observed_text}")
+    if env.gated_by:
+        lines.append(f"    gated_by: {env.gated_by}")
+    return "\n".join(lines)
