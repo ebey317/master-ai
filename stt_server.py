@@ -384,7 +384,7 @@ def _finalize_scrub_meta(fired_acc, fields_acc):
 
 def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
                 action_results=None, round_num=1, round_budget=None,
-                request_id=""):
+                request_id="", resume_path=""):
     context, scrub_meta = _format_page_context(page_context)
     # Audit even if no formatted context survived (e.g., every field was empty
     # after sanitize) — the scrub still happened and Elijah needs the row.
@@ -401,6 +401,13 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         "[API REQUEST]",
         f"source: {_safe_context_text(source or 'pupil', 80)}",
     ]
+    if resume_path:
+        # Phase 2.1: tell the model where the user's résumé file is. Used by
+        # the model to emit BROWSER_FILL targets like
+        # `BROWSER_FILL: input[type="file"] :: file:///home/elijah/...`. The
+        # extension uses /extension/read_local_file to fetch the bytes for
+        # DataTransfer-based upload (full bridge in 2.1b).
+        lines.append(f"resume_path: {_safe_context_text(resume_path, 500)}")
     if schedule_id:
         lines.append(f"schedule_id: {_safe_context_text(schedule_id, 120)}")
     if round_num and round_num > 1:
@@ -1001,6 +1008,7 @@ def api_handle(payload):
         round_num=round_num,
         round_budget=round_budget,
         request_id=turn_id,
+        resume_path=str(payload.get("resume_path") or "").strip(),
     )
 
     with _API_HANDLE_LOCK:
@@ -2012,6 +2020,69 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except Exception:
                 pass  # Audit is observability, not a blocker.
             return self._json({'ok': True})
+
+        # /extension/read_local_file — reads a local file off disk for the
+        # extension to ship into a content-script file-input via DataTransfer
+        # (commit 2.1 of the dispatcher plan; full upload bridge needs a
+        # content_script handler that lands in 2.1b after Codex's pile is
+        # committed). Reuses master_ai._read_path_ok for the read fence;
+        # 10MB cap to keep prompts bounded. Requires X-Master-AI-Token.
+        #
+        # Body: {path}
+        # Returns: {ok, mime, size, base64}
+        if self.path == '/extension/read_local_file':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            path_in = str(payload.get('path') or '').strip()
+            if not path_in:
+                return self._json({'ok': False, 'error': 'missing path'}, 400)
+            try:
+                _scripts_on_path()
+                import master_ai as _m
+            except Exception as _e:
+                return self._json({'ok': False, 'error': f'master_ai import failed: {_e}'}, 500)
+            expanded = os.path.expanduser(path_in)
+            if hasattr(_m, '_read_path_ok'):
+                try:
+                    ok, reason = _m._read_path_ok(expanded)
+                except Exception as _e:
+                    ok, reason = False, f'read fence error: {_e}'
+                if not ok:
+                    return self._json({'ok': False, 'error': reason or 'read refused'}, 403)
+            try:
+                import mimetypes, base64
+                if not os.path.exists(expanded):
+                    return self._json({'ok': False, 'error': 'file not found'}, 404)
+                size = os.path.getsize(expanded)
+                if size > 10 * 1024 * 1024:
+                    return self._json({'ok': False, 'error': f'file too large ({size} bytes; cap 10485760)'}, 413)
+                mime, _ = mimetypes.guess_type(expanded)
+                with open(expanded, 'rb') as f:
+                    raw = f.read()
+                b64 = base64.b64encode(raw).decode('ascii')
+                # Audit (no base64 in the audit, just metadata).
+                try:
+                    from pathlib import Path as _P
+                    import time as _t
+                    rec = {
+                        'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                        'source': 'extension',
+                        'kind': 'extension_local_file_read',
+                        'path': expanded[:500],
+                        'size': size,
+                        'mime': mime,
+                    }
+                    with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                        f.write(json.dumps(rec) + '\n')
+                except Exception:
+                    pass
+                return self._json({'ok': True, 'size': size, 'mime': mime or 'application/octet-stream', 'base64': b64})
+            except Exception as _e:
+                return self._json({'ok': False, 'error': f'read failed: {_e}'}, 500)
 
         # /extension/approve_action — Review-mode per-action approval for
         # backend-dispatched directives (RUN/RUNTERM/READ/CREATE/EDIT).

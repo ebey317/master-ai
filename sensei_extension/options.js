@@ -5,7 +5,12 @@ const DEFAULTS = {
   sessionId: "",
   actionPermissionMode: "ask",
   approvedOrigins: [],
-  permissionHistory: []
+  permissionHistory: [],
+  // Local résumé/CV file path the model can reference for file-upload
+  // BROWSER_FILL targets (commit 2.1 of the dispatcher plan). Empty until
+  // the user sets it from the options page. Backend reads via the
+  // /extension/read_local_file endpoint.
+  resumePath: ""
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -87,6 +92,7 @@ async function load() {
   $("#mode").value = config.mode || "review";
   $("#sessionId").value = config.sessionId;
   $("#actionPermissionMode").value = config.actionPermissionMode;
+  $("#resumePath").value = config.resumePath || "";
   renderApprovedSites(config.approvedOrigins);
   await chromeSet({ sessionId: config.sessionId });
   setStatus("Loaded");
@@ -98,10 +104,35 @@ async function save() {
     token: $("#token").value.trim(),
     mode: $("#mode").value,
     sessionId: $("#sessionId").value.trim() || `sensei-${crypto.randomUUID()}`,
-    actionPermissionMode: $("#actionPermissionMode").value
+    actionPermissionMode: $("#actionPermissionMode").value,
+    resumePath: $("#resumePath").value.trim()
   };
   await chromeSet(values);
   setStatus("Saved");
+}
+
+async function testResumeRead() {
+  const backendUrl = $("#backendUrl").value.trim().replace(/\/+$/, "") || DEFAULTS.backendUrl;
+  const token = $("#token").value.trim();
+  const path = $("#resumePath").value.trim();
+  if (!path) { setStatus("Set a résumé path first"); return; }
+  setStatus("Reading résumé file...");
+  try {
+    const res = await fetchWithTimeout(`${backendUrl}/extension/read_local_file`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Master-AI-Token": token
+      },
+      body: JSON.stringify({ path })
+    }, 8000);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    if (!data.ok) throw new Error(data.error || "backend refused");
+    setStatus(`Resume readable — ${data.size} bytes, ${data.mime}`);
+  } catch (err) {
+    setStatus(`Read failed: ${err.message}`);
+  }
 }
 
 async function testBackend() {
@@ -127,6 +158,7 @@ document.addEventListener("DOMContentLoaded", () => {
     save();
   });
   $("#testBackend").addEventListener("click", testBackend);
+  $("#testResumeRead").addEventListener("click", testResumeRead);
   $("#generateToken").addEventListener("click", () => {
     $("#token").value = randomToken();
     setStatus("Token generated");

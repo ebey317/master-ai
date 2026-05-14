@@ -755,6 +755,9 @@ async function sendPrompt() {
       page_context: ctx,
       client_timings: { ...timings }
     };
+    // Phase 2.1: surface the configured local résumé path to the model so it
+    // can reference it in file-upload BROWSER_FILL targets. Empty when unset.
+    if (state.config.resumePath) body.resume_path = state.config.resumePath;
     const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);

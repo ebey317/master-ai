@@ -38,6 +38,13 @@
         <input id="sessionId" type="text" autocomplete="off">
       </label>
 
+      <label>
+        Résumé file path
+        <input id="resumePath" type="text" placeholder="/home/elijah/Documents/resume.pdf" autocomplete="off">
+        <button id="testResumeRead" type="button">Test read</button>
+        <small>Local file the model can reference for file-upload BROWSER_FILL targets. Backend reads via the /extension/read_local_file endpoint (auth required).</small>
+      </label>
+
       <section class="permissions">
         <div>
           <h2>Browser Permissions</h2>
