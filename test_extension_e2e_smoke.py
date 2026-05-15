@@ -33,6 +33,7 @@ Run: python3 ~/scripts/test_extension_e2e_smoke.py
 """
 import json
 import os
+import re
 import sys
 import time
 import unittest
@@ -40,10 +41,57 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from bs4 import BeautifulSoup  # stdlib-adjacent — already shipped on this box.
+
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 20
 CHAT_TIMEOUT_S = 600  # local Ollama prefill can take a while on CPU
-FIXTURE_URL = "file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html"
+FIXTURE_PATH = Path("/home/elijah/scripts/sensei_extension/test/job_app_smoke.html")
+FIXTURE_URL = f"file://{FIXTURE_PATH}"
+
+# Fields the fixture's submit handler treats as required. Mirrors FIELD_IDS
+# in job_app_smoke.html. Used to assert the model proposed a fill for
+# every required field (so the submit handler will not 422).
+REQUIRED_FIELD_IDS = [
+    "firstName", "lastName", "email", "phone",
+    "city", "state", "zip", "yearsExperience", "coverLetter",
+]
+REQUIRED_RADIO_NAME = "workAuth"
+
+
+def _parse_fixture():
+    return BeautifulSoup(FIXTURE_PATH.read_text(), "html.parser")
+
+
+def _parse_fill_target(target):
+    """Mirror content_script.js parseFillTarget — the bit that matters for
+    selector validation. Splits on `=>` / `:=` / `::`; bare target = selector
+    only. JSON-wrapped {selector,value} also supported."""
+    raw = str(target or "").strip()
+    if raw.startswith("{"):
+        try:
+            obj = json.loads(raw)
+            return (str(obj.get("selector") or obj.get("target") or "").strip(),
+                    str(obj.get("value") or obj.get("text") or ""))
+        except json.JSONDecodeError:
+            pass
+    m = re.match(r"^(.*?)\s*(?:=>|:=|::)\s*([\s\S]*)$", raw)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return raw, ""
+
+
+def _selector_matches(soup, selector):
+    """Best-effort match of the subset of CSS selectors content_script.js
+    findElement supports: ID, tag[attr=value], plain tag, structural
+    descendants. Returns the list of matching elements."""
+    sel = (selector or "").strip()
+    if not sel:
+        return []
+    try:
+        return soup.select(sel)
+    except Exception:
+        return []
 
 # Mirrors what content_script.js's interactiveElements() emits for
 # job_app_smoke.html. Each line: "N. role \"name\" selector=...".
@@ -231,6 +279,72 @@ class JobAppEndToEndSmoke(unittest.TestCase):
         self.assertIsNotNone(submit_action,
                              "no BROWSER_CLICK targeted the Submit button. "
                              "Actions: " + json.dumps(all_actions, indent=2))
+
+        # ---- Selector-resolves-against-fixture validation ----
+        # Catch the failure mode where the model emits the right SHAPE of
+        # action sequence but the selectors don't actually find the DOM
+        # element on the live fixture (typo in id, wrong attribute, etc.).
+        # Combined with the existing loop_smoke.html proof that content_script
+        # CAN execute BROWSER_FILL/BROWSER_CLICK on real DOM nodes, this
+        # closes the loop without requiring a live Chrome run for the
+        # specific multi-field job-app case.
+        soup = _parse_fixture()
+        filled_field_ids = set()
+        radio_clicked_for = set()
+        unresolved = []
+
+        for action in all_actions:
+            kind = str(action.get("kind") or "").upper()
+            target = str(action.get("target") or "")
+            if kind == "BROWSER_FILL":
+                selector, value = _parse_fill_target(target)
+                matches = _selector_matches(soup, selector)
+                if not matches:
+                    unresolved.append(f"FILL {selector!r}: no DOM match")
+                    continue
+                el = matches[0]
+                # Track which required field was filled (by id).
+                el_id = el.get("id")
+                if el_id:
+                    filled_field_ids.add(el_id)
+                # If it's a <select>, the value must be one of the options.
+                if el.name == "select":
+                    options = {o.get("value", "") for o in el.find_all("option")}
+                    if value not in options and value:
+                        unresolved.append(
+                            f"FILL {selector}: value {value!r} not in <select> "
+                            f"options {sorted(o for o in options if o)}"
+                        )
+            elif kind == "BROWSER_CLICK":
+                matches = _selector_matches(soup, target.strip())
+                if not matches:
+                    unresolved.append(f"CLICK {target!r}: no DOM match")
+                    continue
+                el = matches[0]
+                if el.get("type") == "radio":
+                    name = el.get("name")
+                    if name:
+                        radio_clicked_for.add(name)
+
+        self.assertEqual(unresolved, [],
+                         "model emitted actions whose selectors don't resolve on "
+                         "the fixture HTML — content_script.js findElement would "
+                         "fail in real Chrome:\n  " + "\n  ".join(unresolved))
+
+        # Every required text/select field must have a corresponding FILL.
+        missing_fills = [fid for fid in REQUIRED_FIELD_IDS if fid not in filled_field_ids]
+        self.assertEqual(missing_fills, [],
+                         f"required fields not covered by BROWSER_FILL actions: "
+                         f"{missing_fills}. Filled: {sorted(filled_field_ids)}")
+
+        # The workAuth radio group must have a CLICK on at least one value.
+        self.assertIn(REQUIRED_RADIO_NAME, radio_clicked_for,
+                      f"workAuth radio not clicked — submit handler will block. "
+                      f"Radios clicked: {sorted(radio_clicked_for)}")
+
+        print(f"  ✓ all selectors resolve on fixture")
+        print(f"  ✓ all required fields filled: {sorted(filled_field_ids)}")
+        print(f"  ✓ workAuth radio clicked")
 
 
 if __name__ == "__main__":
