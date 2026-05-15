@@ -945,7 +945,15 @@ def api_handle(payload):
     # status taxonomy (planned/waiting_for_approval/running) and by the
     # chrome_extension auto-mode dispatch block below. Don't recompute
     # later — that risks drift if _m.MODE shifts during handle().
-    effective_mode = (mode_req or getattr(_m, "MODE", "plan") or "plan").lower()
+    #
+    # _m lookup uses sys.modules instead of a local `_m` reference because
+    # `import master_ai as _m` lower in this function makes `_m` a Python-
+    # local symbol throughout — referencing it here pre-import would fire
+    # UnboundLocalError. Hit live 2026-05-14 e2e smoke via /chat/continue
+    # when the extension omitted `mode` in the continuation payload.
+    _m_module_for_mode = sys.modules.get("master_ai")
+    _module_mode_default = getattr(_m_module_for_mode, "MODE", "plan") if _m_module_for_mode else "plan"
+    effective_mode = (mode_req or _module_mode_default or "plan").lower()
     if effective_mode not in ("plan", "review", "auto"):
         effective_mode = "plan"
 
