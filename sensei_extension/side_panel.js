@@ -65,6 +65,10 @@ const state = {
   // after a confirmed BROWSER_NAV. Mutating actions abort if the active tab
   // has drifted away from this host between observation and dispatch.
   lastObservedOrigin: null,
+  // Phase 4 — Chrome Tab Group for this session. Restored from
+  // chrome.storage.local on init when the same Chrome session is still up,
+  // else created on demand when the first BROWSER_TAB_CREATE fires.
+  sessionTabGroup: null,
   // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
   // proposed actions, the user approves/rejects each one. As each result is
   // reported to /extension/action_result, it's also appended to loop.results.
@@ -111,6 +115,86 @@ async function loadConfig() {
 async function saveMode(mode) {
   state.config.mode = mode;
   await chromeSet({ mode });
+  // Phase 4.1 — the tab group color follows the mode stoplight so users
+  // can spot which mode created a tab without opening the panel.
+  await syncTabGroupColorToMode();
+}
+
+// Phase 4.1 — TabGroupManager. Maps the Sensei mode to a Chrome tab-group
+// color per feedback_mode_stoplight_colors.md (Plan=red / Review=orange /
+// Auto=green). One group per side-panel session, restored across panel
+// close/open as long as the Chrome session keeps the group alive.
+const SESSION_TAB_GROUP_TITLE = "Sensei";
+
+function tabGroupColorForMode(mode) {
+  const m = String(mode || "").toLowerCase();
+  if (m === "plan") return "red";
+  if (m === "review") return "orange";
+  if (m === "auto") return "green";
+  return "blue";
+}
+
+function _currentMode() {
+  return (document.getElementById("modeSelect")?.value ||
+          state.config.mode || "review").toLowerCase();
+}
+
+async function _verifyTabGroupAlive(groupId) {
+  if (!groupId || !chrome.tabGroups?.get) return false;
+  try {
+    await chrome.tabGroups.get(groupId);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+async function restoreSessionTabGroup() {
+  if (!chrome.tabGroups?.get) return;
+  const stored = await chromeGet(["sessionTabGroupId"]);
+  const storedId = Number(stored?.sessionTabGroupId);
+  if (!Number.isFinite(storedId) || storedId <= 0) return;
+  if (!(await _verifyTabGroupAlive(storedId))) {
+    await chromeSet({ sessionTabGroupId: null });
+    return;
+  }
+  state.sessionTabGroup = { groupId: storedId, color: null, tabIds: new Set() };
+  await syncTabGroupColorToMode();
+}
+
+async function addTabToSessionGroup(tabId) {
+  if (!tabId || !chrome.tabs?.group) return null;
+  const color = tabGroupColorForMode(_currentMode());
+  let groupId = state.sessionTabGroup?.groupId || null;
+  if (groupId && !(await _verifyTabGroupAlive(groupId))) {
+    state.sessionTabGroup = null;
+    groupId = null;
+  }
+  if (groupId) {
+    await chrome.tabs.group({ groupId, tabIds: [tabId] });
+  } else {
+    groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    state.sessionTabGroup = { groupId, color, tabIds: new Set() };
+    try {
+      await chrome.tabGroups.update(groupId, { title: SESSION_TAB_GROUP_TITLE, color });
+    } catch (_err) { /* user may have ungrouped immediately; non-fatal */ }
+    await chromeSet({ sessionTabGroupId: groupId });
+  }
+  state.sessionTabGroup.tabIds.add(tabId);
+  return groupId;
+}
+
+async function syncTabGroupColorToMode() {
+  if (!state.sessionTabGroup?.groupId || !chrome.tabGroups?.update) return;
+  const color = tabGroupColorForMode(_currentMode());
+  if (state.sessionTabGroup.color === color) return;
+  try {
+    await chrome.tabGroups.update(state.sessionTabGroup.groupId, { color });
+    state.sessionTabGroup.color = color;
+  } catch (_err) {
+    // Group may have been removed; clear so next addTab makes a new one.
+    state.sessionTabGroup = null;
+  }
 }
 
 function backendHeaders(extra = {}) {
@@ -1120,12 +1204,13 @@ const PermissionManager = {
   typeFor(action, contextOrigin = "") {
     const kind = String(action?.kind || "").toUpperCase();
     const target = String(action?.target || "").toLowerCase();
-    if (kind === "BROWSER_NAV") {
+    if (kind === "BROWSER_NAV" || kind === "BROWSER_TAB_CREATE") {
       // DOMAIN_TRANSITION when the target is an explicit URL whose origin
       // differs from the current tab. Bareword / relative-path targets stay
       // NAVIGATE — the backend's normalizeUrl already injects the scheme,
       // and being conservative here avoids false DOMAIN_TRANSITION labels
-      // on intra-origin navigations.
+      // on intra-origin navigations. TAB_CREATE follows the same rule
+      // even though it doesn't unload the current tab.
       if (/^https?:/i.test(target)) {
         try {
           const targetOrigin = new URL(target).origin;
@@ -1396,7 +1481,8 @@ function setActionStatus(row, text) {
 function classifyBrowserAction(action, origin = "") {
   const kind = String(action?.kind || "").toUpperCase();
   const target = String(action?.target || "").toLowerCase();
-  const checkUrl = kind === "BROWSER_NAV" ? target : origin;
+  const checkUrl = (kind === "BROWSER_NAV" || kind === "BROWSER_TAB_CREATE")
+    ? target : origin;
   const blockedReason = originBlockedReason(checkUrl);
   if (blockedReason) {
     return {
@@ -1564,6 +1650,20 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
     } else if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
       result = await sendToContent(tab, action, timings);
       invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_TAB_CREATE") {
+      // Phase 4.2 — open a new tab in the session's tab group. URL is
+      // classified just like BROWSER_NAV via originBlockedReason +
+      // domain-classifier verdict (the classify gate above used `target`).
+      const url = normalizeUrl(action.target);
+      const newTab = await chrome.tabs.create({ url, active: false });
+      if (newTab?.id) {
+        await addTabToSessionGroup(newTab.id);
+      }
+      result = {
+        ok: true,
+        tab_created: { id: newTab?.id, url, windowId: newTab?.windowId,
+                       group_id: state.sessionTabGroup?.groupId || null },
+      };
     } else if (kind === "BROWSER_CDP_MOUSE") {
       result = await dispatchCdpMouse(tab, action, timings);
       if (result?.ok) {
@@ -2509,6 +2609,7 @@ async function init() {
   $("#stopButton")?.addEventListener("click", stopLoop);
   prewarmActiveTab();
   refreshDomainBlockBanner();
+  restoreSessionTabGroup();
   startHeartbeat();
   appendMessage("assistant", "Ready.");
 }

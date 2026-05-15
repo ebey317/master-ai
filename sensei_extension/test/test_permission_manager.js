@@ -44,6 +44,8 @@ function eq(actual, expected, label) {
 eq(PM.typeFor({kind:"BROWSER_NAV", target:"https://example.com"}, "https://example.com"), PT.NAVIGATE, "NAV same-origin → NAVIGATE");
 eq(PM.typeFor({kind:"BROWSER_NAV", target:"https://other.com"}, "https://example.com"), PT.DOMAIN_TRANSITION, "NAV cross-origin → DOMAIN_TRANSITION");
 eq(PM.typeFor({kind:"BROWSER_NAV", target:"bareword"}, "https://example.com"), PT.NAVIGATE, "NAV bareword target → NAVIGATE");
+eq(PM.typeFor({kind:"BROWSER_TAB_CREATE", target:"https://example.com"}, "https://example.com"), PT.NAVIGATE, "TAB_CREATE same-origin → NAVIGATE");
+eq(PM.typeFor({kind:"BROWSER_TAB_CREATE", target:"https://other.com"}, "https://example.com"), PT.DOMAIN_TRANSITION, "TAB_CREATE cross-origin → DOMAIN_TRANSITION");
 eq(PM.typeFor({kind:"BROWSER_READ_PAGE"}, ""), PT.READ_PAGE_CONTENT, "READ_PAGE → READ_PAGE_CONTENT");
 eq(PM.typeFor({kind:"BROWSER_OBSERVE"}, ""), PT.READ_PAGE_CONTENT, "OBSERVE → READ_PAGE_CONTENT");
 eq(PM.typeFor({kind:"BROWSER_READ", target:"#main"}, ""), PT.READ_PAGE_CONTENT, "READ region → READ_PAGE_CONTENT");
