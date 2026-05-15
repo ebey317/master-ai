@@ -62,6 +62,17 @@ _API_TURNS = {}  # {turn_id: {session_key, round_num, round_budget, created_at, 
 _API_TURNS_LOCK = threading.Lock()
 _API_DEFAULT_ROUND_BUDGET = 3
 _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
+# Browser-automation turns (chrome_extension source with page_context)
+# need a higher default budget than the generic Pupil-chat default.
+# Real flows like "search Drive → open folder → wait for SPA render →
+# read contents → maybe try a spelling variant" easily eat 6-12 rounds.
+# Observed 2026-05-14: Drive résumé-folder lookup ran 15+ rounds at the
+# old default-of-3 ceiling, looking exactly like a runaway loop when it
+# was really a fundamentally multi-step exploration. Browser turns get
+# 8 by default; Pupil chat stays at 3. The max ceiling lifts to 16 so
+# legitimate long flows don't false-terminate.
+_API_BROWSER_DEFAULT_ROUND_BUDGET = 8
+_API_BROWSER_MAX_ROUND_BUDGET = 16
 _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
@@ -969,11 +980,23 @@ def api_handle(payload):
     # M9 continuation context
     parent_turn_id = _safe_context_text(payload.get("parent_turn_id") or "", 80)
     action_results = payload.get("action_results") if isinstance(payload.get("action_results"), list) else None
+    # Browser-automation turns get a higher default + ceiling so real
+    # multi-step page flows (Drive search → open → read; checkout walk;
+    # job-app fill+submit) don't false-terminate. See
+    # _API_BROWSER_DEFAULT_ROUND_BUDGET comment.
+    _is_browser_turn = bool(
+        source_raw and "chrome_extension" in str(source_raw).lower()
+        and page_context
+    )
+    _budget_default = (_API_BROWSER_DEFAULT_ROUND_BUDGET if _is_browser_turn
+                       else _API_DEFAULT_ROUND_BUDGET)
+    _budget_max = (_API_BROWSER_MAX_ROUND_BUDGET if _is_browser_turn
+                   else _API_MAX_ROUND_BUDGET)
     try:
-        req_budget = int(payload.get("round_budget") or _API_DEFAULT_ROUND_BUDGET)
+        req_budget = int(payload.get("round_budget") or _budget_default)
     except (TypeError, ValueError):
-        req_budget = _API_DEFAULT_ROUND_BUDGET
-    req_budget = max(1, min(req_budget, _API_MAX_ROUND_BUDGET))
+        req_budget = _budget_default
+    req_budget = max(1, min(req_budget, _budget_max))
 
     # M9 safety: detect duplicate-target failures in the incoming round and
     # short-circuit before burning another model turn. If the same target
