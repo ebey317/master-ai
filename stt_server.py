@@ -34,6 +34,21 @@ def _chats_dir():
 CHATS_DIR = _DEFAULT_CHATS_DIR
 
 _API_HANDLE_LOCK = threading.Lock()
+# Wedge protection (2026-05-14). api_handle wraps the dispatch path in this
+# global lock because _m.handle() monkey-patches module-level globals
+# (process_reply, confirm_run, MODE, PINNED_MODEL). When a runaway local
+# Ollama inference holds the lock 8+ min, every /chat behind it blocks —
+# including cloud lanes that never touch Ollama, plus the Chrome extension.
+# Ceiling so the lock is never held indefinitely; callers surface HTTP 503.
+_API_HANDLE_LOCK_TIMEOUT_S = 120.0
+
+
+class ApiHandleBusy(Exception):
+    """Raised when api_handle cannot acquire _API_HANDLE_LOCK within the
+    configured timeout. Caller maps this to HTTP 503 + retry_after so
+    clients (Pupil, Chrome extension) fail fast instead of hanging."""
+
+
 _API_HISTORY_LOCK = threading.Lock()
 _API_HISTORIES = {}
 _API_MAX_HISTORY_MESSAGES = 24
@@ -1011,7 +1026,17 @@ def api_handle(payload):
         resume_path=str(payload.get("resume_path") or "").strip(),
     )
 
-    with _API_HANDLE_LOCK:
+    # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
+    # comment near the lock definition. Without this, a single wedged local
+    # inference can hang every /chat (including cloud lanes) for the duration
+    # of master_ai.py's 600s Ollama urlopen timeout.
+    if not _API_HANDLE_LOCK.acquire(timeout=_API_HANDLE_LOCK_TIMEOUT_S):
+        raise ApiHandleBusy(
+            f"timed out after {_API_HANDLE_LOCK_TIMEOUT_S:.0f}s waiting for "
+            f"/chat dispatch lock; likely runaway local inference. "
+            f"Retry after the current request completes."
+        )
+    try:
         _scripts_on_path()
         import master_ai as _m
         import capabilities as _caps
@@ -1276,6 +1301,8 @@ def api_handle(payload):
                 _m.PINNED_MODEL = prev_pinned
             except Exception:
                 pass
+    finally:
+        _API_HANDLE_LOCK.release()
 
     if session_key:
         with _API_HISTORY_LOCK:
@@ -2297,6 +2324,15 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             try:
                 payload = json.loads(data or b'{}')
                 self._json(api_handle(payload)); return
+            except ApiHandleBusy as e:
+                # Wedge protection: lock acquire timed out. Surface fast so
+                # the caller (Pupil / Chrome extension) can retry instead of
+                # hanging behind a runaway local inference.
+                self._json({
+                    'error': 'system_busy',
+                    'detail': str(e),
+                    'retry_after_s': 15,
+                }, 503); return
             except ValueError as e:
                 msg = str(e)
                 status = 400 if msg in ('missing prompt', 'invalid mode') else 500
@@ -2323,6 +2359,12 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 if not payload.get("parent_turn_id"):
                     self._json({'error': 'missing parent_turn_id'}, 400); return
                 self._json(api_handle(payload)); return
+            except ApiHandleBusy as e:
+                self._json({
+                    'error': 'system_busy',
+                    'detail': str(e),
+                    'retry_after_s': 15,
+                }, 503); return
             except ValueError as e:
                 msg = str(e)
                 status = 400 if msg in ('missing prompt', 'invalid mode', 'missing parent_turn_id') else 500
