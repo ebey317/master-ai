@@ -25,12 +25,15 @@ import hooks  # noqa: E402
 class RegistryShape(unittest.TestCase):
     def test_kinds_are_complete(self):
         # on_blocked added 2026-05-11 for auto-extract-lesson hook.
+        # turn_answer_start added 2026-05-15 (Phase 5.6) — observer-only,
+        # fires once per /chat response before the reply is returned.
         expected = {
             "pre_run", "post_run", "pre_runterm", "post_runterm",
             "pre_read", "post_read",
             "pre_create", "post_create",
             "pre_edit", "post_edit",
             "on_blocked",
+            "turn_answer_start",
         }
         self.assertEqual(hooks.KINDS, frozenset(expected))
 
