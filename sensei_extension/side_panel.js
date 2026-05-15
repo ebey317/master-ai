@@ -197,6 +197,29 @@ async function syncTabGroupColorToMode() {
   }
 }
 
+// Phase 4.3 — enumerate the session group's tabs into the
+// tabs_context payload field. Empty array when no group is established
+// yet OR when chrome.tabs.query rejects (the next /chat round just
+// won't see open tabs; not an error). Capped at 20 to bound prompt size.
+async function gatherTabsContext() {
+  const groupId = state.sessionTabGroup?.groupId;
+  if (!groupId || !chrome.tabs?.query) return [];
+  try {
+    const tabs = await chrome.tabs.query({ groupId });
+    if (!Array.isArray(tabs)) return [];
+    return tabs.slice(0, 20).map((t) => ({
+      tab_id: t.id,
+      url: t.url || "",
+      title: t.title || "",
+      active: Boolean(t.active),
+      in_session_group: true,
+      status: t.status || "",
+    }));
+  } catch (_err) {
+    return [];
+  }
+}
+
 function backendHeaders(extra = {}) {
   return {
     "X-Master-AI-Token": state.config.token || "",
@@ -2257,6 +2280,9 @@ async function sendPrompt() {
     // can reference it in file-upload BROWSER_FILL targets. Empty when unset.
     if (state.config.resumePath) body.resume_path = state.config.resumePath;
     if (localFileHints) body.local_file_hints = localFileHints;
+    // Phase 4.3: list the session group's tabs so the model knows what's open.
+    const tabsContext = await gatherTabsContext();
+    if (tabsContext.length) body.tabs_context = tabsContext;
     const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);
@@ -2368,6 +2394,10 @@ async function continueLoop() {
         audit_queue_depth: state.auditQueue.length
       }
     };
+    // Phase 4.3 — continuation rounds also carry the latest tab list so the
+    // model sees newly-opened or closed tabs without waiting for a fresh turn.
+    const tabsContext = await gatherTabsContext();
+    if (tabsContext.length) body.tabs_context = tabsContext;
     const data = await timed(timings, "chat", () => backendFetch("/chat/continue", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);

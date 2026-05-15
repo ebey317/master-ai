@@ -693,9 +693,45 @@ def _finalize_scrub_meta(fired_acc, fields_acc):
     }
 
 
+def _format_tabs_context(tabs_context):
+    """Format Phase 4.3 tabs_context list for the model. Returns "" when no
+    tabs are present. Sanitizes every url/title leaf the same way page_context
+    leaves are sanitized so a malicious tab title can't slip directives in.
+
+    tabs_context shape (from the Chrome extension):
+        [{tab_id, url, title, active, in_session_group, status}, ...]
+    """
+    if not isinstance(tabs_context, list) or not tabs_context:
+        return ""
+    fired_acc, fields_acc = [], set()
+    lines = ["[OPEN TABS]"]
+    for entry in tabs_context[:20]:
+        if not isinstance(entry, dict):
+            continue
+        url = _sanitize_page_context_field(entry.get("url"), "tabs_context.url", fired_acc, fields_acc)
+        title = _sanitize_page_context_field(entry.get("title"), "tabs_context.title", fired_acc, fields_acc)
+        if not url and not title:
+            continue
+        flags = []
+        if entry.get("active"): flags.append("active")
+        if entry.get("in_session_group"): flags.append("in_group")
+        status = str(entry.get("status") or "").strip().lower()
+        if status and status not in ("complete", ""): flags.append(status)
+        flag_text = f" ({', '.join(flags)})" if flags else ""
+        tab_id = entry.get("tab_id")
+        tab_label = f"tab {tab_id}" if isinstance(tab_id, (int, float)) else "tab ?"
+        title_text = _safe_context_text(title or "(no title)", limit=160)
+        url_text = _safe_context_text(url or "(no url)", limit=400)
+        lines.append(f"- {tab_label}{flag_text}: {title_text}  {url_text}")
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
                 action_results=None, round_num=1, round_budget=None,
-                request_id="", resume_path="", local_file_hints=None):
+                request_id="", resume_path="", local_file_hints=None,
+                tabs_context=None):
     context, scrub_meta = _format_page_context(page_context)
     # Audit even if no formatted context survived (e.g., every field was empty
     # after sanitize) — the scrub still happened and Elijah needs the row.
@@ -760,6 +796,12 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
             lines.append("")
             lines.append(f"[SAFETY: {scrub_meta['count']} page-context tokens scrubbed]")
         lines.extend(["", context])
+    # Phase 4.3 — tabs_context (list of currently-open tabs in the session
+    # group) lands between page_context and results so the model sees what's
+    # available before reading the prior round's outcomes.
+    tabs_block = _format_tabs_context(tabs_context)
+    if tabs_block:
+        lines.extend(["", tabs_block])
     if results_block:
         lines.extend(["", results_block])
     lines.extend(["", "[USER PROMPT]", prompt])
@@ -1282,6 +1324,9 @@ def api_handle(payload):
     session_id = _safe_context_text(payload.get("session_id") or "", 160)
     schedule_id = _safe_context_text(payload.get("schedule_id") or "", 120)
     page_context = payload.get("page_context") if isinstance(payload.get("page_context"), dict) else None
+    # Phase 4.3 — tabs_context: list of currently-open tabs the extension
+    # wants the model to know about (typically the session group's tabs).
+    tabs_context = payload.get("tabs_context") if isinstance(payload.get("tabs_context"), list) else None
     requested_model = (payload.get("model") or "").strip()
     t0 = time.time()
 
@@ -1364,6 +1409,7 @@ def api_handle(payload):
         request_id=turn_id,
         resume_path=str(payload.get("resume_path") or "").strip(),
         local_file_hints=payload.get("local_file_hints") if isinstance(payload.get("local_file_hints"), dict) else None,
+        tabs_context=tabs_context,
     )
 
     # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
