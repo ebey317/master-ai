@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sensei Drive Smoke — empty folder</title>
+  <style>
+    body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #fff; padding: 16px; color: #1c2220; }
+    .empty-state {
+      max-width: 480px; margin: 60px auto; text-align: center;
+      color: #66706a;
+    }
+    .empty-illustration { font-size: 64px; opacity: 0.4; }
+    .empty-state h2 { margin: 16px 0 8px; font-weight: 500; color: #1c2220; }
+    .empty-state p { margin: 4px 0; }
+    .filter-bar { display: flex; gap: 8px; padding: 12px 0; border-bottom: 1px solid #eee; }
+    .filter-bar button {
+      padding: 6px 12px; border: 1px solid #dadce0; background: #fff;
+      border-radius: 20px; cursor: pointer;
+    }
+    h1 { font-size: 20px; }
+  </style>
+  <script>
+    window.__senseiCapturedListener = null;
+    window.chrome = {
+      runtime: {
+        onMessage: {
+          addListener: (fn) => { window.__senseiCapturedListener = fn; },
+          removeListener: () => {},
+        },
+        sendMessage: () => {},
+      },
+      tabs: { update: () => {} },
+      storage: { local: { get: (_, cb) => cb && cb({}), set: (_, cb) => cb && cb() } },
+    };
+    window.__senseiDispatch = function (action) {
+      return new Promise((resolve) => {
+        if (!window.__senseiCapturedListener) {
+          resolve({ ok: false, error: "content_script listener not captured" });
+          return;
+        }
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_EXECUTE_ACTION", action },
+          null,
+          (response) => resolve(response)
+        );
+        if (handled !== true) {
+          resolve({ ok: false, error: "listener returned non-async" });
+        }
+      });
+    };
+  </script>
+  <script src="../content_script.js"></script>
+</head>
+<body>
+  <h1>07_Resume-Career</h1>
+
+  <!-- Drive's filter bar — present in both empty and populated folder views. -->
+  <div class="filter-bar" role="toolbar" aria-label="Filter results">
+    <button type="button" aria-label="Type">Type</button>
+    <button type="button" aria-label="People">People</button>
+    <button type="button" aria-label="Modified">Modified</button>
+    <button type="button" aria-label="Source">Source</button>
+  </div>
+
+  <!--
+    Drive's empty-state pattern. driveEmptyReason() in content_script.js
+    looks for /Drop files here/, /use the 'New' button/, /This folder is
+    empty/, /No files or folders/, /No items/, /No results/.
+  -->
+  <div class="empty-state" role="region" aria-label="Empty folder">
+    <div class="empty-illustration" aria-hidden="true">📂</div>
+    <h2>Drop files here</h2>
+    <p>or use the "New" button to upload</p>
+  </div>
+
+  <script>
+    window.__senseiDriveSmoke = {
+      page: "empty_folder",
+      folder_name: "07_Resume-Career",
+      should_detect_empty: true,
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sensei Drive Smoke — search results</title>
+  <style>
+    body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #fff; color: #1c2220; padding: 16px; }
+    [role="grid"] { display: grid; gap: 6px; max-width: 720px; }
+    [role="row"] {
+      display: grid; grid-template-columns: 32px 1fr 180px 140px; gap: 12px;
+      align-items: center; padding: 10px 12px; border: 1px solid #e2e2e2;
+      border-radius: 6px; background: #fff; cursor: default;
+    }
+    [role="row"]:hover { background: #f5f9ff; }
+    .icon { width: 24px; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+    .folder .icon { background: #fbbf24; color: #fff; }
+    .file .icon { background: #4285f4; color: #fff; }
+    .name { font-weight: 600; }
+    .modified, .source { color: #66706a; font-size: 12.5px; }
+  </style>
+  <!--
+    Mock chrome.runtime BEFORE loading content_script.js so its IIFE
+    registration doesn't throw outside the extension context. Capture
+    the registered listener so the test harness can dispatch
+    SENSEI_EXECUTE_ACTION programmatically via CDP Runtime.evaluate.
+  -->
+  <script>
+    window.__senseiCapturedListener = null;
+    window.chrome = {
+      runtime: {
+        onMessage: {
+          addListener: (fn) => { window.__senseiCapturedListener = fn; },
+          removeListener: () => {},
+        },
+        sendMessage: () => {},
+      },
+      tabs: { update: () => {} },
+      storage: { local: { get: (_, cb) => cb && cb({}), set: (_, cb) => cb && cb() } },
+    };
+    // Test helper: returns a Promise that resolves with whatever
+    // content_script's executeBrowserAction returns via sendResponse.
+    window.__senseiDispatch = function (action) {
+      return new Promise((resolve) => {
+        if (!window.__senseiCapturedListener) {
+          resolve({ ok: false, error: "content_script listener not captured" });
+          return;
+        }
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_EXECUTE_ACTION", action },
+          null,
+          (response) => resolve(response)
+        );
+        if (handled !== true) {
+          // Listener returned synchronously without async handling — caller
+          // didn't keep sendResponse alive. Resolve undefined.
+          resolve({ ok: false, error: "listener returned non-async" });
+        }
+      });
+    };
+  </script>
+  <script src="../content_script.js"></script>
+</head>
+<body>
+  <h1>Search results — "resume"</h1>
+
+  <!--
+    Drive-shaped search-results DOM. Each row carries aria-label
+    (Drive's primary accessibility hook) and data-target="doc" (Drive's
+    own item marker). driveItemCandidates() in content_script.js looks
+    for [role="row"], [role="gridcell"], [data-target="doc"], etc.
+    The "07_Resume-Career" row is the target folder from Elijah's
+    2026-05-14 transcript.
+  -->
+  <div role="grid" aria-label="Search results">
+
+    <div role="row" data-target="doc" class="folder"
+         aria-label="00_Documents, Folder, Owned by you, Modified yesterday">
+      <div class="icon" aria-hidden="true">📁</div>
+      <div class="name">00_Documents</div>
+      <div class="modified">Modified yesterday</div>
+      <div class="source">Owned by you</div>
+    </div>
+
+    <div role="row" data-target="doc" class="folder"
+         aria-label="07_Resume-Career, Folder, Owned by you, Modified 3 days ago">
+      <div class="icon" aria-hidden="true">📁</div>
+      <div class="name">07_Resume-Career</div>
+      <div class="modified">Modified 3 days ago</div>
+      <div class="source">Owned by you</div>
+    </div>
+
+    <div role="row" data-target="doc" class="file"
+         aria-label="elijah_resume_2024.pdf, PDF, Modified last week, Shared">
+      <div class="icon" aria-hidden="true">📄</div>
+      <div class="name">elijah_resume_2024.pdf</div>
+      <div class="modified">Modified last week</div>
+      <div class="source">Shared</div>
+    </div>
+
+    <div role="row" data-target="doc" class="file"
+         aria-label="cover_letter_template.docx, Google Doc, Modified 2 weeks ago, Owned by you">
+      <div class="icon" aria-hidden="true">📄</div>
+      <div class="name">cover_letter_template.docx</div>
+      <div class="modified">Modified 2 weeks ago</div>
+      <div class="source">Owned by you</div>
+    </div>
+
+    <div role="row" data-target="doc" class="folder"
+         aria-label="04_PDFs-Reading, Folder, Owned by you, Modified last month">
+      <div class="icon" aria-hidden="true">📁</div>
+      <div class="name">04_PDFs-Reading</div>
+      <div class="modified">Modified last month</div>
+      <div class="source">Owned by you</div>
+    </div>
+
+  </div>
+
+  <script>
+    // Surface a tiny acceptance bit the test can read instead of
+    // relying solely on driveState's extraction — the harness asserts
+    // both this AND the extraction so a regression in either path
+    // surfaces clearly.
+    window.__senseiDriveSmoke = {
+      page: "search_results",
+      query: "resume",
+      visible_folders: ["00_Documents", "07_Resume-Career", "04_PDFs-Reading"],
+      visible_files: ["elijah_resume_2024.pdf", "cover_letter_template.docx"],
+    };
+  </script>
+</body>
+</html>
