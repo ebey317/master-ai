@@ -524,6 +524,114 @@ function summarizeAxSnapshot(snapshot) {
   return lines.join("\n");
 }
 
+// Phase 3.1 — CDP-driven mouse dispatch. Parses BROWSER_CDP_MOUSE targets in
+// JSON shape ({action:"click"|"move"|"press"|"release"|"wheel", x, y, button?,
+// modifiers?, deltaX?, deltaY?, clickCount?}) or positional shorthand
+// ("click 300 400 [button] [count] [modifiers]" / "wheel x y deltaX deltaY").
+// Composite "click" expands to mousePressed + mouseReleased on the same point.
+const _CDP_BUTTON_NAMES = new Set(["none", "left", "middle", "right", "back", "forward"]);
+const _CDP_BUTTON_BITS = { none: 0, left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+
+function _parseCdpMouseTarget(rawTarget) {
+  const raw = String(rawTarget || "").trim();
+  if (!raw) return null;
+  // JSON form.
+  if (raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") return obj;
+    } catch (_err) { /* fall through to positional */ }
+  }
+  // Positional form: "action x y [button|deltaX] [count|deltaY] [modifiers]".
+  const parts = raw.split(/\s+/);
+  if (parts.length < 3) return null;
+  const action = parts[0].toLowerCase();
+  const x = Number(parts[1]);
+  const y = Number(parts[2]);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (action === "wheel") {
+    return {
+      action: "wheel",
+      x, y,
+      deltaX: Number(parts[3] || 0),
+      deltaY: Number(parts[4] || 0),
+    };
+  }
+  const out = { action, x, y };
+  if (parts[3]) {
+    if (_CDP_BUTTON_NAMES.has(parts[3].toLowerCase())) out.button = parts[3].toLowerCase();
+  }
+  if (parts[4]) {
+    const n = Number(parts[4]);
+    if (Number.isFinite(n)) out.clickCount = n;
+  }
+  if (parts[5]) {
+    const n = Number(parts[5]);
+    if (Number.isFinite(n)) out.modifiers = n;
+  }
+  return out;
+}
+
+async function dispatchCdpMouse(tab, action, timings = {}) {
+  const parsed = _parseCdpMouseTarget(action?.target);
+  if (!parsed || !Number.isFinite(Number(parsed.x)) || !Number.isFinite(Number(parsed.y))) {
+    return { ok: false, error: "BROWSER_CDP_MOUSE target must include numeric x and y" };
+  }
+  const op = String(parsed.action || "click").toLowerCase();
+  const x = Number(parsed.x);
+  const y = Number(parsed.y);
+  const button = _CDP_BUTTON_NAMES.has(String(parsed.button || "").toLowerCase())
+    ? String(parsed.button).toLowerCase()
+    : (op === "wheel" ? "none" : "left");
+  const buttonsMask = _CDP_BUTTON_BITS[button] ?? 0;
+  const modifiers = Number.isFinite(Number(parsed.modifiers)) ? Number(parsed.modifiers) : 0;
+  const clickCount = Number.isFinite(Number(parsed.clickCount)) ? Number(parsed.clickCount) : 1;
+
+  try {
+    return await withChromeDebugger(tab, timings, async (send) => {
+      if (op === "move") {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseMoved", x, y, button: "none", buttons: 0, modifiers,
+        });
+        return { ok: true, action: "move", x, y };
+      }
+      if (op === "wheel") {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseWheel", x, y,
+          button: "none", buttons: 0, modifiers,
+          deltaX: Number(parsed.deltaX || 0),
+          deltaY: Number(parsed.deltaY || 0),
+        });
+        return { ok: true, action: "wheel", x, y,
+                 deltaX: Number(parsed.deltaX || 0),
+                 deltaY: Number(parsed.deltaY || 0) };
+      }
+      if (op === "press") {
+        await send("Input.dispatchMouseEvent", {
+          type: "mousePressed", x, y, button, buttons: buttonsMask, modifiers, clickCount,
+        });
+        return { ok: true, action: "press", x, y, button, clickCount };
+      }
+      if (op === "release") {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseReleased", x, y, button, buttons: 0, modifiers, clickCount,
+        });
+        return { ok: true, action: "release", x, y, button, clickCount };
+      }
+      // Default + "click": composite press + release at the same point.
+      await send("Input.dispatchMouseEvent", {
+        type: "mousePressed", x, y, button, buttons: buttonsMask, modifiers, clickCount,
+      });
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseReleased", x, y, button, buttons: 0, modifiers, clickCount,
+      });
+      return { ok: true, action: "click", x, y, button, clickCount };
+    });
+  } catch (err) {
+    return { ok: false, error: `cdp mouse dispatch failed: ${err?.message || err}` };
+  }
+}
+
 async function withChromeDebugger(tab, timings, fn) {
   if (!chrome.debugger?.attach || !tab?.id) throw new Error("chrome.debugger unavailable");
   const target = { tabId: tab.id };
@@ -906,8 +1014,12 @@ const PermissionManager = {
       return PermissionType.READ_PAGE_CONTENT;
     }
     if (kind === "BROWSER_CLICK" || kind === "BROWSER_DOUBLE_CLICK" ||
-        kind === "BROWSER_SCROLL" || kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
+        kind === "BROWSER_SCROLL" || kind === "BROWSER_DRIVE_INSPECT_FOLDER" ||
+        kind === "BROWSER_CDP_MOUSE") {
       return PermissionType.CLICK;
+    }
+    if (kind === "BROWSER_CDP_KEY") {
+      return PermissionType.TYPE;
     }
     if (kind === "BROWSER_FILL") {
       // File upload uses CDP DOM.setFileInputFiles; UPLOAD_IMAGE per spec
@@ -1037,6 +1149,8 @@ const MUTATING_BROWSER_KINDS = new Set([
   "BROWSER_DOUBLE_CLICK",
   "BROWSER_SCROLL",
   "BROWSER_DRIVE_INSPECT_FOLDER",
+  "BROWSER_CDP_MOUSE",
+  "BROWSER_CDP_KEY",
 ]);
 
 function recordObservedOrigin(tab) {
@@ -1323,6 +1437,14 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       };
     } else if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
       result = await sendToContent(tab, action, timings);
+      invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_CDP_MOUSE") {
+      result = await dispatchCdpMouse(tab, action, timings);
+      if (result?.ok) {
+        // CDP clicks can cause navigation; settle and invalidate so the next
+        // action reads a fresh page_context.
+        await waitForTabSettled(tab.id, 4000);
+      }
       invalidatePageContext(tab.id);
     } else if (kind === "BROWSER_FILL") {
       const uploadAttempt = await tryDebuggerFileUpload(tab, action, timings);

@@ -51,6 +51,8 @@ eq(PM.typeFor({kind:"BROWSER_CLICK", target:"#submit"}, ""), PT.CLICK, "CLICK �
 eq(PM.typeFor({kind:"BROWSER_DOUBLE_CLICK", target:".row"}, ""), PT.CLICK, "DOUBLE_CLICK → CLICK");
 eq(PM.typeFor({kind:"BROWSER_SCROLL", target:"down"}, ""), PT.CLICK, "SCROLL → CLICK");
 eq(PM.typeFor({kind:"BROWSER_DRIVE_INSPECT_FOLDER"}, ""), PT.CLICK, "DRIVE_INSPECT → CLICK");
+eq(PM.typeFor({kind:"BROWSER_CDP_MOUSE", target:"click 300 400"}, ""), PT.CLICK, "CDP_MOUSE → CLICK");
+eq(PM.typeFor({kind:"BROWSER_CDP_KEY", target:"press Enter"}, ""), PT.TYPE, "CDP_KEY → TYPE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#name :: Elijah"}, ""), PT.TYPE, "FILL text → TYPE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#r :: file:///home/x.pdf"}, ""), PT.UPLOAD_IMAGE, "FILL file:// → UPLOAD_IMAGE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#r", file_payload:{}}, ""), PT.UPLOAD_IMAGE, "FILL with payload → UPLOAD_IMAGE");
