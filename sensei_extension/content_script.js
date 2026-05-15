@@ -10,7 +10,65 @@ const READ_TEXT_LIMIT = 5000;
 const FOCUSED_TEXT_LIMIT = 1200;
 const INTERACTIVE_LIMIT = 80;
 const CONSOLE_LIMIT = 40;
+const PAGE_STABLE_DEBOUNCE_MS = 650;
+const PAGE_STABLE_MAX_WAIT_MS = 3500;
 const SKIP_TEXT_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "CANVAS"]);
+
+globalThis.__SENSEI_PAGE_OBSERVER_STATE__ = globalThis.__SENSEI_PAGE_OBSERVER_STATE__ || {
+  version: 0,
+  last_change_ts: Date.now(),
+  last_reason: "init",
+  url: location.href,
+  ready_state: document.readyState,
+};
+
+function bumpPageObservation(reason) {
+  const obs = globalThis.__SENSEI_PAGE_OBSERVER_STATE__;
+  obs.version += 1;
+  obs.last_change_ts = Date.now();
+  obs.last_reason = safePageText ? safePageText(reason, 80) : String(reason || "").slice(0, 80);
+  obs.url = location.href;
+  obs.ready_state = document.readyState;
+}
+
+function installPageObservationHooks() {
+  if (globalThis.__SENSEI_PAGE_OBSERVER_INSTALLED__) return;
+  globalThis.__SENSEI_PAGE_OBSERVER_INSTALLED__ = true;
+
+  const wrapHistory = (name) => {
+    const original = history[name];
+    if (typeof original !== "function") return;
+    history[name] = function senseiHistoryWrapper(...args) {
+      const out = original.apply(this, args);
+      bumpPageObservation(`history.${name}`);
+      return out;
+    };
+  };
+  wrapHistory("pushState");
+  wrapHistory("replaceState");
+  window.addEventListener("hashchange", () => bumpPageObservation("hashchange"), true);
+  window.addEventListener("popstate", () => bumpPageObservation("popstate"), true);
+  document.addEventListener("readystatechange", () => {
+    if (document.readyState === "complete") bumpPageObservation("readyState.complete");
+  }, true);
+
+  let mutationTimer = 0;
+  const scheduleMutationBump = () => {
+    clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(() => bumpPageObservation("mutation.debounced"), PAGE_STABLE_DEBOUNCE_MS);
+  };
+  const root = document.querySelector("main,[role='main'],#main,[data-testid*='main'],[aria-label*='main' i]") || document.body || document.documentElement;
+  if (root && MutationObserver) {
+    const observer = new MutationObserver(scheduleMutationBump);
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["aria-label", "aria-selected", "aria-expanded", "role", "hidden", "style", "class"],
+    });
+    globalThis.__SENSEI_PAGE_OBSERVER__ = observer;
+  }
+}
 
 globalThis.__SENSEI_CONSOLE_EVENTS__ = globalThis.__SENSEI_CONSOLE_EVENTS__ || [];
 if (!globalThis.__SENSEI_CONSOLE_CAPTURE_INSTALLED__) {
@@ -223,8 +281,63 @@ function safeSelectorFor(el) {
   return sanitizePageString(selector) === selector ? selector : structuralSelectorFor(el);
 }
 
+function collectDeep(selector, limit = 1500) {
+  const found = [];
+  const seen = new Set();
+
+  const add = (el) => {
+    if (!el || seen.has(el) || found.length >= limit) return;
+    seen.add(el);
+    found.push(el);
+  };
+
+  const walkRoot = (root) => {
+    if (!root || found.length >= limit) return;
+    try {
+      root.querySelectorAll(selector).forEach(add);
+    } catch (_err) {
+      return;
+    }
+    let all = [];
+    try {
+      all = Array.from(root.querySelectorAll("*"));
+    } catch (_err) {
+      all = [];
+    }
+    for (const el of all) {
+      if (found.length >= limit) break;
+      if (el.shadowRoot) walkRoot(el.shadowRoot);
+      if (el.tagName === "IFRAME" || el.tagName === "FRAME") {
+        try {
+          if (!el.contentDocument) continue;
+          walkRoot(el.contentDocument);
+        } catch (_err) {
+          // Cross-origin frames are summarized separately; content is not readable here.
+        }
+      }
+    }
+  };
+
+  walkRoot(document);
+  return found;
+}
+
+function elementBounds(el) {
+  try {
+    const rect = el.getBoundingClientRect();
+    return {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
 function interactiveElements(limit = INTERACTIVE_LIMIT) {
-  const candidates = Array.from(document.querySelectorAll(ACTION_TARGETS))
+  const candidates = collectDeep(ACTION_TARGETS, limit * 10)
     .filter(isVisible)
     .slice(0, limit);
   return candidates.map((el, index) => {
@@ -233,6 +346,63 @@ function interactiveElements(limit = INTERACTIVE_LIMIT) {
     const selector = safeSelectorFor(el);
     return `${index + 1}. ${role} "${name}" selector=${selector}`;
   }).join("\n");
+}
+
+function semanticFallbackElements(limit = 140) {
+  const selectors = [
+    "main", "[role='main']", "header", "[role='banner']", "nav", "[role='navigation']",
+    "section", "article", "form", "[role='form']", "dialog", "[role='dialog']",
+    "h1,h2,h3,[role='heading']", ACTION_TARGETS, "table,[role='table'],[role='grid']",
+    "tr,[role='row']", "li,[role='listitem']"
+  ].join(",");
+  return collectDeep(selectors, limit * 12)
+    .filter(isVisible)
+    .slice(0, limit)
+    .map((el) => ({
+      role: elementRole(el),
+      name: elementName(el) || elementText(el, 160),
+      selector: safeSelectorFor(el),
+      bounds: elementBounds(el),
+      value_present: Boolean(currentElementValue(el).trim()),
+      expanded: el.getAttribute("aria-expanded") || "",
+      selected: el.getAttribute("aria-selected") || "",
+      checked: el.getAttribute("aria-checked") || "",
+    }))
+    .filter((item) => item.name || item.role);
+}
+
+function iframeSummaries(limit = 30) {
+  return Array.from(document.querySelectorAll("iframe,frame"))
+    .filter(isVisible)
+    .slice(0, limit)
+    .map((frame, index) => {
+      const base = {
+        index,
+        selector: safeSelectorFor(frame),
+        src: safePageText(frame.getAttribute("src") || frame.src || "", 800),
+        title: safePageText(frame.getAttribute("title") || "", 200),
+        name: safePageText(frame.getAttribute("name") || "", 160),
+        bounds: elementBounds(frame),
+      };
+      try {
+        const doc = frame.contentDocument;
+        if (!doc) throw new Error("contentDocument unavailable");
+        const text = safePageText(doc.body?.innerText || doc.body?.textContent || "", 600);
+        return {
+          ...base,
+          same_origin: true,
+          title_observed: safePageText(doc.title || "", 200),
+          summary_text: text,
+          interactive_count: doc.querySelectorAll(ACTION_TARGETS).length,
+        };
+      } catch (err) {
+        return {
+          ...base,
+          cross_origin: true,
+          unobserved_reason: "cross-origin frame; content script records metadata only",
+        };
+      }
+    });
 }
 
 function consoleState() {
@@ -247,7 +417,7 @@ function consoleState() {
 }
 
 function domState() {
-  const forms = Array.from(document.forms || []).filter(isVisible).slice(0, 20).map((form, index) => ({
+  const forms = collectDeep("form", 80).filter(isVisible).slice(0, 20).map((form, index) => ({
     index,
     selector: safeSelectorFor(form),
     fields: Array.from(form.querySelectorAll("input, textarea, select")).filter(isVisible).slice(0, 40).map((field) => ({
@@ -258,7 +428,7 @@ function domState() {
       value_present: Boolean(currentElementValue(field).trim())
     }))
   }));
-  const headings = Array.from(document.querySelectorAll("h1,h2,h3,[role='heading']"))
+  const headings = collectDeep("h1,h2,h3,[role='heading']", 120)
     .filter(isVisible)
     .slice(0, 20)
     .map((el) => elementText(el, 160))
@@ -279,6 +449,7 @@ function pageContext(options = {}) {
   const includeVisibleText = options.includeVisibleText !== false;
   const includeInteractiveElements = options.includeInteractiveElements !== false;
   const visibleTextLimit = Number(options.visibleTextLimit || DEFAULT_VISIBLE_TEXT_LIMIT);
+  const includeSemanticFallback = options.includeSemanticFallback !== false;
   const active = document.activeElement;
   const focused = active && active !== document.body && active !== document.documentElement
     ? elementText(active, FOCUSED_TEXT_LIMIT)
@@ -291,16 +462,82 @@ function pageContext(options = {}) {
   };
   if (includeInteractiveElements) context.interactive_elements = interactiveElements();
   if (includeVisibleText) context.visible_text = visibleText(visibleTextLimit);
+  if (includeSemanticFallback) context.semantic_fallback = semanticFallbackElements();
+  context.iframes = iframeSummaries();
   context.dom_state = domState();
   context.console_state = consoleState();
+  context.observe_state = {
+    version: globalThis.__SENSEI_PAGE_OBSERVER_STATE__.version,
+    last_reason: globalThis.__SENSEI_PAGE_OBSERVER_STATE__.last_reason,
+    last_change_ms_ago: Math.max(0, Date.now() - globalThis.__SENSEI_PAGE_OBSERVER_STATE__.last_change_ts),
+    url: safePageText(globalThis.__SENSEI_PAGE_OBSERVER_STATE__.url || location.href, 2000),
+    ready_state: safePageText(document.readyState, 40),
+    triggers: [
+      "url",
+      "hashchange",
+      "history.pushState",
+      "history.replaceState",
+      "popstate",
+      "readyState.complete",
+      "main-content MutationObserver debounced"
+    ]
+  };
   return context;
 }
+
+async function waitForPageStable(minQuietMs = PAGE_STABLE_DEBOUNCE_MS, maxWaitMs = PAGE_STABLE_MAX_WAIT_MS) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const obs = globalThis.__SENSEI_PAGE_OBSERVER_STATE__;
+    if (document.readyState === "complete" && Date.now() - obs.last_change_ts >= minQuietMs) {
+      return { stable: true, waited_ms: Date.now() - start };
+    }
+    await sleep(80);
+  }
+  return { stable: false, waited_ms: Date.now() - start };
+}
+
+async function pageContextAsync(options = {}) {
+  if (Number(options.waitForStableMs || 0) > 0) {
+    await waitForPageStable(
+      Math.max(100, Math.min(Number(options.waitForStableMs), 2000)),
+      Math.max(500, Math.min(Number(options.maxWaitMs || PAGE_STABLE_MAX_WAIT_MS), 8000))
+    );
+  }
+  return pageContext(options);
+}
+
+installPageObservationHooks();
 
 function isVisible(el) {
   if (!el) return false;
   const rect = el.getBoundingClientRect();
   const style = window.getComputedStyle(el);
   return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+}
+
+// Shadow-piercing walker — used by the DOM-fallback page-read path when the
+// extension cannot attach the debugger (chrome:// pages, extension popups,
+// or any tab where Accessibility.getFullAXTree is unavailable). Closed shadow
+// roots stay unreachable through this walker; closed-shadow regions are only
+// trusted via the AX tree. See plan §2.
+function walkShadowPiercing(root, callback) {
+  if (!root || typeof callback !== "function") return;
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node) continue;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      callback(node);
+      if (node.shadowRoot && node.shadowRoot.mode === "open") {
+        const kids = node.shadowRoot.querySelectorAll("*");
+        for (let i = kids.length - 1; i >= 0; i -= 1) stack.push(kids[i]);
+      }
+    }
+    if (node.children && node.children.length) {
+      for (let i = node.children.length - 1; i >= 0; i -= 1) stack.push(node.children[i]);
+    }
+  }
 }
 
 function trySelector(target) {
@@ -328,7 +565,7 @@ function findElement(target) {
   if (bySelector && isVisible(bySelector)) return bySelector;
 
   const needle = raw.toLowerCase();
-  const candidates = Array.from(document.querySelectorAll(ACTION_TARGETS)).filter(isVisible);
+  const candidates = collectDeep(ACTION_TARGETS, 2000).filter(isVisible);
   return candidates.find((el) => normalizedText(el) === needle)
     || candidates.find((el) => normalizedText(el).includes(needle))
     || null;
@@ -356,6 +593,9 @@ function parseFillTarget(action) {
 
 function currentElementValue(el) {
   if (!el) return "";
+  if (String(el.getAttribute("type") || "").toLowerCase() === "file") {
+    return Array.from(el.files || []).map((file) => file.name).join(", ");
+  }
   if (el.isContentEditable) return String(el.textContent || "");
   if ("value" in el) return String(el.value || "");
   return "";
@@ -378,6 +618,49 @@ function renderedLabelFor(el) {
     el.getAttribute("placeholder"),
     el.getAttribute("name")
   ].filter(Boolean).join(" "), 300);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(String(base64 || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function isFileUploadAction(action, parsed) {
+  if (action?.extras?.fileUpload?.base64) return true;
+  const value = String(parsed?.value || "").trim();
+  return /^file:\/\//i.test(value) ||
+    ((value.startsWith("/") || value.startsWith("~/")) &&
+      /\.(pdf|docx?|odt|rtf|txt|csv|jpe?g|png|webp|gif|zip)$/i.test(value));
+}
+
+function findFillElement(parsed, allowHidden = false) {
+  const bySelector = trySelector(parsed.selector);
+  if (bySelector && (allowHidden || isVisible(bySelector))) return bySelector;
+  return findElement(parsed.selector);
+}
+
+function setFileInputValue(el, fileUpload) {
+  if (!el || String(el.getAttribute("type") || "").toLowerCase() !== "file") {
+    return { ok: false, error: "target is not a file input" };
+  }
+  if (!fileUpload?.base64) return { ok: false, error: "missing file payload" };
+  const bytes = base64ToBytes(fileUpload.base64);
+  const file = new File([bytes], fileUpload.name || "upload.bin", {
+    type: fileUpload.mime || "application/octet-stream",
+  });
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  el.files = transfer.files;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  return {
+    ok: true,
+    file_name: file.name,
+    file_size: file.size,
+    mime: file.type || "",
+  };
 }
 
 function sleep(ms) {
@@ -439,15 +722,14 @@ function driveItemKind(raw) {
 }
 
 function driveItemCandidates(limit = 80) {
-  const selectors = [
-    "[role='row']",
-    "[role='gridcell']",
-    "[role='listitem']",
-    "[data-target='doc']",
-    "[aria-label]"
-  ].join(",");
   const seen = new Map();
-  const candidates = Array.from(document.querySelectorAll(selectors)).filter(isVisible);
+  const ariaRows = collectDeep("[role='row'][aria-label]", limit * 4).filter(isVisible);
+  const fallbackSelectors = [
+    "[role='gridcell'][aria-label]",
+    "[role='listitem'][aria-label]",
+    "[data-target='doc'][aria-label]"
+  ].join(",");
+  const candidates = (ariaRows.length ? ariaRows : collectDeep(fallbackSelectors, limit * 4)).filter(isVisible);
 
   for (const el of candidates) {
     const aria = el.getAttribute("aria-label") || "";
@@ -460,8 +742,7 @@ function driveItemCandidates(limit = 80) {
 
     const selector = safeSelectorFor(el);
     const selected = el.getAttribute("aria-selected") === "true"
-      || el.getAttribute("aria-current") === "true"
-      || /\bselected\b/i.test(el.className || "");
+      || el.getAttribute("aria-current") === "true";
     const kind = driveItemKind(raw);
     const rec = {
       name: name || safePageText(firstUsefulLine(text) || aria, 180),
@@ -548,7 +829,7 @@ function findTextOnPage(target) {
   const needle = normalizeSearchText(target);
   const matches = [];
   if (!needle) return matches;
-  const candidates = Array.from(document.querySelectorAll("body *"))
+  const candidates = collectDeep("*", 1800)
     .filter(isVisible)
     .slice(0, 1200);
   for (const el of candidates) {
@@ -576,19 +857,59 @@ function parseScrollTarget(target) {
   return { top: window.scrollY + Math.abs(amount), left: window.scrollX, behavior: "smooth" };
 }
 
+function nativeValueSetterFor(el) {
+  const prototypes = [];
+  if (el instanceof HTMLInputElement) prototypes.push(HTMLInputElement.prototype);
+  if (el instanceof HTMLTextAreaElement) prototypes.push(HTMLTextAreaElement.prototype);
+  if (el instanceof HTMLSelectElement) prototypes.push(HTMLSelectElement.prototype);
+  prototypes.push(Object.getPrototypeOf(el));
+  for (const proto of prototypes) {
+    const descriptor = proto && Object.getOwnPropertyDescriptor(proto, "value");
+    if (descriptor?.set) return descriptor.set;
+  }
+  return null;
+}
+
+function dispatchFormEvents(el, value) {
+  try {
+    el.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertReplacementText",
+      data: String(value || "")
+    }));
+  } catch (_err) {
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function setElementValue(el, value) {
   if (!el) return;
   el.focus();
   if (el.isContentEditable) {
     el.textContent = value;
-  } else {
-    const proto = Object.getPrototypeOf(el);
-    const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
-    if (descriptor?.set) descriptor.set.call(el, value);
-    else el.value = value;
+    dispatchFormEvents(el, value);
+    return;
   }
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
+  if (el instanceof HTMLSelectElement) {
+    const requested = String(value || "");
+    const option = Array.from(el.options || []).find((opt) =>
+      opt.value === requested || normalizeSearchText(opt.textContent) === normalizeSearchText(requested)
+    );
+    if (option) el.value = option.value;
+    else el.value = requested;
+    dispatchFormEvents(el, value);
+    return;
+  }
+  if ("value" in el) {
+    const setter = nativeValueSetterFor(el);
+    if (setter) setter.call(el, value);
+    else el.value = value;
+  } else {
+    el.textContent = value;
+  }
+  dispatchFormEvents(el, value);
 }
 
 async function executeBrowserAction(action) {
@@ -599,7 +920,7 @@ async function executeBrowserAction(action) {
     return {
       ok: true,
       waited_ms: ms,
-      page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: true })
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: true, waitForStableMs: 150 })
     };
   }
 
@@ -607,10 +928,25 @@ async function executeBrowserAction(action) {
     const target = parseScrollTarget(action?.target);
     window.scrollTo(target);
     await sleep(250);
+    await waitForPageStable(250, 1200);
     return {
       ok: true,
       scroll: { x: window.scrollX, y: window.scrollY },
-      page_context: pageContext({ includeVisibleText: true, visibleTextLimit: 2200 })
+      page_context: await pageContextAsync({ includeVisibleText: true, visibleTextLimit: 2200, waitForStableMs: 150 })
+    };
+  }
+
+  if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE") {
+    const ctx = await pageContextAsync({
+      includeVisibleText: true,
+      includeInteractiveElements: true,
+      visibleTextLimit: READ_TEXT_LIMIT,
+      waitForStableMs: PAGE_STABLE_DEBOUNCE_MS,
+    });
+    return {
+      ok: true,
+      page_context: ctx,
+      text: ctx.visible_text || ctx.title || "page observed"
     };
   }
 
@@ -620,7 +956,7 @@ async function executeBrowserAction(action) {
     return {
       ok: true,
       text: el ? elementText(el, READ_TEXT_LIMIT) : visibleText(READ_TEXT_LIMIT),
-      page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false })
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
     };
   }
 
@@ -629,7 +965,8 @@ async function executeBrowserAction(action) {
     if (!el) return { ok: false, error: "target not found" };
     el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
     el.click();
-    return { ok: true, clicked: action.target, page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false }) };
+    await waitForPageStable(350, 1400);
+    return { ok: true, clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
   if (kind === "BROWSER_DOUBLE_CLICK") {
@@ -637,13 +974,26 @@ async function executeBrowserAction(action) {
     if (!el) return { ok: false, error: "target not found" };
     el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
     el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
-    return { ok: true, double_clicked: action.target, page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false }) };
+    await waitForPageStable(350, 1400);
+    return { ok: true, double_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
   if (kind === "BROWSER_FILL") {
     const parsed = parseFillTarget(action);
-    const el = findElement(parsed.selector);
+    const fileUpload = action?.extras?.fileUpload || null;
+    const wantsFileUpload = isFileUploadAction(action, parsed);
+    const el = findFillElement(parsed, wantsFileUpload);
     if (!el) return { ok: false, error: "target not found" };
+    if (wantsFileUpload || fileUpload) {
+      const upload = setFileInputValue(el, fileUpload);
+      if (!upload.ok) return upload;
+      return {
+        ok: true,
+        filled: parsed.selector,
+        file_upload: upload,
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+      };
+    }
     const current = currentElementValue(el);
     const requested = String(parsed.value || "");
     const overwrite = Boolean(parsed.overwrite || action?.overwrite || action?.extras?.overwrite || action?.extras?.force);
@@ -656,7 +1006,7 @@ async function executeBrowserAction(action) {
         rendered_label: renderedLabelFor(el),
         existing_value: safePageText(current, 500),
         requested_value: safePageText(requested, 500),
-        page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false })
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
       };
     }
     if (current.trim() && !fillValuesDiffer(current, requested)) {
@@ -664,11 +1014,12 @@ async function executeBrowserAction(action) {
         ok: true,
         filled: parsed.selector,
         preserved_existing_value: true,
-        page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false })
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
       };
     }
     setElementValue(el, parsed.value);
-    return { ok: true, filled: parsed.selector, page_context: pageContext({ includeVisibleText: false, includeInteractiveElements: false }) };
+    await waitForPageStable(250, 1000);
+    return { ok: true, filled: parsed.selector, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
   if (kind === "BROWSER_NAV") {
@@ -713,8 +1064,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "SENSEI_PAGE_CONTEXT") {
-    sendResponse({ ok: true, page_context: pageContext(message.options || {}) });
-    return false;
+    pageContextAsync(message.options || {})
+      .then((ctx) => sendResponse({ ok: true, page_context: ctx }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err), page_context: pageContext({ includeVisibleText: false }) }));
+    return true;
   }
 
   if (message?.type === "SENSEI_EXECUTE_ACTION") {

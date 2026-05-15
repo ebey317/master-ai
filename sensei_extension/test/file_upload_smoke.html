@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sensei File Upload Smoke</title>
+  <script>
+    window.__senseiCapturedListener = null;
+    window.chrome = {
+      runtime: {
+        onMessage: {
+          addListener: (fn) => { window.__senseiCapturedListener = fn; },
+          removeListener: () => {},
+        },
+        sendMessage: () => {},
+      },
+      tabs: { update: () => {} },
+      storage: { local: { get: (_, cb) => cb && cb({}), set: (_, cb) => cb && cb() } },
+    };
+    window.__senseiDispatch = function (action) {
+      return new Promise((resolve) => {
+        if (!window.__senseiCapturedListener) {
+          resolve({ ok: false, error: "content_script listener not captured" });
+          return;
+        }
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_EXECUTE_ACTION", action },
+          null,
+          (response) => resolve(response)
+        );
+        if (handled !== true) resolve({ ok: false, error: "listener returned non-async" });
+      });
+    };
+  </script>
+  <script src="../content_script.js"></script>
+</head>
+<body>
+  <main>
+    <h1>File Upload Smoke</h1>
+    <label>
+      Resume
+      <input id="resume" name="resume" type="file" accept=".pdf,application/pdf" aria-label="Resume file">
+    </label>
+    <p id="status">No file selected.</p>
+  </main>
+  <script>
+    document.querySelector("#resume").addEventListener("change", (event) => {
+      const file = event.target.files && event.target.files[0];
+      document.querySelector("#status").textContent = file
+        ? `${file.name}:${file.size}:${file.type}`
+        : "No file selected.";
+    });
+  </script>
+</body>
+</html>

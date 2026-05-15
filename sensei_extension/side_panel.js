@@ -9,7 +9,8 @@ const DEFAULT_CONFIG = {
     "https://accounts.google.com",
     "https://pay.google.com",
   ],
-  permissionHistory: []
+  permissionHistory: [],
+  resumePath: ""
 };
 
 const REQUEST_TIMEOUTS = {
@@ -21,16 +22,29 @@ const REQUEST_TIMEOUTS = {
 };
 const PAGE_CONTEXT_TTL_MS = 1500;
 const PAGE_CONTEXT_TEXT_LIMIT = 1800;
+const PAGE_TREE_BYTE_LIMIT = 24 * 1024;
+const AX_TREE_TEXT_LIMIT = 14 * 1024;
+const PAGE_STABLE_WAIT_MS = 650;
 const PAGE_CONTEXT_PROMPT_RE =
-  /\b(browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|link|page|read|screen|screenshot|search|select|selected|selection|tab|this|visible|website)\b/i;
+  /\b(application|apply|browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|indeed|job|link|page|read|resume|résumé|screen|screenshot|search|select|selected|selection|simplify|tab|this|upload|visible|website|ziprecruiter)\b/i;
 const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_READ",
+  "BROWSER_READ_PAGE",
+  "BROWSER_OBSERVE",
   "BROWSER_SCREENSHOT",
   "BROWSER_WAIT",
   "BROWSER_SCROLL",
   "BROWSER_FIND",
   "BROWSER_EXTRACT_LIST",
   "BROWSER_DRIVE_INSPECT_FOLDER",
+]);
+const CONTEXT_SETTLING_BROWSER_KINDS = new Set([
+  "BROWSER_NAV",
+  "BROWSER_CLICK",
+  "BROWSER_DOUBLE_CLICK",
+  "BROWSER_FILL",
+  "BROWSER_SCROLL",
+  "BROWSER_WAIT",
 ]);
 
 const state = {
@@ -309,6 +323,268 @@ async function ensureContentScript(tab, timings = {}) {
   return true;
 }
 
+function jsonByteLength(value) {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).length;
+  } catch (_err) {
+    return String(JSON.stringify(value || "")).length;
+  }
+}
+
+function clipStringField(obj, field, limit) {
+  if (typeof obj?.[field] === "string" && obj[field].length > limit) {
+    obj[field] = `${obj[field].slice(0, limit).trim()}...`;
+    return true;
+  }
+  return false;
+}
+
+function trimPageContextToBudget(context, budgetBytes = PAGE_TREE_BYTE_LIMIT) {
+  if (!context || typeof context !== "object") return context || {};
+  const out = typeof structuredClone === "function" ? structuredClone(context) : JSON.parse(JSON.stringify(context));
+  out.context_budget = {
+    bytes: budgetBytes,
+    truncated: false,
+    strategy: "24KB local-lane cap; trim visible text, semantic tail, then low-priority interactives",
+  };
+  const mark = () => { out.context_budget.truncated = true; };
+
+  if (jsonByteLength(out) <= budgetBytes) return out;
+  if (clipStringField(out, "visible_text", 2400)) mark();
+  if (jsonByteLength(out) <= budgetBytes) return out;
+
+  if (out.semantic_tree?.text) {
+    out.semantic_tree.text = `${String(out.semantic_tree.text).slice(0, 9000).trim()}...`;
+    out.semantic_tree.truncated = true;
+    mark();
+  }
+  if (jsonByteLength(out) <= budgetBytes) return out;
+
+  if (Array.isArray(out.semantic_fallback)) {
+    out.semantic_fallback = out.semantic_fallback.slice(0, 60);
+    mark();
+  }
+  if (jsonByteLength(out) <= budgetBytes) return out;
+
+  if (typeof out.interactive_elements === "string") {
+    out.interactive_elements = `${out.interactive_elements.slice(0, 5000).trim()}...`;
+    mark();
+  }
+  if (Array.isArray(out.iframes) && out.iframes.length > 12) {
+    out.iframes = out.iframes.slice(0, 12);
+    mark();
+  }
+  if (jsonByteLength(out) <= budgetBytes) return out;
+
+  if (out.dom_state?.forms) {
+    out.dom_state.forms = out.dom_state.forms.slice(0, 8).map((form) => ({
+      ...form,
+      fields: Array.isArray(form.fields) ? form.fields.slice(0, 18) : []
+    }));
+    mark();
+  }
+  if (jsonByteLength(out) <= budgetBytes) return out;
+
+  if (clipStringField(out, "visible_text", 1200)) mark();
+  if (out.console_state) {
+    out.console_state = Array.isArray(out.console_state) ? out.console_state.slice(-8) : [];
+    mark();
+  }
+  return out;
+}
+
+function axValue(raw) {
+  if (!raw) return "";
+  if (typeof raw.value === "string" || typeof raw.value === "number" || typeof raw.value === "boolean") {
+    return String(raw.value);
+  }
+  return "";
+}
+
+function axProp(node, name) {
+  const prop = Array.isArray(node?.properties)
+    ? node.properties.find((entry) => entry?.name === name)
+    : null;
+  return axValue(prop?.value);
+}
+
+function axRole(node) {
+  return axValue(node?.role) || "";
+}
+
+function axName(node) {
+  return axValue(node?.name) || axProp(node, "label") || "";
+}
+
+function keepAxNode(node) {
+  if (!node || node.ignored) return false;
+  const role = axRole(node);
+  const name = axName(node);
+  const value = axValue(node.value);
+  if (name || value) return true;
+  return /^(RootWebArea|main|navigation|banner|contentinfo|search|form|dialog|alert|heading|button|link|textbox|searchbox|combobox|checkbox|radio|switch|tab|menuitem|row|cell|grid|table|list|listitem|iframe)$/i.test(role);
+}
+
+function compactAccessibilityTree(nodes, maxBytes = AX_TREE_TEXT_LIMIT) {
+  if (!Array.isArray(nodes) || !nodes.length) return null;
+  const byId = new Map(nodes.map((node) => [String(node.nodeId), node]));
+  const root = nodes.find((node) => axRole(node) === "RootWebArea") || nodes[0];
+  const lines = [];
+  const seen = new Set();
+  let bytes = 0;
+  let truncated = false;
+
+  const addLine = (line) => {
+    const nextBytes = new TextEncoder().encode(`${line}\n`).length;
+    if (bytes + nextBytes > maxBytes) {
+      truncated = true;
+      return false;
+    }
+    lines.push(line);
+    bytes += nextBytes;
+    return true;
+  };
+
+  const visit = (node, depth) => {
+    if (!node || seen.has(node.nodeId) || truncated) return;
+    seen.add(node.nodeId);
+    const kept = keepAxNode(node);
+    if (kept) {
+      const role = axRole(node) || "node";
+      const name = axName(node);
+      const value = axValue(node.value);
+      const states = [
+        axProp(node, "checked") ? `checked=${axProp(node, "checked")}` : "",
+        axProp(node, "selected") ? `selected=${axProp(node, "selected")}` : "",
+        axProp(node, "expanded") ? `expanded=${axProp(node, "expanded")}` : "",
+        axProp(node, "disabled") ? `disabled=${axProp(node, "disabled")}` : "",
+      ].filter(Boolean).join(" ");
+      const label = [
+        `${"  ".repeat(Math.min(depth, 6))}- ${role}`,
+        name ? `"${name.slice(0, 220)}"` : "",
+        value ? `value="${value.slice(0, 160)}"` : "",
+        states
+      ].filter(Boolean).join(" ");
+      if (!addLine(label)) return;
+    }
+    for (const childId of node.childIds || []) {
+      visit(byId.get(String(childId)), kept ? depth + 1 : depth);
+      if (truncated) break;
+    }
+  };
+
+  visit(root, 0);
+  return {
+    source: "chrome_accessibility_tree",
+    budget_bytes: maxBytes,
+    truncated,
+    node_count: nodes.length,
+    retained_lines: lines.length,
+    text: lines.join("\n")
+  };
+}
+
+function summarizeAxSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return "";
+  const buckets = [
+    ["heading", snapshot.headings],
+    ["landmark", snapshot.landmarks],
+    ["button", snapshot.buttons],
+    ["link", snapshot.links],
+    ["input", snapshot.inputs],
+    ["dialog", snapshot.dialogs],
+    ["row", snapshot.file_folder_rows],
+    ["iframe", snapshot.iframes],
+  ];
+  const lines = [];
+  for (const [kind, items] of buckets) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items.slice(0, 80)) {
+      const role = item.role || kind;
+      const name = item.name || item.label || item.text || item.title || item.src || "";
+      const ref = item.ref ? ` ref=${item.ref}` : "";
+      const selector = item.selector ? ` selector=${item.selector}` : "";
+      const hidden = item.cross_origin ? " cross_origin=true" : "";
+      lines.push(`- ${role} "${String(name).slice(0, 220)}"${ref}${selector}${hidden}`);
+      if (lines.join("\n").length > AX_TREE_TEXT_LIMIT) {
+        lines.push("...");
+        return lines.join("\n");
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+async function withChromeDebugger(tab, timings, fn) {
+  if (!chrome.debugger?.attach || !tab?.id) throw new Error("chrome.debugger unavailable");
+  const target = { tabId: tab.id };
+  let attached = false;
+  await timed(timings, "debugger_attach", () => chrome.debugger.attach(target, "1.3"));
+  attached = true;
+  const send = (method, params = {}) => timed(timings, `cdp_${method.split(".").pop()}`, () =>
+    chrome.debugger.sendCommand(target, method, params)
+  );
+  try {
+    return await fn(send);
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach(target); } catch (_err) {}
+    }
+  }
+}
+
+async function accessibilityTreeContext(tab, timings = {}) {
+  try {
+    const response = await timed(timings, "ax_snapshot", () => chrome.runtime.sendMessage({
+      type: "SENSEI_BUILD_AX_SNAPSHOT",
+      tabId: tab.id,
+    }));
+    if (response?.ok && response.snapshot) {
+      return {
+        tree: response.snapshot,
+        semantic_tree: {
+          source: "chrome_accessibility_tree",
+          budget_bytes: PAGE_TREE_BYTE_LIMIT,
+          snapshot: response.snapshot,
+          text: summarizeAxSnapshot(response.snapshot),
+          truncated: Boolean(response.snapshot?.truncation),
+        },
+        browser_read_source: "accessibility_tree_primary",
+      };
+    }
+  } catch (_err) {
+    // Older service-worker builds do not expose SENSEI_BUILD_AX_SNAPSHOT.
+    // Fall through to a direct debugger read from the side panel.
+  }
+
+  try {
+    return await withChromeDebugger(tab, timings, async (send) => {
+      await send("Accessibility.enable");
+      const result = await send("Accessibility.getFullAXTree");
+      const semanticTree = compactAccessibilityTree(result?.nodes || []);
+      if (!semanticTree) return null;
+      return {
+        semantic_tree: semanticTree,
+        browser_read_source: "accessibility_tree_primary",
+      };
+    });
+  } catch (err) {
+    return {
+      browser_read_source: "content_script_fallback",
+      accessibility_error: String(err?.message || err).slice(0, 300),
+    };
+  }
+}
+
+async function contentScriptPageContext(tab, options, timings = {}) {
+  await ensureContentScript(tab, timings);
+  const response = await timed(timings, "context", () => chrome.tabs.sendMessage(tab.id, {
+    type: "SENSEI_PAGE_CONTEXT",
+    options
+  }));
+  return response?.page_context || {};
+}
+
 async function pageContext(prompt = "", timings = {}) {
   const tab = await timed(timings, "tab", activeTab);
   if (!tab?.id) return {};
@@ -325,17 +601,44 @@ async function pageContext(prompt = "", timings = {}) {
   }
 
   try {
-    await ensureContentScript(tab, timings);
-    const response = await timed(timings, "context", () => chrome.tabs.sendMessage(tab.id, {
-      type: "SENSEI_PAGE_CONTEXT",
-      options: {
+    const [domContext, axContext] = await Promise.all([
+      contentScriptPageContext(tab, {
         includeVisibleText,
-        visibleTextLimit: PAGE_CONTEXT_TEXT_LIMIT
-      }
-    }));
-    const value = response?.page_context || fallback;
+        includeInteractiveElements: true,
+        visibleTextLimit: PAGE_CONTEXT_TEXT_LIMIT,
+        waitForStableMs: PAGE_STABLE_WAIT_MS,
+        maxWaitMs: 4500,
+      }, timings).catch(() => fallback),
+      accessibilityTreeContext(tab, timings),
+    ]);
+    const value = trimPageContextToBudget({ ...fallback, ...(domContext || {}), ...(axContext || {}) });
     state.contextCache = { key, tabId: tab.id, ts: performance.now(), value };
     return value;
+  } catch (_err) {
+    return fallback;
+  }
+}
+
+async function freshPageContextForContinuation(timings = {}) {
+  const tab = await timed(timings, "tab", activeTab);
+  if (!tab?.id) return {};
+  const fallback = { url: tab.url || "", title: tab.title || "" };
+  if (!canInjectIntoTab(tab)) return fallback;
+
+  try {
+    await waitForTabSettled(tab.id, 6000);
+    const current = await chrome.tabs.get(tab.id);
+    const [domContext, axContext] = await Promise.all([
+      contentScriptPageContext(current, {
+        includeVisibleText: true,
+        includeInteractiveElements: true,
+        visibleTextLimit: PAGE_CONTEXT_TEXT_LIMIT,
+        waitForStableMs: PAGE_STABLE_WAIT_MS,
+        maxWaitMs: 4500,
+      }, timings).catch(() => fallback),
+      accessibilityTreeContext(current, timings),
+    ]);
+    return trimPageContextToBudget({ ...fallback, ...(domContext || {}), ...(axContext || {}) });
   } catch (_err) {
     return fallback;
   }
@@ -346,6 +649,177 @@ function normalizeUrl(target) {
   if (/^https?:\/\//i.test(raw)) return raw;
   if (/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(raw)) return `https://${raw}`;
   return raw;
+}
+
+function parseFillTargetForBridge(action) {
+  const raw = String(action?.target || "").trim();
+  const extras = action?.extras || {};
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        selector: String(parsed.selector || parsed.target || "").trim(),
+        value: String(parsed.value || parsed.text || "").trim(),
+      };
+    } catch (_err) {
+      // Fall through to delimiter parsing.
+    }
+  }
+  const match = raw.match(/^(.*?)\s*(?:=>|:=|::)\s*([\s\S]*)$/);
+  if (match) return { selector: match[1].trim(), value: match[2].trim() };
+  return {
+    selector: raw,
+    value: String(extras.value || extras.text || "").trim(),
+  };
+}
+
+function localPathFromFillValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^file:\/\//i.test(raw)) {
+    try {
+      return decodeURIComponent(new URL(raw).pathname);
+    } catch (_err) {
+      return raw.replace(/^file:\/\//i, "");
+    }
+  }
+  if ((raw.startsWith("~/") || raw.startsWith("/")) &&
+      /\.(pdf|docx?|odt|rtf|txt|csv|jpe?g|png|webp|gif|zip)$/i.test(raw)) {
+    return raw;
+  }
+  return "";
+}
+
+function basenameForPath(path) {
+  return String(path || "").split(/[\\/]/).filter(Boolean).pop() || "upload.bin";
+}
+
+function promptNeedsLocalFileHints(prompt) {
+  return /\b(resume|résumé|cv|cover\s+letter|ai\s+query|transcript|certificate|certification|pdf|docx?|upload|application)\b/i
+    .test(String(prompt || ""));
+}
+
+async function localFileHintsForPrompt(prompt) {
+  if (!promptNeedsLocalFileHints(prompt)) return null;
+  try {
+    const preferred = [state.config.resumePath].filter(Boolean);
+    const data = await backendFetch("/extension/resolve_local_file", {
+      method: "POST",
+      body: { query: prompt, preferred_paths: preferred },
+      timeoutMs: 9000,
+    });
+    if (!data?.ok || !Array.isArray(data.candidates) || !data.candidates.length) return null;
+    return {
+      query: data.query || prompt,
+      ambiguous: Boolean(data.ambiguous),
+      candidates: data.candidates.slice(0, 5),
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function attachLocalFilePayload(action) {
+  const kind = String(action?.kind || "").toUpperCase();
+  if (kind !== "BROWSER_FILL") return action;
+  const parsed = parseFillTargetForBridge(action);
+  const path = localPathFromFillValue(parsed.value);
+  if (!path) return action;
+
+  const file = await backendFetch("/extension/read_local_file", {
+    method: "POST",
+    body: { path },
+    timeoutMs: 60000,
+  });
+  if (!file?.ok || !file?.base64) {
+    throw new Error(file?.error || `local file read failed: ${path}`);
+  }
+  return {
+    ...action,
+    extras: {
+      ...(action.extras || {}),
+      fileUpload: {
+        path: file.path || path,
+        name: basenameForPath(file.path || path),
+        mime: file.mime || "application/octet-stream",
+        size: file.size || 0,
+        base64: file.base64,
+      },
+    },
+  };
+}
+
+async function tryDebuggerFileUpload(tab, action, timings = {}) {
+  const kind = String(action?.kind || "").toUpperCase();
+  if (kind !== "BROWSER_FILL") return null;
+  const parsed = parseFillTargetForBridge(action);
+  const requestedPath = localPathFromFillValue(parsed.value);
+  if (!requestedPath || !parsed.selector) return null;
+
+  const file = await backendFetch("/extension/read_local_file", {
+    method: "POST",
+    body: { path: requestedPath },
+    timeoutMs: 60000,
+  });
+  if (!file?.ok) throw new Error(file?.error || `local file read failed: ${requestedPath}`);
+  const path = file.path || requestedPath;
+
+  try {
+    const uploaded = await withChromeDebugger(tab, timings, async (send) => {
+      await send("DOM.enable");
+      const expression = `document.querySelector(${JSON.stringify(parsed.selector)})`;
+      const evaluated = await send("Runtime.evaluate", {
+        expression,
+        objectGroup: "sensei-file-upload",
+        includeCommandLineAPI: false,
+      });
+      const objectId = evaluated?.result?.objectId;
+      if (!objectId) throw new Error("file input selector did not resolve in debugger");
+      const node = await send("DOM.requestNode", { objectId });
+      if (!node?.nodeId) throw new Error("debugger could not resolve file input node");
+      await send("DOM.setFileInputFiles", {
+        nodeId: node.nodeId,
+        files: [path],
+      });
+      await send("Runtime.evaluate", {
+        expression: `(() => { const el = document.querySelector(${JSON.stringify(parsed.selector)}); if (!el) return false; el.dispatchEvent(new Event("input", { bubbles: true })); el.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`,
+        includeCommandLineAPI: false,
+        returnByValue: true,
+      }).catch(() => {});
+      await send("Runtime.releaseObject", { objectId }).catch(() => {});
+      return {
+        ok: true,
+        filled: parsed.selector,
+        file_upload: {
+          method: "debugger.DOM.setFileInputFiles",
+          path,
+          file_name: basenameForPath(path),
+          file_size: file.size || 0,
+          mime: file.mime || "application/octet-stream",
+        },
+      };
+    });
+    return uploaded;
+  } catch (err) {
+    return {
+      ok: false,
+      debugger_file_upload_failed: true,
+      error: String(err?.message || err),
+      fallback_action: {
+        ...action,
+        extras: {
+          ...(action.extras || {}),
+          fileUpload: {
+            path,
+            name: basenameForPath(path),
+            mime: file.mime || "application/octet-stream",
+            size: file.size || 0,
+            base64: file.base64,
+          },
+        },
+      }
+    };
+  }
 }
 
 function currentExecutionMode() {
@@ -417,7 +891,8 @@ function originBlockedReason(originOrUrl = "") {
 async function sendToContent(tab, action, timings = {}) {
   const ready = await ensureContentScript(tab, timings);
   if (!ready) throw new Error("cannot access this tab");
-  return chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action });
+  const bridgedAction = await attachLocalFilePayload(action);
+  return chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action: bridgedAction });
 }
 
 function truncateDataUrlForAudit(dataUrl) {
@@ -598,18 +1073,39 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       result = {
         ok: true,
         screenshot: "visible_tab_png",
-        dataUrl: truncateDataUrlForAudit(capture.dataUrl)
+        dataUrl_preview: truncateDataUrlForAudit(capture.dataUrl),
+        context_lifetime: "one_turn"
       };
     } else if (kind === "BROWSER_NAV") {
       const url = normalizeUrl(action.target);
       await chrome.tabs.update(tab.id, { url });
+      await waitForTabSettled(tab.id, 8000);
       result = { ok: true, navigated: url };
       invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE") {
+      result = {
+        ok: true,
+        page_context: await freshPageContextForContinuation(timings),
+        text: "Page observed with semantic tree and current interactives."
+      };
     } else if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
-      result = await inspectDriveFolderWorkflow(tab, action);
+      result = await sendToContent(tab, action, timings);
+      invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_FILL") {
+      const uploadAttempt = await tryDebuggerFileUpload(tab, action, timings);
+      if (uploadAttempt?.ok) {
+        result = uploadAttempt;
+      } else if (uploadAttempt?.fallback_action) {
+        result = await sendToContent(tab, uploadAttempt.fallback_action, timings);
+        if (!result?.ok) result = { ...result, debugger_fallback_error: uploadAttempt.error };
+      } else {
+        result = await sendToContent(tab, action, timings);
+      }
+      if (CONTEXT_SETTLING_BROWSER_KINDS.has(kind)) await waitForTabSettled(tab.id, 4000);
       invalidatePageContext(tab.id);
     } else {
       result = await sendToContent(tab, action, timings);
+      if (CONTEXT_SETTLING_BROWSER_KINDS.has(kind)) await waitForTabSettled(tab.id, 4000);
       invalidatePageContext(tab.id);
     }
 
@@ -1129,7 +1625,10 @@ async function sendPrompt() {
   setConnection("Thinking");
 
   try {
-    const ctx = await pageContext(prompt, timings);
+    const [ctx, localFileHints] = await Promise.all([
+      pageContext(prompt, timings),
+      localFileHintsForPrompt(prompt),
+    ]);
     const body = {
       prompt,
       mode: $("#modeSelect").value,
@@ -1141,6 +1640,7 @@ async function sendPrompt() {
     // Phase 2.1: surface the configured local résumé path to the model so it
     // can reference it in file-upload BROWSER_FILL targets. Empty when unset.
     if (state.config.resumePath) body.resume_path = state.config.resumePath;
+    if (localFileHints) body.local_file_hints = localFileHints;
     const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);
@@ -1241,11 +1741,13 @@ async function continueLoop() {
   const totalStart = performance.now();
 
   try {
+    const ctx = await freshPageContextForContinuation(timings);
     const body = {
       parent_turn_id: state.loop.turn_id,
       source: "chrome_extension",
       session_id: state.config.sessionId,
       action_results: state.loop.results,
+      page_context: ctx,
       client_timings: {
         audit_queue_depth: state.auditQueue.length
       }

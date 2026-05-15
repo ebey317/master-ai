@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sensei Framework Fill Smoke</title>
+  <script>
+    window.__senseiCapturedListener = null;
+    window.chrome = {
+      runtime: {
+        onMessage: {
+          addListener: (fn) => { window.__senseiCapturedListener = fn; },
+          removeListener: () => {},
+        },
+        sendMessage: () => {},
+      },
+      tabs: { update: () => {} },
+      storage: { local: { get: (_, cb) => cb && cb({}), set: (_, cb) => cb && cb() } },
+    };
+    window.__senseiDispatch = function (action) {
+      return new Promise((resolve) => {
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_EXECUTE_ACTION", action },
+          null,
+          (response) => resolve({ ...response, frameworkState: window.__frameworkState })
+        );
+        if (handled !== true) resolve({ ok: false, error: "listener returned non-async" });
+      });
+    };
+  </script>
+  <script src="../content_script.js"></script>
+</head>
+<body>
+  <label for="firstName">First name</label>
+  <input id="firstName" name="firstName" value="">
+  <pre id="state"></pre>
+  <script>
+    window.__frameworkState = { value: "", inputEvents: 0, changeEvents: 0 };
+    const input = document.querySelector("#firstName");
+    input.addEventListener("input", () => {
+      window.__frameworkState.inputEvents += 1;
+      window.__frameworkState.value = input.value;
+      document.querySelector("#state").textContent = JSON.stringify(window.__frameworkState);
+    });
+    input.addEventListener("change", () => {
+      window.__frameworkState.changeEvents += 1;
+      window.__frameworkState.value = input.value;
+      document.querySelector("#state").textContent = JSON.stringify(window.__frameworkState);
+    });
+  </script>
+</body>
+</html>

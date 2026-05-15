@@ -260,8 +260,74 @@ def _run_handler_on_fixture(fixture_url, action):
         shutil.rmtree(user_data, ignore_errors=True)
 
 
+def _run_context_on_fixture(fixture_url, options):
+    chrome = shutil.which("google-chrome") or shutil.which("chromium")
+    if not chrome:
+        raise unittest.SkipTest("no google-chrome on PATH")
+
+    port = _free_port()
+    user_data = tempfile.mkdtemp(prefix="sensei-context-cdp-")
+    proc = subprocess.Popen(
+        [
+            chrome, "--headless=new", "--disable-gpu", "--no-first-run",
+            "--no-default-browser-check",
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={user_data}",
+            "about:blank",
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    try:
+        _wait_for_chrome(port)
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/list", timeout=2
+        ) as r:
+            tabs = json.loads(r.read())
+        page_tabs = [t for t in tabs if t.get("type") == "page"]
+        if not page_tabs:
+            raise RuntimeError(f"no page tabs: {tabs}")
+        ws_url = page_tabs[0]["webSocketDebuggerUrl"]
+
+        cdp = CDP(ws_url)
+        try:
+            cdp.call("Page.enable")
+            cdp.call("Runtime.enable")
+            cdp.call("Page.navigate", {"url": fixture_url})
+            cdp.wait_for("Page.loadEventFired", timeout=15)
+            time.sleep(1.2)
+            sanity = cdp.call("Runtime.evaluate", {
+                "expression": "Boolean(window.__senseiCapturedListener)",
+                "returnByValue": True,
+            })
+            if not (sanity.get("result") or {}).get("value"):
+                raise RuntimeError("content_script listener not captured")
+            expr = "window.__senseiContext(" + json.dumps(options) + ")"
+            res = cdp.call("Runtime.evaluate", {
+                "expression": expr,
+                "returnByValue": True,
+                "awaitPromise": True,
+            })
+            value = (res.get("result") or {}).get("value")
+            if value is None:
+                raise RuntimeError(f"context returned no value: {res}")
+            return value
+        finally:
+            cdp.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        shutil.rmtree(user_data, ignore_errors=True)
+
+
 SEARCH_URL = "file:///home/elijah/scripts/sensei_extension/test/fake_drive_search.html"
 EMPTY_URL = "file:///home/elijah/scripts/sensei_extension/test/fake_drive_empty_folder.html"
+FILE_UPLOAD_URL = "file:///home/elijah/scripts/sensei_extension/test/file_upload_smoke.html"
+PAGE_CONTEXT_URL = "file:///home/elijah/scripts/sensei_extension/test/page_context_shadow_spa_iframe.html"
+FRAMEWORK_FILL_URL = "file:///home/elijah/scripts/sensei_extension/test/framework_fill_smoke.html"
 
 INSPECT_ACTION = {
     "kind": "BROWSER_DRIVE_INSPECT_FOLDER",
@@ -271,6 +337,40 @@ INSPECT_ACTION = {
 
 
 class DriveInspectHandlerTests(unittest.TestCase):
+    def test_page_context_covers_shadow_iframes_and_spa_mutation(self):
+        result = _run_context_on_fixture(PAGE_CONTEXT_URL, {
+            "includeVisibleText": True,
+            "includeInteractiveElements": True,
+            "waitForStableMs": 650,
+            "maxWaitMs": 4000,
+        })
+        print("\n=== PAGE-CONTEXT RESULT ===")
+        print(json.dumps({
+            "ok": result.get("ok"),
+            "title": (result.get("page_context") or {}).get("title"),
+            "observe_state": (result.get("page_context") or {}).get("observe_state"),
+            "iframes": (result.get("page_context") or {}).get("iframes"),
+            "interactive_elements": (result.get("page_context") or {}).get("interactive_elements"),
+        }, indent=2)[:2500])
+
+        self.assertTrue(result.get("ok"), f"context returned ok=false: {result}")
+        ctx = result.get("page_context") or {}
+        interactive = ctx.get("interactive_elements") or ""
+        self.assertIn("Shadow Apply", interactive,
+                      "open shadow DOM button should be visible to the page reader")
+        visible = ctx.get("visible_text") or ""
+        self.assertIn("SPA loaded application step", visible,
+                      "debounced MutationObserver should let URL-unchanged SPA content settle")
+        obs = ctx.get("observe_state") or {}
+        self.assertGreater(int(obs.get("version") or 0), 0,
+                           "observe_state.version should increment after ready/mutation triggers")
+        self.assertIn("main-content MutationObserver debounced", obs.get("triggers") or [])
+        iframes = ctx.get("iframes") or []
+        self.assertTrue(any(frame.get("same_origin") for frame in iframes),
+                        f"same-origin iframe summary missing: {iframes}")
+        self.assertTrue(any(frame.get("cross_origin") for frame in iframes),
+                        f"cross-origin iframe metadata missing: {iframes}")
+
     def test_search_results_extracts_resume_folder(self):
         result = _run_handler_on_fixture(SEARCH_URL, INSPECT_ACTION)
         print("\n=== SEARCH-PAGE RESULT ===")
@@ -327,6 +427,50 @@ class DriveInspectHandlerTests(unittest.TestCase):
             f"empty_reason should describe the empty-state copy, got {reason!r}"
         )
         print(f"  ✓ empty-folder detection: reason={state.get('empty_reason')!r}")
+
+    def test_file_upload_lands_local_file_payload(self):
+        payload = b"%PDF-1.4\n% Sensei smoke upload\n"
+        action = {
+            "kind": "BROWSER_FILL",
+            "target": "#resume :: file:///tmp/sensei-smoke-resume.pdf",
+            "extras": {
+                "fileUpload": {
+                    "path": "/tmp/sensei-smoke-resume.pdf",
+                    "name": "sensei-smoke-resume.pdf",
+                    "mime": "application/pdf",
+                    "size": len(payload),
+                    "base64": base64.b64encode(payload).decode("ascii"),
+                }
+            },
+        }
+        result = _run_handler_on_fixture(FILE_UPLOAD_URL, action)
+        print("\n=== FILE-UPLOAD RESULT ===")
+        print(json.dumps(result, indent=2)[:1500])
+
+        self.assertTrue(result.get("ok"),
+                        f"handler returned ok=false: {result}")
+        upload = result.get("file_upload") or {}
+        self.assertEqual(upload.get("file_name"), "sensei-smoke-resume.pdf")
+        self.assertEqual(upload.get("file_size"), len(payload))
+        self.assertEqual(upload.get("mime"), "application/pdf")
+        print(f"  ✓ file-upload landed: {upload.get('file_name')}")
+
+    def test_framework_fill_dispatches_input_and_change_events(self):
+        action = {
+            "kind": "BROWSER_FILL",
+            "target": "#firstName :: Elijah",
+        }
+        result = _run_handler_on_fixture(FRAMEWORK_FILL_URL, action)
+        print("\n=== FRAMEWORK-FILL RESULT ===")
+        print(json.dumps(result, indent=2)[:1500])
+
+        self.assertTrue(result.get("ok"),
+                        f"handler returned ok=false: {result}")
+        framework = result.get("frameworkState") or {}
+        self.assertEqual(framework.get("value"), "Elijah")
+        self.assertGreaterEqual(int(framework.get("inputEvents") or 0), 1)
+        self.assertGreaterEqual(int(framework.get("changeEvents") or 0), 1)
+        print("  ✓ framework fill updated native value and dispatched events")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sensei Page Context Smoke</title>
+  <style>
+    body { font: 14px/1.45 system-ui, sans-serif; margin: 0; padding: 16px; }
+    main { display: grid; gap: 12px; max-width: 760px; }
+    iframe { width: 320px; height: 80px; border: 1px solid #c8c8c8; }
+  </style>
+  <script>
+    window.__senseiCapturedListener = null;
+    window.chrome = {
+      runtime: {
+        onMessage: {
+          addListener: (fn) => { window.__senseiCapturedListener = fn; },
+          removeListener: () => {},
+        },
+        sendMessage: () => {},
+      },
+      tabs: { update: () => {} },
+      storage: { local: { get: (_, cb) => cb && cb({}), set: (_, cb) => cb && cb() } },
+    };
+    window.__senseiDispatch = function (action) {
+      return new Promise((resolve) => {
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_EXECUTE_ACTION", action },
+          null,
+          (response) => resolve(response)
+        );
+        if (handled !== true) resolve({ ok: false, error: "listener returned non-async" });
+      });
+    };
+    window.__senseiContext = function (options) {
+      return new Promise((resolve) => {
+        const handled = window.__senseiCapturedListener(
+          { type: "SENSEI_PAGE_CONTEXT", options },
+          null,
+          (response) => resolve(response)
+        );
+        if (handled !== true) resolve({ ok: false, error: "listener returned non-async" });
+      });
+    };
+  </script>
+  <script src="../content_script.js"></script>
+</head>
+<body>
+  <main id="app" role="main" aria-label="Application workspace">
+    <h1>Application Portal</h1>
+    <div id="shadow-host"></div>
+    <iframe title="Same origin widget" srcdoc="<button aria-label='Widget Continue'>Continue</button><p>Same origin frame text</p>"></iframe>
+    <iframe title="External job widget" sandbox srcdoc="<button>Hidden Cross Origin</button>"></iframe>
+    <section id="spa-region" aria-label="Job application step">Initial step</section>
+  </main>
+  <script>
+    const shadow = document.querySelector("#shadow-host").attachShadow({ mode: "open" });
+    shadow.innerHTML = "<button aria-label='Shadow Apply'>Apply inside shadow</button>";
+
+    let i = 0;
+    const timer = setInterval(() => {
+      i += 1;
+      document.querySelector("#spa-region").textContent = `SPA loaded application step ${i}`;
+      if (i >= 8) clearInterval(timer);
+    }, 40);
+  </script>
+</body>
+</html>

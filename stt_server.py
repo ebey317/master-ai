@@ -77,7 +77,7 @@ _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
 _ACTION_LINE_RE = re.compile(
-    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER):\s*(.*?)\s*$",
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -346,6 +346,127 @@ def _write_sanitize_audit(*, request_id, source, scrub_meta):
         pass
 
 
+PAGE_TREE_BYTE_CAP = 24576  # defense-in-depth re-clip if the extension sends more
+
+
+def _sanitize_tree_in_place(tree, fired_acc, fields_acc, path="tree"):
+    """Recursively sanitize string values inside the semantic page tree.
+
+    Mirrors _sanitize_page_context_field on every string leaf; tags
+    fields_acc with `tree.<path>` for stable audit attribution. Closes the
+    Shadow DOM / cross-field directive-split gap the legacy flat-field
+    sanitizer alone could miss (plan §2).
+    """
+    if isinstance(tree, dict):
+        for k, v in list(tree.items()):
+            child_path = f"{path}.{k}"
+            if isinstance(v, str):
+                cleaned, fired = _sanitize_pass(v)
+                if fired:
+                    fired_acc.extend(fired)
+                    fields_acc.add(child_path)
+                tree[k] = cleaned
+            elif isinstance(v, (dict, list)):
+                _sanitize_tree_in_place(v, fired_acc, fields_acc, child_path)
+    elif isinstance(tree, list):
+        for i, v in enumerate(tree):
+            child_path = f"{path}[{i}]"
+            if isinstance(v, str):
+                cleaned, fired = _sanitize_pass(v)
+                if fired:
+                    fired_acc.extend(fired)
+                    fields_acc.add(child_path)
+                tree[i] = cleaned
+            elif isinstance(v, (dict, list)):
+                _sanitize_tree_in_place(v, fired_acc, fields_acc, child_path)
+
+
+def _format_tree_node(node):
+    """One indented line for a single semantic-tree node."""
+    if not isinstance(node, dict):
+        return ""
+    role = node.get("role") or "?"
+    name = node.get("name") or ""
+    ref = node.get("ref") or ""
+    parts = [f"  {role} \"{name}\""]
+    if ref:
+        parts.append(f"ref={ref}")
+    state = node.get("state")
+    if isinstance(state, dict) and state:
+        keys = ",".join(sorted(str(k) for k in state.keys()))
+        parts.append(f"state={keys}")
+    val = node.get("value")
+    if val:
+        parts.append(f"value={_safe_context_text(val, limit=160)}")
+    sel = node.get("selector")
+    if sel:
+        parts.append(f"selector={_safe_context_text(sel, limit=240)}")
+    return " ".join(parts)
+
+
+def _render_page_tree(tree):
+    """Render a semantic page tree to a model-facing block.
+
+    Stable section order so the model sees a predictable layout:
+    landmarks → headings → buttons → links → inputs → file_folder_rows →
+    dialogs → lists → iframes → truncation. Empty sections are skipped.
+    Refs (`r-N`) are the stable handle within one snapshot — model echoes
+    them back via `BROWSER_CLICK ref=r-12` etc.
+    """
+    if not isinstance(tree, dict):
+        return ""
+    out = []
+    source = tree.get("source") or "ax_tree"
+    out.append(f"[BROWSER PAGE TREE source={source}]")
+    if tree.get("url"):
+        out.append(f"url: {_safe_context_text(tree.get('url'), limit=500)}")
+    if tree.get("title"):
+        out.append(f"title: {_safe_context_text(tree.get('title'), limit=300)}")
+    sections = (
+        ("landmarks", "landmarks"),
+        ("headings", "headings"),
+        ("buttons", "buttons"),
+        ("links", "links"),
+        ("inputs", "inputs"),
+        ("file_folder_rows", "file/folder rows"),
+        ("dialogs", "dialogs"),
+        ("lists", "lists"),
+    )
+    for key, label in sections:
+        items = tree.get(key)
+        if not isinstance(items, list) or not items:
+            continue
+        out.append(f"{label}:")
+        for node in items:
+            line = _format_tree_node(node)
+            if line:
+                out.append(line)
+    iframes = tree.get("iframes")
+    if isinstance(iframes, list) and iframes:
+        out.append("iframes:")
+        for f in iframes:
+            if not isinstance(f, dict):
+                continue
+            kind = "cross-origin" if f.get("cross_origin") else "same-origin"
+            title = _safe_context_text(f.get("title") or f.get("name") or "", limit=160)
+            src = _safe_context_text(f.get("src") or "", limit=240)
+            ref = f.get("ref") or ""
+            reason = _safe_context_text(f.get("unobserved_reason") or "", limit=200)
+            parts = [f"  {kind} frame \"{title}\""]
+            if ref:
+                parts.append(f"ref={ref}")
+            if src:
+                parts.append(f"src={src}")
+            if reason:
+                parts.append(f"unobserved={reason}")
+            out.append(" ".join(parts))
+    trunc = tree.get("truncation")
+    if isinstance(trunc, dict) and trunc.get("reason"):
+        dropped = trunc.get("dropped_nodes") or 0
+        out.append(f"truncation: {trunc.get('reason')} dropped={dropped}")
+    return "\n".join(out)
+
+
 def _format_page_context(page_context):
     """Format browser page_context dict to model-facing text.
 
@@ -354,7 +475,9 @@ def _format_page_context(page_context):
 
     Per-field sanitization runs BEFORE the per-field cap so the directive
     pattern can't be split by the cap. Assembled-block sanitization runs AFTER
-    field concatenation to catch cross-field directive splits.
+    field concatenation to catch cross-field directive splits. When a `tree`
+    field is present (Claude-Chrome-style AX snapshot — plan §2), the tree is
+    sanitized recursively and appended as a [BROWSER PAGE TREE] sub-block.
     """
     scrub_meta = {"count": 0, "patterns": [], "fields": []}
     if not isinstance(page_context, dict):
@@ -379,13 +502,53 @@ def _format_page_context(page_context):
         val = _safe_context_text(sanitized, limit=limit)
         if val:
             fields.append(f"{key}: {val}")
-    if not fields:
+
+    tree = page_context.get("tree")
+    tree_block = ""
+    if isinstance(tree, dict):
+        try:
+            raw_bytes = len(json.dumps(tree).encode("utf-8"))
+        except Exception:
+            raw_bytes = 0
+        if raw_bytes > PAGE_TREE_BYTE_CAP:
+            for k in ("file_folder_rows", "lists", "buttons", "links", "inputs",
+                      "landmarks", "headings"):
+                v = tree.get(k)
+                if isinstance(v, list) and len(v) > 4:
+                    tree[k] = v[:max(4, len(v) // 2)]
+                if len(json.dumps(tree).encode("utf-8")) <= PAGE_TREE_BYTE_CAP:
+                    break
+            tree.setdefault("truncation", {})["reason"] = "server_byte_cap"
+        _sanitize_tree_in_place(tree, fired_acc, fields_acc)
+        tree_block = _render_page_tree(tree)
+    else:
+        # Codex side-panel fallback (debugger-attach from the side panel itself)
+        # produces { semantic_tree: { text, source, ... }, browser_read_source }
+        # without a top-level `tree`. Surface its text dump as a page-tree block
+        # so the model still gets the AX content when the SW path fails.
+        st = page_context.get("semantic_tree")
+        if isinstance(st, dict) and isinstance(st.get("text"), str) and st["text"].strip():
+            sanitized = _sanitize_page_context_field(
+                st["text"], "semantic_tree.text", fired_acc, fields_acc
+            )
+            sanitized = _safe_context_text(sanitized, limit=9000)
+            src = _safe_context_text(st.get("source") or "ax_fallback", limit=80)
+            tree_block = f"[BROWSER PAGE TREE source={src}]\n{sanitized}"
+            if st.get("truncated"):
+                tree_block += "\ntruncation: client_text_cap"
+
+    if not fields and not tree_block:
         if fired_acc:
             # Even with no formatted fields, audit truthfully if scrubbing fired.
             scrub_meta.update(_finalize_scrub_meta(fired_acc, fields_acc))
         return "", scrub_meta
 
-    block = "[BROWSER PAGE CONTEXT]\n" + "\n".join(fields)
+    pieces = []
+    if fields:
+        pieces.append("[BROWSER PAGE CONTEXT]\n" + "\n".join(fields))
+    if tree_block:
+        pieces.append(tree_block)
+    block = "\n".join(pieces)
     block = _sanitize_assembled_context_block(block, fired_acc, fields_acc)
 
     if fired_acc:
@@ -410,7 +573,7 @@ def _finalize_scrub_meta(fired_acc, fields_acc):
 
 def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
                 action_results=None, round_num=1, round_budget=None,
-                request_id="", resume_path=""):
+                request_id="", resume_path="", local_file_hints=None):
     context, scrub_meta = _format_page_context(page_context)
     # Audit even if no formatted context survived (e.g., every field was empty
     # after sanitize) — the scrub still happened and Elijah needs the row.
@@ -434,6 +597,21 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         # extension uses /extension/read_local_file to fetch the bytes for
         # DataTransfer-based upload (full bridge in 2.1b).
         lines.append(f"resume_path: {_safe_context_text(resume_path, 500)}")
+    if isinstance(local_file_hints, dict) and local_file_hints.get("candidates"):
+        hint_lines = []
+        for item in list(local_file_hints.get("candidates") or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            path = _safe_context_text(str(item.get("path") or ""), 500)
+            reason = _safe_context_text(str(item.get("reason") or ""), 160)
+            score = _safe_context_text(str(item.get("score") or ""), 40)
+            if path:
+                hint_lines.append(f" - {path} score={score} reason={reason}")
+        if hint_lines:
+            ambiguous = "true" if local_file_hints.get("ambiguous") else "false"
+            lines.append("local_file_hints:")
+            lines.append(f" ambiguous: {ambiguous}")
+            lines.extend(hint_lines)
     if schedule_id:
         lines.append(f"schedule_id: {_safe_context_text(schedule_id, 120)}")
     if round_num and round_num > 1:
@@ -441,7 +619,9 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         lines.append(f"continuation_round: {round_num}{budget_str}")
     lines.extend([
         "Branch B: do not execute local machine or browser actions inside the backend request.",
-        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.",
+        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.",
+        "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
+        "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
         "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.",
         "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.",
@@ -646,11 +826,13 @@ def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
     target = (target or "").strip()
     if kind == "BROWSER_SCREENSHOT" and not target:
         target = "viewport"
+    if kind in ("BROWSER_READ_PAGE", "BROWSER_OBSERVE") and not target:
+        target = "current"
     if not kind or not target:
         return None
     risk = "safe" if kind in (
-        "READ", "BROWSER_READ", "BROWSER_SCREENSHOT", "BROWSER_WAIT",
-        "BROWSER_SCROLL", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
+        "READ", "BROWSER_READ", "BROWSER_READ_PAGE", "BROWSER_OBSERVE",
+        "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
         "BROWSER_DRIVE_INSPECT_FOLDER",
     ) else "normal"
     return {
@@ -1059,6 +1241,7 @@ def api_handle(payload):
         round_budget=round_budget,
         request_id=turn_id,
         resume_path=str(payload.get("resume_path") or "").strip(),
+        local_file_hints=payload.get("local_file_hints") if isinstance(payload.get("local_file_hints"), dict) else None,
     )
 
     # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
@@ -2083,6 +2266,163 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 pass  # Audit is observability, not a blocker.
             return self._json({'ok': True})
 
+        # /extension/resolve_local_file — deterministic local-document resolver
+        # for user phrases like "my résumé" or "the AI query doc". It does not
+        # read file contents; it returns bounded candidates so the model can
+        # choose or ask when ambiguous.
+        #
+        # Body: {query, preferred_paths?}
+        # Returns: {ok, query, ambiguous, candidates:[{path, score, reason, mtime, size}]}
+        if self.path == '/extension/resolve_local_file':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            query = str(payload.get('query') or '').strip()
+            preferred_paths = payload.get('preferred_paths') if isinstance(payload.get('preferred_paths'), list) else []
+            try:
+                _scripts_on_path()
+                import master_ai as _m
+                from pathlib import Path as _P
+                import unicodedata as _ud
+
+                def _norm(s):
+                    return ''.join(ch for ch in _ud.normalize('NFD', str(s or '').lower())
+                                   if _ud.category(ch) != 'Mn')
+
+                qn = _norm(query)
+                intent_terms = []
+                if any(t in qn for t in ('resume', 'résumé', 'cv')):
+                    intent_terms += ['resume', 'résumé', 'cv']
+                if 'cover' in qn and 'letter' in qn:
+                    intent_terms += ['cover', 'letter']
+                if 'ai' in qn and 'query' in qn:
+                    intent_terms += ['ai', 'query']
+                if 'transcript' in qn:
+                    intent_terms += ['transcript']
+                if 'certificate' in qn or 'certification' in qn:
+                    intent_terms += ['certificate', 'certification']
+                if not intent_terms:
+                    intent_terms = [w for w in re.split(r'[^a-z0-9]+', qn) if len(w) >= 3][:6]
+
+                exts = {'.pdf', '.doc', '.docx', '.odt', '.rtf', '.txt', '.md', '.csv'}
+                home = _P.home()
+                roots = [
+                    home / 'Desktop',
+                    home / 'Documents',
+                    home / 'Downloads',
+                    home / 'Google Drive',
+                    home / 'My Drive',
+                    home,
+                ]
+                skip_dirs = {
+                    '.cache', '.config', '.local', '.mozilla', '.npm', '.ollama',
+                    '.var', '.vscode', '.codex', 'node_modules', '__pycache__',
+                    'snap', '.git',
+                }
+                scored = {}
+
+                def _read_ok(path):
+                    if hasattr(_m, '_read_path_ok'):
+                        try:
+                            ok, _reason = _m._read_path_ok(str(path))
+                            return bool(ok)
+                        except Exception:
+                            return False
+                    return True
+
+                def _score(path, preferred=False):
+                    name = _norm(path.name)
+                    full = _norm(str(path))
+                    score = 1000 if preferred else 0
+                    reasons = []
+                    for term in intent_terms:
+                        tn = _norm(term)
+                        if not tn:
+                            continue
+                        if tn in name:
+                            score += 120
+                            reasons.append(f'name:{term}')
+                        elif tn in full:
+                            score += 40
+                            reasons.append(f'path:{term}')
+                    if path.suffix.lower() == '.pdf':
+                        score += 25
+                    try:
+                        age_days = max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
+                        score += max(0, int(30 - min(age_days, 30)))
+                    except Exception:
+                        pass
+                    return score, ','.join(reasons[:5]) or ('preferred_path' if preferred else 'term_match')
+
+                for raw in preferred_paths:
+                    p = _P(os.path.expanduser(str(raw or ''))).resolve(strict=False)
+                    if p.exists() and p.is_file() and p.suffix.lower() in exts and _read_ok(p):
+                        score, reason = _score(p, preferred=True)
+                        scored[str(p)] = (score, reason, p)
+
+                seen_dirs = set()
+                visited_files = 0
+                for root in roots:
+                    root = root.expanduser()
+                    if not root.exists() or not root.is_dir():
+                        continue
+                    try:
+                        root_real = str(root.resolve())
+                    except Exception:
+                        root_real = str(root)
+                    if root_real in seen_dirs:
+                        continue
+                    seen_dirs.add(root_real)
+                    for dirpath, dirnames, filenames in os.walk(root):
+                        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith('.')]
+                        depth = len(_P(dirpath).relative_to(root).parts) if _P(dirpath) != root else 0
+                        if depth >= 5:
+                            dirnames[:] = []
+                        for filename in filenames:
+                            visited_files += 1
+                            if visited_files > 20000:
+                                break
+                            p = _P(dirpath) / filename
+                            if p.suffix.lower() not in exts:
+                                continue
+                            score, reason = _score(p)
+                            if score <= 0:
+                                continue
+                            try:
+                                rp = p.resolve(strict=False)
+                            except Exception:
+                                rp = p
+                            if not _read_ok(rp):
+                                continue
+                            key = str(rp)
+                            if key not in scored or score > scored[key][0]:
+                                scored[key] = (score, reason, rp)
+                        if visited_files > 20000:
+                            break
+
+                rows = []
+                for _key, (score, reason, p) in scored.items():
+                    try:
+                        st = p.stat()
+                        rows.append({
+                            'path': str(p),
+                            'score': score,
+                            'reason': reason,
+                            'mtime': int(st.st_mtime),
+                            'size': int(st.st_size),
+                        })
+                    except Exception:
+                        rows.append({'path': str(p), 'score': score, 'reason': reason})
+                rows.sort(key=lambda r: (-int(r.get('score') or 0), -int(r.get('mtime') or 0), r.get('path') or ''))
+                top = rows[:8]
+                ambiguous = len(top) > 1 and int(top[0].get('score') or 0) - int(top[1].get('score') or 0) < 40
+                return self._json({'ok': True, 'query': query, 'ambiguous': ambiguous, 'candidates': top})
+            except Exception as _e:
+                return self._json({'ok': False, 'error': f'resolver failed: {_e}'}, 500)
+
         # /extension/read_local_file — reads a local file off disk for the
         # extension to ship into a content-script file-input via DataTransfer
         # (commit 2.1 of the dispatcher plan; full upload bridge needs a
@@ -2142,7 +2482,7 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                         f.write(json.dumps(rec) + '\n')
                 except Exception:
                     pass
-                return self._json({'ok': True, 'size': size, 'mime': mime or 'application/octet-stream', 'base64': b64})
+                return self._json({'ok': True, 'path': os.path.abspath(expanded), 'size': size, 'mime': mime or 'application/octet-stream', 'base64': b64})
             except Exception as _e:
                 return self._json({'ok': False, 'error': f'read failed: {_e}'}, 500)
 
