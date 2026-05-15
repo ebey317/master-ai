@@ -733,24 +733,48 @@ async function renderActions(actions = [], blockedActions = []) {
 
     // Plan-mode preview cards get no buttons; everything else with a
     // pending status gets Allow/Decline.
+    //
+    // Button-order rule: in "Act without asking" mode (auto), make
+    // "Always allow site" the PRIMARY (filled-accent) button so the
+    // path to the spec's auto-flow UX is obvious — observed 2026-05-14:
+    // Elijah set Auto, hit Google Drive, saw 11 "Action ready for
+    // review" cards in a row because drive.google.com wasn't yet on
+    // approvedOrigins. The button was always there but ranked
+    // secondary, easy to miss. In Review/Plan modes "Allow once" stays
+    // primary — those modes EXPECT per-action gating, so promoting
+    // "Always allow site" would push users out of their chosen mode.
     if (!action.blocked && !autoRun && !isPlanInert) {
+      const canAlways = origin && !action.classification?.requires_confirm;
+      const promoteAlways = canAlways && currentMode === "auto";
+
       const approve = document.createElement("button");
-      approve.className = "primary";
+      approve.className = promoteAlways ? "secondary" : "primary";
       approve.type = "button";
       approve.textContent = "Allow once";
       approve.addEventListener("click", () => approveAction(action, row, "allow_once"));
-      buttons.appendChild(approve);
 
-      if (origin && !action.classification?.requires_confirm) {
-        const always = document.createElement("button");
-        always.className = "secondary";
+      let always = null;
+      if (canAlways) {
+        always = document.createElement("button");
+        always.className = promoteAlways ? "primary" : "secondary";
         always.type = "button";
-        always.textContent = "Always allow site";
+        always.textContent = promoteAlways
+          ? `Always allow ${origin.replace(/^https?:\/\//, "")}`
+          : "Always allow site";
         always.addEventListener("click", async () => {
           await allowOrigin(origin, action);
           approveAction(action, row, "always_allow_site");
         });
+      }
+
+      // Order: primary button first. In Auto, that's "Always allow…";
+      // in Review/Plan, "Allow once".
+      if (promoteAlways) {
         buttons.appendChild(always);
+        buttons.appendChild(approve);
+      } else {
+        buttons.appendChild(approve);
+        if (always) buttons.appendChild(always);
       }
 
       const reject = document.createElement("button");
