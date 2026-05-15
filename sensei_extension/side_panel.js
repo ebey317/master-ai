@@ -37,6 +37,8 @@ const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_FIND",
   "BROWSER_EXTRACT_LIST",
   "BROWSER_DRIVE_INSPECT_FOLDER",
+  "BROWSER_CONSOLE",
+  "BROWSER_NETWORK",
 ]);
 const CONTEXT_SETTLING_BROWSER_KINDS = new Set([
   "BROWSER_NAV",
@@ -865,6 +867,136 @@ async function dispatchCdpKey(tab, action, timings = {}) {
   }
 }
 
+// Phase 5.1 — BROWSER_JS. Runs arbitrary JS in the page context via CDP
+// Runtime.evaluate. The script source is the action.target string (capped at
+// 256KB so a runaway model can't blow the message bus). returnByValue:true so
+// the result serializes; awaitPromise:true so async returns wait properly.
+// PermissionManager.typeFor maps this to a dedicated EXEC_JAVASCRIPT type.
+const BROWSER_JS_MAX_SOURCE_LEN = 256 * 1024;
+
+async function dispatchBrowserJs(tab, action, timings = {}) {
+  const source = String(action?.target || "");
+  if (!source.trim()) {
+    return { ok: false, error: "BROWSER_JS target must be a non-empty script source" };
+  }
+  if (source.length > BROWSER_JS_MAX_SOURCE_LEN) {
+    return { ok: false, error: `BROWSER_JS source exceeds ${BROWSER_JS_MAX_SOURCE_LEN} byte cap` };
+  }
+  try {
+    return await withChromeDebugger(tab, timings, async (send) => {
+      await send("Runtime.enable");
+      const evaluation = await send("Runtime.evaluate", {
+        expression: source,
+        returnByValue: true,
+        awaitPromise: true,
+        userGesture: false,
+        timeout: 30000,
+      });
+      if (evaluation?.exceptionDetails) {
+        return {
+          ok: false,
+          error: String(evaluation.exceptionDetails.text ||
+                        evaluation.exceptionDetails.exception?.description ||
+                        "runtime exception").slice(0, 600),
+          exception_text: evaluation.exceptionDetails.text || "",
+        };
+      }
+      const value = evaluation?.result?.value;
+      const type = evaluation?.result?.type || "undefined";
+      // Truncate large return payloads so the audit trail stays bounded.
+      let serialized;
+      try { serialized = JSON.stringify(value); }
+      catch (_err) { serialized = "[unserializable]"; }
+      const truncated = serialized && serialized.length > 8192;
+      return {
+        ok: true,
+        type,
+        value: truncated ? JSON.parse(serialized.slice(0, 8192) + "\"") : value,
+        value_truncated: truncated,
+      };
+    });
+  } catch (err) {
+    return { ok: false, error: `BROWSER_JS dispatch failed: ${err?.message || err}` };
+  }
+}
+
+// Phase 5.2 — BROWSER_CONSOLE. Reads the ring buffer of console events the
+// content script has been capturing since page load. action.target is the
+// optional level filter ("error" | "warn" | "log" | "all"); empty → "all".
+async function dispatchBrowserConsole(tab, action, timings = {}) {
+  const filter = String(action?.target || "all").trim().toLowerCase();
+  try {
+    const events = await timed(timings, "console_read", () => chrome.tabs.sendMessage(
+      tab.id,
+      { type: "SENSEI_READ_CONSOLE_EVENTS", filter },
+    ));
+    if (!events || !Array.isArray(events)) {
+      return { ok: false, error: "content script did not return console events; the page may not allow injection" };
+    }
+    return { ok: true, count: events.length, events, filter };
+  } catch (err) {
+    return { ok: false, error: `BROWSER_CONSOLE failed: ${err?.message || err}` };
+  }
+}
+
+// Phase 5.3 — BROWSER_NETWORK. Attaches the debugger (if not already), enables
+// the Network domain, and returns the ring buffer of recent network requests
+// captured by service_worker.js. action.target accepts an optional filter
+// ("xhr" | "fetch" | "all"); empty → "all". Authorization and Cookie headers
+// are redacted before being returned.
+async function dispatchBrowserNetwork(tab, action, timings = {}) {
+  const filter = String(action?.target || "all").trim().toLowerCase();
+  try {
+    const response = await timed(timings, "network_read", () => chrome.runtime.sendMessage({
+      type: "SENSEI_READ_NETWORK_EVENTS",
+      tabId: tab.id,
+      filter,
+    }));
+    if (!response?.ok) {
+      return { ok: false, error: response?.error || "network capture unavailable" };
+    }
+    return {
+      ok: true,
+      count: response.count || 0,
+      events: response.events || [],
+      filter,
+    };
+  } catch (err) {
+    return { ok: false, error: `BROWSER_NETWORK failed: ${err?.message || err}` };
+  }
+}
+
+// Phase 5.4 — BROWSER_RESIZE_WINDOW. Accepts "WxH" shorthand or JSON
+// {width, height}. Resizes the current browser window via chrome.windows.update.
+async function dispatchBrowserResizeWindow(tab, action, timings = {}) {
+  const raw = String(action?.target || "").trim();
+  let width, height;
+  if (raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw);
+      width = Number(obj.width); height = Number(obj.height);
+    } catch (_err) {
+      return { ok: false, error: "BROWSER_RESIZE_WINDOW target must be 'WxH' or JSON {width,height}" };
+    }
+  } else {
+    const m = raw.match(/^(\d+)\s*[x×]\s*(\d+)$/i);
+    if (!m) return { ok: false, error: "BROWSER_RESIZE_WINDOW target must be 'WxH' or JSON {width,height}" };
+    width = Number(m[1]); height = Number(m[2]);
+  }
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { ok: false, error: "width and height must be positive numbers" };
+  }
+  // Safety clamps: don't let a runaway value hide the user's window off-screen.
+  width = Math.min(Math.max(width, 320), 4096);
+  height = Math.min(Math.max(height, 240), 4096);
+  try {
+    await chrome.windows.update(tab.windowId, { width, height });
+    return { ok: true, width, height, windowId: tab.windowId };
+  } catch (err) {
+    return { ok: false, error: `resize failed: ${err?.message || err}` };
+  }
+}
+
 async function withChromeDebugger(tab, timings, fn) {
   if (!chrome.debugger?.attach || !tab?.id) throw new Error("chrome.debugger unavailable");
   const target = { tabId: tab.id };
@@ -1213,6 +1345,11 @@ const PermissionType = Object.freeze({
   PLAN_APPROVAL: "PLAN_APPROVAL",
   REMOTE_MCP: "REMOTE_MCP",
   DOMAIN_TRANSITION: "DOMAIN_TRANSITION",
+  // Phase 5.1 — sandboxed JS execution via CDP Runtime.evaluate.
+  // Treated as a distinct type because the blast radius is broader than
+  // CLICK or TYPE: a single BROWSER_JS call can read+write arbitrary
+  // DOM state, call fetch, attach event listeners, etc.
+  EXEC_JAVASCRIPT: "EXEC_JAVASCRIPT",
 });
 
 const PermissionDuration = Object.freeze({
@@ -1247,6 +1384,11 @@ const PermissionManager = {
     if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE" || kind === "BROWSER_READ") {
       return PermissionType.READ_PAGE_CONTENT;
     }
+    if (kind === "BROWSER_CONSOLE" || kind === "BROWSER_NETWORK") {
+      return PermissionType.READ_PAGE_CONTENT;
+    }
+    if (kind === "BROWSER_JS") return PermissionType.EXEC_JAVASCRIPT;
+    if (kind === "BROWSER_RESIZE_WINDOW") return PermissionType.NAVIGATE;
     if (kind === "BROWSER_CLICK" || kind === "BROWSER_DOUBLE_CLICK" ||
         kind === "BROWSER_SCROLL" || kind === "BROWSER_DRIVE_INSPECT_FOLDER" ||
         kind === "BROWSER_CDP_MOUSE") {
@@ -1385,6 +1527,7 @@ const MUTATING_BROWSER_KINDS = new Set([
   "BROWSER_DRIVE_INSPECT_FOLDER",
   "BROWSER_CDP_MOUSE",
   "BROWSER_CDP_KEY",
+  "BROWSER_JS",
 ]);
 
 function recordObservedOrigin(tab) {
@@ -1703,6 +1846,18 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
         await waitForTabSettled(tab.id, 4000);
       }
       invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_JS") {
+      result = await dispatchBrowserJs(tab, action, timings);
+      // BROWSER_JS can mutate the page, navigate, or open modals. Settle
+      // before the next observation so the model sees the new state.
+      if (result?.ok) await waitForTabSettled(tab.id, 4000);
+      invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_CONSOLE") {
+      result = await dispatchBrowserConsole(tab, action, timings);
+    } else if (kind === "BROWSER_NETWORK") {
+      result = await dispatchBrowserNetwork(tab, action, timings);
+    } else if (kind === "BROWSER_RESIZE_WINDOW") {
+      result = await dispatchBrowserResizeWindow(tab, action, timings);
     } else if (kind === "BROWSER_FILL") {
       const uploadAttempt = await tryDebuggerFileUpload(tab, action, timings);
       if (uploadAttempt?.ok) {

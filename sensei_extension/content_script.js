@@ -1077,6 +1077,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  // Phase 5.2 — return the console-event ring buffer the page has been
+  // accumulating since load. The buffer caps itself at CONSOLE_LIMIT so the
+  // response stays bounded.
+  if (message?.type === "SENSEI_READ_CONSOLE_EVENTS") {
+    const filter = String(message.filter || "all").toLowerCase();
+    const all = Array.isArray(globalThis.__SENSEI_CONSOLE_EVENTS__)
+      ? globalThis.__SENSEI_CONSOLE_EVENTS__.slice(-CONSOLE_LIMIT)
+      : [];
+    const filtered = (filter === "all" || !filter)
+      ? all
+      : all.filter((e) => String(e?.level || "").toLowerCase() === filter);
+    sendResponse(filtered);
+    return false;
+  }
+
   return false;
 });
 })();

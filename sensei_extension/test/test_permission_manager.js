@@ -55,6 +55,10 @@ eq(PM.typeFor({kind:"BROWSER_SCROLL", target:"down"}, ""), PT.CLICK, "SCROLL →
 eq(PM.typeFor({kind:"BROWSER_DRIVE_INSPECT_FOLDER"}, ""), PT.CLICK, "DRIVE_INSPECT → CLICK");
 eq(PM.typeFor({kind:"BROWSER_CDP_MOUSE", target:"click 300 400"}, ""), PT.CLICK, "CDP_MOUSE → CLICK");
 eq(PM.typeFor({kind:"BROWSER_CDP_KEY", target:"press Enter"}, ""), PT.TYPE, "CDP_KEY → TYPE");
+eq(PM.typeFor({kind:"BROWSER_JS", target:"document.title"}, ""), PT.EXEC_JAVASCRIPT, "BROWSER_JS → EXEC_JAVASCRIPT");
+eq(PM.typeFor({kind:"BROWSER_CONSOLE", target:"error"}, ""), PT.READ_PAGE_CONTENT, "BROWSER_CONSOLE → READ_PAGE_CONTENT");
+eq(PM.typeFor({kind:"BROWSER_NETWORK", target:"all"}, ""), PT.READ_PAGE_CONTENT, "BROWSER_NETWORK → READ_PAGE_CONTENT");
+eq(PM.typeFor({kind:"BROWSER_RESIZE_WINDOW", target:"1280x800"}, ""), PT.NAVIGATE, "BROWSER_RESIZE_WINDOW → NAVIGATE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#name :: Elijah"}, ""), PT.TYPE, "FILL text → TYPE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#r :: file:///home/x.pdf"}, ""), PT.UPLOAD_IMAGE, "FILL file:// → UPLOAD_IMAGE");
 eq(PM.typeFor({kind:"BROWSER_FILL", target:"#r", file_payload:{}}, ""), PT.UPLOAD_IMAGE, "FILL with payload → UPLOAD_IMAGE");

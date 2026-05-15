@@ -56,12 +56,86 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   if (source?.tabId !== undefined) {
     _attachedTabs.delete(source.tabId);
     _snapshotRefMaps.delete(source.tabId);
+    _networkBuffers.delete(source.tabId);
+    _networkEnabledTabs.delete(source.tabId);
   }
   // reason is "target_closed" / "canceled_by_user" — both fine, nothing to do.
 });
 
+// Phase 5.3 — Network ring buffer per tab. Filled by chrome.debugger.onEvent
+// when Network.* events fire. Bounded at NETWORK_BUFFER_LIMIT so a noisy page
+// can't blow extension memory. Authorization / Cookie / Set-Cookie / Proxy-
+// Authorization headers are redacted before storage.
+const NETWORK_BUFFER_LIMIT = 50;
+const _networkBuffers = new Map();          // tabId -> Array<event>
+const _networkEnabledTabs = new Set();      // tabId set
+const _NETWORK_REDACT_HEADERS = new Set([
+  "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key",
+]);
+
+function _redactHeaders(headers) {
+  if (!headers || typeof headers !== "object") return {};
+  const out = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const lower = String(name || "").toLowerCase();
+    out[name] = _NETWORK_REDACT_HEADERS.has(lower) ? "[REDACTED]" : String(value || "").slice(0, 600);
+  }
+  return out;
+}
+
+function _appendNetworkEvent(tabId, event) {
+  if (!Number.isFinite(tabId)) return;
+  let buf = _networkBuffers.get(tabId);
+  if (!buf) { buf = []; _networkBuffers.set(tabId, buf); }
+  buf.push(event);
+  if (buf.length > NETWORK_BUFFER_LIMIT) buf.splice(0, buf.length - NETWORK_BUFFER_LIMIT);
+}
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source?.tabId;
+  if (!Number.isFinite(tabId)) return;
+  if (method === "Network.requestWillBeSent") {
+    const req = params?.request || {};
+    _appendNetworkEvent(tabId, {
+      phase: "request",
+      request_id: params.requestId,
+      method: req.method || "",
+      url: String(req.url || "").slice(0, 800),
+      ts: Date.now(),
+      headers: _redactHeaders(req.headers || {}),
+      resource_type: params.type || "",
+    });
+  } else if (method === "Network.responseReceived") {
+    const resp = params?.response || {};
+    _appendNetworkEvent(tabId, {
+      phase: "response",
+      request_id: params.requestId,
+      url: String(resp.url || "").slice(0, 800),
+      ts: Date.now(),
+      status: resp.status,
+      status_text: resp.statusText,
+      mime_type: resp.mimeType,
+      headers: _redactHeaders(resp.headers || {}),
+    });
+  }
+});
+
+async function _ensureNetworkEnabled(tabId) {
+  if (_networkEnabledTabs.has(tabId)) return true;
+  try {
+    await _ensureDebuggerAttached(tabId);
+    await _cdpSend(tabId, "Network.enable", {});
+    _networkEnabledTabs.add(tabId);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   _attachedTabs.delete(tabId);
+  _networkBuffers.delete(tabId);
+  _networkEnabledTabs.delete(tabId);
   _snapshotRefMaps.delete(tabId);
 });
 
@@ -363,6 +437,38 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const hit = map[ref];
     sendResponse(hit ? { ok: true, ...hit } : { ok: false, error: `unknown ref ${ref}` });
     return false;
+  }
+
+  // Phase 5.3 — return the captured Network ring buffer for a tab. Filter is
+  // "all" (default), "xhr" / "fetch", or "subresource" (everything else).
+  if (message?.type === "SENSEI_READ_NETWORK_EVENTS") {
+    const tabId = Number.isInteger(message.tabId) ? message.tabId : null;
+    if (tabId === null) {
+      sendResponse({ ok: false, error: "tabId required" });
+      return false;
+    }
+    _ensureNetworkEnabled(tabId)
+      .then((enabled) => {
+        if (!enabled) {
+          sendResponse({ ok: false, error: "Network domain could not be enabled (debugger may be in use)" });
+          return;
+        }
+        const filter = String(message.filter || "all").toLowerCase();
+        const all = _networkBuffers.get(tabId) || [];
+        let events = all;
+        if (filter && filter !== "all") {
+          events = all.filter((e) => {
+            const rt = String(e?.resource_type || "").toLowerCase();
+            if (filter === "xhr") return rt === "xhr";
+            if (filter === "fetch") return rt === "fetch";
+            if (filter === "subresource") return !["xhr", "fetch", "document"].includes(rt);
+            return true;
+          });
+        }
+        sendResponse({ ok: true, count: events.length, events });
+      })
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+    return true;
   }
 
   if (message?.type === "SENSEI_CAPTURE_VISIBLE_TAB") {
