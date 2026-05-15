@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, threading, time, uuid
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
@@ -80,6 +80,128 @@ _ACTION_LINE_RE = re.compile(
     r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
+
+# Domain classifier (Phase 1.1). The list lives at
+# ~/.master_ai_domain_classes.json and is refreshed by the maintenance window
+# (~/scripts/refresh_domain_classes.sh). Categories:
+#   0 = ok (default for any domain not in the file)
+#   1 = known malicious/phishing — HARD BLOCK at the extension
+#   2 = sensitive auth surface (banking/health/gov auth) — HARD BLOCK
+#   3 = high-friction (adult/gambling/crypto-exchange) — force confirm every action
+# Domain entries match as suffix labels: 'foo.com' hits 'foo.com',
+# 'www.foo.com', 'login.foo.com', etc., but NOT 'badfoo.com'.
+_DOMAIN_CLASSES_PATH = os.path.expanduser('~/.master_ai_domain_classes.json')
+_DOMAIN_CLASSES_LOCK = threading.Lock()
+_DOMAIN_CLASSES_TTL_S = 60.0
+_DOMAIN_CLASSES_CACHE = {"ts": 0.0, "data": None, "mtime": 0.0}
+_DOMAIN_RESULT_TTL_S = 300
+
+
+def _load_domain_classes():
+    """Return the parsed domain-classes dict. Reloads when the file mtime changes
+    or the in-memory copy is older than _DOMAIN_CLASSES_TTL_S. Returns an empty
+    dict shape if the file is missing or unreadable (fail-open at the loader;
+    callers default to category 0, which is the safe boundary)."""
+    now = time.time()
+    try:
+        st = os.stat(_DOMAIN_CLASSES_PATH)
+        mtime = st.st_mtime
+    except OSError:
+        mtime = 0.0
+    with _DOMAIN_CLASSES_LOCK:
+        cached = _DOMAIN_CLASSES_CACHE.get("data")
+        cached_mtime = float(_DOMAIN_CLASSES_CACHE.get("mtime") or 0.0)
+        cached_ts = float(_DOMAIN_CLASSES_CACHE.get("ts") or 0.0)
+        if cached is not None and mtime == cached_mtime and (now - cached_ts) < _DOMAIN_CLASSES_TTL_S:
+            return cached
+    parsed = {"category_1": {}, "category_2": {}, "category_3": {}, "_meta": {}}
+    try:
+        with open(_DOMAIN_CLASSES_PATH, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            for key in ("category_1", "category_2", "category_3", "_meta"):
+                val = raw.get(key)
+                if isinstance(val, dict):
+                    parsed[key] = val
+    except (OSError, ValueError):
+        pass
+    with _DOMAIN_CLASSES_LOCK:
+        _DOMAIN_CLASSES_CACHE["data"] = parsed
+        _DOMAIN_CLASSES_CACHE["mtime"] = mtime
+        _DOMAIN_CLASSES_CACHE["ts"] = now
+    return parsed
+
+
+def _extract_host(domain_or_url):
+    """Pull the host label out of either a bare domain string or a URL. Lowercase,
+    strip port, strip userinfo. Returns '' for input we can't parse."""
+    raw = str(domain_or_url or '').strip()
+    if not raw:
+        return ''
+    if '://' in raw:
+        try:
+            parsed = urllib.parse.urlparse(raw)
+            host = parsed.hostname or ''
+        except Exception:
+            host = ''
+    else:
+        host = raw.split('/', 1)[0]
+        if '@' in host:
+            host = host.rsplit('@', 1)[-1]
+        if ':' in host:
+            host = host.split(':', 1)[0]
+    return host.lower().strip('.')
+
+
+def _domain_matches(host, entry):
+    """Suffix label match. 'foo.com' matches 'foo.com' and 'sub.foo.com' but
+    NOT 'badfoo.com'. Empty entry never matches."""
+    host = (host or '').lower().strip('.')
+    entry = (entry or '').lower().strip('.')
+    if not host or not entry:
+        return False
+    if host == entry:
+        return True
+    return host.endswith('.' + entry)
+
+
+def _classify_domain(domain_or_url, classes=None):
+    """Classify a domain or URL against the on-disk class list. Returns:
+        {category: int, reason: str, matched: str, host: str, ttl_s: int, source: str}
+    category 0 is the default when no entry matches. Higher categories win when
+    a host matches multiple buckets (1 > 2 > 3) — we apply the strictest."""
+    host = _extract_host(domain_or_url)
+    if classes is None:
+        classes = _load_domain_classes()
+    if not host:
+        return {
+            "category": 0,
+            "reason": "no host parsed",
+            "matched": "",
+            "host": "",
+            "ttl_s": _DOMAIN_RESULT_TTL_S,
+            "source": "default",
+        }
+    for cat_num in (1, 2, 3):
+        bucket = classes.get(f"category_{cat_num}") or {}
+        for entry, reason in bucket.items():
+            if _domain_matches(host, entry):
+                return {
+                    "category": cat_num,
+                    "reason": str(reason or "")[:500],
+                    "matched": entry,
+                    "host": host,
+                    "ttl_s": _DOMAIN_RESULT_TTL_S,
+                    "source": "list",
+                }
+    return {
+        "category": 0,
+        "reason": "ok",
+        "matched": "",
+        "host": host,
+        "ttl_s": _DOMAIN_RESULT_TTL_S,
+        "source": "default",
+    }
 
 
 def _health_payload():
@@ -2265,6 +2387,26 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except Exception:
                 pass  # Audit is observability, not a blocker.
             return self._json({'ok': True})
+
+        # /extension/classify_domain — Phase 1.1 safety classifier. Tells the
+        # extension whether an origin is safe to act on before any BROWSER_*
+        # action touches a new host. Local-only — no live external lookup.
+        # Backed by ~/.master_ai_domain_classes.json.
+        #
+        # Body: {domain} or {url}
+        # Returns: {ok, category, reason, matched, host, ttl_s, source}
+        if self.path == '/extension/classify_domain':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            target = payload.get('url') or payload.get('domain') or ''
+            if not isinstance(target, str):
+                return self._json({'error': 'domain/url must be a string'}, 400)
+            result = _classify_domain(target)
+            return self._json({'ok': True, **result})
 
         # /extension/resolve_local_file — deterministic local-document resolver
         # for user phrases like "my résumé" or "the AI query doc". It does not
