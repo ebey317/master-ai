@@ -10,7 +10,8 @@ const DEFAULTS = {
   // BROWSER_FILL targets (commit 2.1 of the dispatcher plan). Empty until
   // the user sets it from the options page. Backend reads via the
   // /extension/read_local_file endpoint.
-  resumePath: ""
+  resumePath: "",
+  mcpServers: []
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -39,6 +40,7 @@ function normalizeConfig(config) {
   if (!["ask", "act"].includes(next.actionPermissionMode)) next.actionPermissionMode = "ask";
   if (!Array.isArray(next.approvedOrigins)) next.approvedOrigins = [];
   if (!Array.isArray(next.permissionHistory)) next.permissionHistory = [];
+  if (!Array.isArray(next.mcpServers)) next.mcpServers = [];
   return next;
 }
 
@@ -70,6 +72,37 @@ function renderApprovedSites(origins = []) {
   }
 }
 
+function renderMcpServers(servers = []) {
+  const list = $("#mcpServers");
+  list.textContent = "";
+  if (!servers.length) {
+    const item = document.createElement("li");
+    item.textContent = "No MCP servers";
+    list.appendChild(item);
+    return;
+  }
+  for (const server of servers) {
+    const item = document.createElement("li");
+    const label = document.createElement("span");
+    const scopes = Array.isArray(server.scopes) && server.scopes.length
+      ? ` scopes=${server.scopes.join(",")}`
+      : "";
+    label.textContent = `${server.name || server.url} — ${server.url}${scopes}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", async () => {
+      const stored = normalizeConfig(await chromeGet(Object.keys(DEFAULTS)));
+      stored.mcpServers = stored.mcpServers.filter((value) => value.id !== server.id);
+      await chromeSet({ mcpServers: stored.mcpServers });
+      renderMcpServers(stored.mcpServers);
+      setStatus("MCP server removed");
+    });
+    item.append(label, remove);
+    list.appendChild(item);
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -94,6 +127,7 @@ async function load() {
   $("#actionPermissionMode").value = config.actionPermissionMode;
   $("#resumePath").value = config.resumePath || "";
   renderApprovedSites(config.approvedOrigins);
+  renderMcpServers(config.mcpServers);
   await chromeSet({ sessionId: config.sessionId });
   setStatus("Loaded");
 }
@@ -109,6 +143,27 @@ async function save() {
   };
   await chromeSet(values);
   setStatus("Saved");
+}
+
+async function addMcpServer() {
+  const name = $("#mcpName").value.trim();
+  const url = $("#mcpUrl").value.trim().replace(/\/+$/, "");
+  const scopes = $("#mcpScopes").value.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!url) { setStatus("Set an MCP server URL first"); return; }
+  const stored = normalizeConfig(await chromeGet(Object.keys(DEFAULTS)));
+  const server = {
+    id: `mcp-${crypto.randomUUID()}`,
+    name: name || url,
+    url,
+    scopes,
+  };
+  stored.mcpServers = [server, ...stored.mcpServers.filter((item) => item.url !== url)].slice(0, 20);
+  await chromeSet({ mcpServers: stored.mcpServers });
+  $("#mcpName").value = "";
+  $("#mcpUrl").value = "";
+  $("#mcpScopes").value = "";
+  renderMcpServers(stored.mcpServers);
+  setStatus("MCP server added");
 }
 
 async function testResumeRead() {
@@ -159,6 +214,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#testBackend").addEventListener("click", testBackend);
   $("#testResumeRead").addEventListener("click", testResumeRead);
+  $("#addMcpServer").addEventListener("click", addMcpServer);
   $("#generateToken").addEventListener("click", () => {
     $("#token").value = randomToken();
     setStatus("Token generated");

@@ -30,7 +30,9 @@ class KindAndRiskConstants(unittest.TestCase):
                 "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
                 "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
                 "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-                "BROWSER_DRIVE_INSPECT_FOLDER",
+                "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE",
+                "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
+                "BROWSER_TAB_CREATE", "REMOTE_MCP",
             }),
         )
 
@@ -40,7 +42,9 @@ class KindAndRiskConstants(unittest.TestCase):
             "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
             "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
             "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-            "BROWSER_DRIVE_INSPECT_FOLDER",
+            "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE",
+            "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
+            "BROWSER_TAB_CREATE", "REMOTE_MCP",
         ):
             self.assertEqual(getattr(ta.Kind, name), name)
 

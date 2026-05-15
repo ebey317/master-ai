@@ -10,7 +10,10 @@ const DEFAULT_CONFIG = {
     "https://pay.google.com",
   ],
   permissionHistory: [],
-  resumePath: ""
+  resumePath: "",
+  shortcuts: [],
+  schedules: [],
+  mcpServers: []
 };
 
 const REQUEST_TIMEOUTS = {
@@ -58,6 +61,14 @@ const state = {
   contextCache: null,
   auditQueue: [],
   auditFlushing: false,
+  workflowRecording: {
+    active: false,
+    tabId: null,
+    startedAt: null,
+    rrwebEvents: []
+  },
+  rrwebStop: null,
+  scheduleShortcutId: null,
   // Phase 1.1 — Domain classifier cache. host -> {result, ts}. Result shape:
   // {category, reason, matched, host, ttl_s}. Pre-warmed before renderActions
   // for the active-tab origin and any BROWSER_NAV targets in the round.
@@ -105,6 +116,9 @@ async function loadConfig() {
   if (!Array.isArray(state.config.approvedOrigins)) state.config.approvedOrigins = [];
   if (!Array.isArray(state.config.blockedOrigins)) state.config.blockedOrigins = [];
   if (!Array.isArray(state.config.permissionHistory)) state.config.permissionHistory = [];
+  if (!Array.isArray(state.config.shortcuts)) state.config.shortcuts = [];
+  if (!Array.isArray(state.config.schedules)) state.config.schedules = [];
+  if (!Array.isArray(state.config.mcpServers)) state.config.mcpServers = [];
   if (!["ask", "act"].includes(state.config.actionPermissionMode)) state.config.actionPermissionMode = "ask";
   if (!state.config.sessionId) {
     state.config.sessionId = `sensei-${crypto.randomUUID()}`;
@@ -233,6 +247,7 @@ function requestTimeout(path, options = {}) {
   if (Number.isFinite(options.timeoutMs)) return options.timeoutMs;
   if (path === "/health") return REQUEST_TIMEOUTS.health;
   if (path === "/stt") return REQUEST_TIMEOUTS.stt;
+  if (path === "/tool/find" || path === "/tool/describe_step") return 20000;
   if (path === "/extension/action_result") return REQUEST_TIMEOUTS.audit;
   if (path === "/chat" || path === "/chat/continue") return REQUEST_TIMEOUTS.chat;
   return REQUEST_TIMEOUTS.default;
@@ -435,9 +450,21 @@ async function ensureContentScript(tab, timings = {}) {
   }
 
   await timed(timings, "inject", async () => {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content_script.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["vendor/rrweb-record-lite.js", "content_script.js"] });
   });
   state.injectedTabs.add(tab.id);
+  return true;
+}
+
+async function ensureWorkflowRecorderSupport(tab, timings = {}) {
+  if (!canInjectIntoTab(tab)) return false;
+  await ensureContentScript(tab, timings);
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["vendor/rrweb-record-lite.js"] });
+  } catch (_err) {
+    // The DOM event recorder still produces replayable steps if rrweb injection
+    // is refused on the current page.
+  }
   return true;
 }
 
@@ -1364,6 +1391,7 @@ const PermissionManager = {
   typeFor(action, contextOrigin = "") {
     const kind = String(action?.kind || "").toUpperCase();
     const target = String(action?.target || "").toLowerCase();
+    if (kind === "REMOTE_MCP") return PermissionType.REMOTE_MCP;
     if (kind === "BROWSER_NAV" || kind === "BROWSER_TAB_CREATE") {
       // DOMAIN_TRANSITION when the target is an explicit URL whose origin
       // differs from the current tab. Bareword / relative-path targets stay
@@ -1588,6 +1616,127 @@ async function sendToContent(tab, action, timings = {}) {
   return chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action: bridgedAction });
 }
 
+function actionWantsSemanticFind(action) {
+  const extras = action?.extras || {};
+  if (extras.semantic === true || extras.semantic_find === true) return true;
+  const raw = String(action?.target || "");
+  if (/^\s*\{/.test(raw)) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Boolean(parsed.semantic || parsed.semantic_find);
+    } catch (_err) {
+      return false;
+    }
+  }
+  return /\bsemantic\s*:\s*true\b/i.test(raw);
+}
+
+function semanticFindQuery(action) {
+  const raw = String(action?.target || "").trim();
+  if (/^\s*\{/.test(raw)) {
+    try {
+      const parsed = JSON.parse(raw);
+      return String(parsed.query || parsed.text || parsed.target || "").trim();
+    } catch (_err) {
+      return raw;
+    }
+  }
+  return raw.replace(/\bsemantic\s*:\s*true\b/ig, "").trim();
+}
+
+async function semanticFind(tab, action, timings = {}) {
+  const ax = await timed(timings, "semantic_find_ax", () => accessibilityTreeContext(tab, timings));
+  const snapshot = ax?.tree || ax?.semantic_tree?.snapshot || ax?.semantic_tree || {};
+  const query = semanticFindQuery(action);
+  const data = await timed(timings, "semantic_find", () => backendFetch("/tool/find", {
+    method: "POST",
+    body: { query, ax_tree: snapshot },
+    timeoutMs: 20000,
+  }));
+  return {
+    ok: Boolean(data?.ok),
+    query,
+    count: Array.isArray(data?.matches) ? data.matches.length : 0,
+    matches: Array.isArray(data?.matches) ? data.matches : [],
+    semantic: true,
+    text: Array.isArray(data?.matches)
+      ? data.matches.map((m) => `${m.ref || m.selector || "match"} ${m.role || ""} "${m.name || ""}"`).join("\n")
+      : "",
+  };
+}
+
+function parseRemoteMcpTarget(action) {
+  const raw = String(action?.target || "").trim();
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (_err) {
+      // Fall through to shorthand.
+    }
+  }
+  const parts = raw.split(/\s+/);
+  return {
+    server: parts[0] || "",
+    method: parts[1] || "tools/list",
+    params: {},
+  };
+}
+
+function configuredMcpServer(serverRef, origin = "") {
+  const servers = Array.isArray(state.config.mcpServers) ? state.config.mcpServers : [];
+  const activeHost = hostFromOriginOrUrl(origin);
+  return servers.find((srv) => {
+    if (!srv || !srv.url) return false;
+    if (serverRef && serverRef !== srv.url && serverRef !== srv.name) return false;
+    const scopes = Array.isArray(srv.scopes) ? srv.scopes.filter(Boolean) : [];
+    if (!scopes.length || !activeHost) return true;
+    return scopes.some((scope) => activeHost === hostFromOriginOrUrl(scope));
+  }) || null;
+}
+
+async function dispatchRemoteMcpAction(action, origin = "") {
+  const req = parseRemoteMcpTarget(action);
+  const method = String(req.method || "tools/list");
+  if (!["tools/list", "tools/call"].includes(method)) {
+    return { ok: false, error: "remote MCP method must be tools/list or tools/call" };
+  }
+  const server = configuredMcpServer(String(req.server || ""), origin);
+  if (!server) {
+    return { ok: false, error: "no configured MCP server for this origin" };
+  }
+  const endpoint = String(server.url || "").replace(/\/+$/, "");
+  const body = {
+    jsonrpc: "2.0",
+    id: crypto.randomUUID(),
+    method,
+    params: req.params && typeof req.params === "object" ? req.params : {},
+  };
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let parsed = {};
+  try { parsed = JSON.parse(text); } catch (_err) { parsed = { text }; }
+  if (!res.ok || parsed.error) {
+    return {
+      ok: false,
+      error: parsed.error?.message || `${res.status} ${res.statusText}`,
+      response: parsed,
+      server: server.name || server.url,
+      method,
+    };
+  }
+  return {
+    ok: true,
+    server: server.name || server.url,
+    method,
+    response: parsed.result !== undefined ? parsed.result : parsed,
+  };
+}
+
 function truncateDataUrlForAudit(dataUrl) {
   const text = String(dataUrl || "");
   return text.length > 200 ? text.slice(0, 200) : text;
@@ -1647,6 +1796,9 @@ function setActionStatus(row, text) {
 function classifyBrowserAction(action, origin = "") {
   const kind = String(action?.kind || "").toUpperCase();
   const target = String(action?.target || "").toLowerCase();
+  if (kind === "REMOTE_MCP") {
+    return { safe: false, requires_confirm: true, gated_by: "permission:remote_mcp" };
+  }
   const checkUrl = (kind === "BROWSER_NAV" || kind === "BROWSER_TAB_CREATE")
     ? target : origin;
   const blockedReason = originBlockedReason(checkUrl);
@@ -1730,6 +1882,7 @@ function shouldAutoRunAction(action, origin = "") {
   // Non-browser actions never dispatch from the side panel. In Auto the
   // backend already dispatched them server-side; in Review they go through
   // /extension/approve_action (commit 1.4).
+  if (kind === "REMOTE_MCP") return false;
   if (!kind.startsWith("BROWSER_")) return false;
 
   // Plan + Review: never auto-run, regardless of action kind. Closes the
@@ -1754,6 +1907,30 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
   let tab = null;
   setActionStatus(row, "Running");
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
+
+  if (kind === "REMOTE_MCP") {
+    try {
+      tab = await activeTab().catch(() => null);
+      const origin = actionOrigin(action, tab);
+      if (permissionDecision !== "auto") await rememberPermission(permissionDecision, origin, action);
+      const result = await dispatchRemoteMcpAction(action, origin);
+      const ok = Boolean(result?.ok);
+      setActionStatus(row, ok ? "Done" : (result?.error || "Failed"));
+      const finalState = {
+        ...(result || {}),
+        permission: permissionDecision,
+        origin,
+        permission_envelope: PermissionManager.envelopeFor(action, origin, permissionDecision),
+      };
+      reportAction(action, "accept", ok ? "success" : "failure", finalState);
+      recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
+    } catch (err) {
+      setActionStatus(row, err.message);
+      reportAction(action, "accept", "failure", { error: err.message });
+      recordLoopResult(action, "accept", "failure", { error: err.message });
+    }
+    return;
+  }
 
   if (!kind.startsWith("BROWSER_")) {
     setActionStatus(row, "Backend-only — switch the mode dropdown to \"Act without asking\" to dispatch");
@@ -1858,6 +2035,20 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       result = await dispatchBrowserNetwork(tab, action, timings);
     } else if (kind === "BROWSER_RESIZE_WINDOW") {
       result = await dispatchBrowserResizeWindow(tab, action, timings);
+    } else if (kind === "BROWSER_FIND") {
+      const regexResult = await sendToContent(tab, action, timings);
+      if (actionWantsSemanticFind(action) || !regexResult?.count) {
+        const semanticResult = await semanticFind(tab, action, timings);
+        result = {
+          ...semanticResult,
+          regex_matches: regexResult?.matches || [],
+          regex_count: regexResult?.count || 0,
+        };
+      } else {
+        result = regexResult;
+      }
+      if (result?.ok) recordObservedOrigin(tab);
+      invalidatePageContext(tab.id);
     } else if (kind === "BROWSER_FILL") {
       const uploadAttempt = await tryDebuggerFileUpload(tab, action, timings);
       if (uploadAttempt?.ok) {
@@ -2819,6 +3010,220 @@ async function transcribe(blob) {
   setConnection("Backend ready");
 }
 
+function shortcutInputs(steps = []) {
+  const keys = new Set();
+  for (const step of steps) {
+    for (const value of [step?.target, step?.value]) {
+      String(value || "").replace(/<([a-zA-Z0-9_-]+)>/g, (_m, key) => {
+        keys.add(key);
+        return "";
+      });
+    }
+  }
+  return Array.from(keys).sort();
+}
+
+async function describeWorkflowSteps(steps, transcript = "") {
+  const out = [];
+  for (const step of steps.slice(0, 80)) {
+    try {
+      const data = await backendFetch("/tool/describe_step", {
+        method: "POST",
+        body: { step, transcript },
+        timeoutMs: 20000,
+      });
+      out.push({ ...step, description: data.description || step.label || step.kind });
+    } catch (_err) {
+      out.push({ ...step, description: step.label || step.kind });
+    }
+  }
+  return out;
+}
+
+async function saveShortcut(shortcut) {
+  const stored = await chromeGet(["shortcuts"]);
+  const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+  const next = [shortcut, ...shortcuts.filter((item) => item.id !== shortcut.id)].slice(0, 50);
+  state.config.shortcuts = next;
+  await chromeSet({ shortcuts: next });
+  renderShortcuts();
+}
+
+async function toggleWorkflowRecording() {
+  const button = $("#recordButton");
+  if (state.workflowRecording.active) {
+    const tab = await activeTab().catch(() => null);
+    let stopped = { ok: false, steps: [], events: [] };
+    if (tab?.id) {
+      stopped = await chrome.tabs.sendMessage(tab.id, { type: "SENSEI_RECORD_STOP" }).catch((err) => ({
+        ok: false,
+        error: err.message || String(err),
+        steps: [],
+        events: [],
+      }));
+    }
+    state.workflowRecording.active = false;
+    button.textContent = "Record";
+    const transcript = $("#promptInput").value.trim();
+    const rawSteps = Array.isArray(stopped.steps) ? stopped.steps : [];
+    if (!stopped.ok || !rawSteps.length) {
+      appendError(stopped.error || "Recording stopped with no replayable steps");
+      return;
+    }
+    const steps = await describeWorkflowSteps(rawSteps, transcript);
+    const title = transcript || stopped.title || `Workflow ${new Date().toLocaleString()}`;
+    const shortcut = {
+      id: `shortcut-${crypto.randomUUID()}`,
+      name: title.slice(0, 80),
+      createdAt: new Date().toISOString(),
+      startUrl: stopped.url || rawSteps[0]?.target || "",
+      transcript,
+      inputs: shortcutInputs(steps),
+      steps,
+      rrweb_events: [
+        ...(Array.isArray(stopped.rrweb_events) ? stopped.rrweb_events.slice(-500) : []),
+      ],
+      recorded_events: Array.isArray(stopped.events) ? stopped.events.slice(-250) : [],
+    };
+    await saveShortcut(shortcut);
+    appendMessage("assistant", `Saved shortcut: ${shortcut.name}`);
+    return;
+  }
+
+  const tab = await activeTab().catch(() => null);
+  if (!tab?.id) {
+    appendError("No active tab to record");
+    return;
+  }
+  await ensureWorkflowRecorderSupport(tab, {});
+  const started = await chrome.tabs.sendMessage(tab.id, { type: "SENSEI_RECORD_START" });
+  if (!started?.ok) {
+    appendError(started?.error || "Recording could not start");
+    return;
+  }
+  state.workflowRecording = {
+    active: true,
+    tabId: tab.id,
+    startedAt: new Date().toISOString(),
+    rrwebEvents: [],
+  };
+  button.textContent = "Stop";
+  setConnection("Recording workflow");
+}
+
+function collectShortcutParams(shortcut) {
+  const params = {};
+  for (const key of shortcut.inputs || []) {
+    const value = window.prompt(`Value for <${key}>`, "");
+    if (value === null) return null;
+    params[key] = value;
+  }
+  return params;
+}
+
+async function replayShortcut(shortcut) {
+  const params = collectShortcutParams(shortcut);
+  if (params === null) return;
+  setConnection("Running shortcut");
+  const result = await chrome.runtime.sendMessage({
+    type: "SENSEI_RUN_SHORTCUT",
+    shortcut,
+    params,
+  });
+  appendMessage("assistant", result?.ok
+    ? `Shortcut finished: ${shortcut.name}`
+    : `Shortcut failed: ${result?.error || "see action result"}`);
+  setConnection("Backend ready");
+}
+
+function openScheduleDialog(shortcut) {
+  state.scheduleShortcutId = shortcut.id;
+  $("#scheduleCadence").value = "daily";
+  $("#scheduleTime").value = "09:00";
+  const dialog = $("#scheduleDialog");
+  if (dialog?.showModal) dialog.showModal();
+}
+
+async function saveScheduleFromDialog(event) {
+  event.preventDefault();
+  const shortcutId = state.scheduleShortcutId;
+  if (!shortcutId) return;
+  const schedule = {
+    id: `schedule-${crypto.randomUUID()}`,
+    shortcutId,
+    cadence: $("#scheduleCadence").value,
+    time: $("#scheduleTime").value || "09:00",
+    enabled: true,
+  };
+  schedule.nextRunAt = nextScheduleTime(schedule);
+  const response = await chrome.runtime.sendMessage({ type: "SENSEI_SAVE_SCHEDULE", schedule });
+  if (!response?.ok) {
+    appendError(response?.error || "Schedule save failed");
+    return;
+  }
+  const stored = await chromeGet(["schedules"]);
+  state.config.schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  $("#scheduleDialog")?.close();
+  renderShortcuts();
+}
+
+function nextScheduleTime(schedule, from = new Date()) {
+  const [h, m] = String(schedule.time || "09:00").split(":").map((n) => Number(n));
+  const next = new Date(from.getTime());
+  next.setSeconds(0, 0);
+  next.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  if (next <= from) {
+    const cadence = String(schedule.cadence || "daily");
+    if (cadence === "weekly") next.setDate(next.getDate() + 7);
+    else if (cadence === "monthly") next.setMonth(next.getMonth() + 1);
+    else if (cadence === "annual") next.setFullYear(next.getFullYear() + 1);
+    else next.setDate(next.getDate() + 1);
+  }
+  return next.getTime();
+}
+
+async function renderShortcuts() {
+  const dock = $("#shortcutDock");
+  const list = $("#shortcutList");
+  if (!dock || !list) return;
+  const stored = await chromeGet(["shortcuts", "schedules"]);
+  const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+  const schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  state.config.shortcuts = shortcuts;
+  state.config.schedules = schedules;
+  list.textContent = "";
+  dock.hidden = shortcuts.length === 0;
+  for (const shortcut of shortcuts) {
+    const row = document.createElement("section");
+    row.className = "shortcut-item";
+    const main = document.createElement("div");
+    main.className = "action-main";
+    const name = document.createElement("span");
+    name.className = "kind";
+    name.textContent = shortcut.name || "Shortcut";
+    const buttons = document.createElement("div");
+    buttons.className = "action-buttons";
+    const run = document.createElement("button");
+    run.className = "primary";
+    run.type = "button";
+    run.textContent = "Run";
+    run.addEventListener("click", () => replayShortcut(shortcut));
+    const schedule = document.createElement("button");
+    schedule.className = "secondary";
+    schedule.type = "button";
+    schedule.textContent = "Schedule";
+    schedule.addEventListener("click", () => openScheduleDialog(shortcut));
+    buttons.append(run, schedule);
+    main.append(name, buttons);
+    const meta = document.createElement("div");
+    meta.className = "shortcut-meta";
+    const linked = schedules.filter((s) => s.shortcutId === shortcut.id && s.enabled !== false);
+    meta.textContent = `${(shortcut.steps || []).length} steps${linked.length ? ` · ${linked.length} schedule(s)` : ""}`;
+    row.append(main, meta);
+    list.appendChild(row);
+  }
+}
+
 async function toggleMic() {
   if (state.mediaRecorder?.state === "recording") {
     state.mediaRecorder.stop();
@@ -2930,6 +3335,7 @@ async function init() {
     }
   });
   $("#modeSelect").addEventListener("change", (event) => saveMode(event.target.value));
+  $("#recordButton").addEventListener("click", toggleWorkflowRecording);
   $("#micButton").addEventListener("click", toggleMic);
   $("#clearActions").addEventListener("click", () => {
     $("#actionList").textContent = "";
@@ -2937,9 +3343,13 @@ async function init() {
   });
   $("#openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
   $("#stopButton")?.addEventListener("click", stopLoop);
+  $("#refreshShortcuts")?.addEventListener("click", renderShortcuts);
+  $("#scheduleForm")?.addEventListener("submit", saveScheduleFromDialog);
+  $("#cancelSchedule")?.addEventListener("click", () => $("#scheduleDialog")?.close());
   prewarmActiveTab();
   refreshDomainBlockBanner();
   restoreSessionTabGroup();
+  renderShortcuts();
   startHeartbeat();
   appendMessage("assistant", "Ready.");
 }

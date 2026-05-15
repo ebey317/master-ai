@@ -155,7 +155,8 @@ button:disabled {
   margin-top: 8px;
 }
 
-.action-dock {
+.action-dock,
+.shortcut-dock {
   border-top: 1px solid var(--line);
   background: #fbfcfa;
   max-height: 18vh;
@@ -169,13 +170,15 @@ button:disabled {
   padding: 6px 12px 4px;
 }
 
-.action-list {
+.action-list,
+.shortcut-list {
   display: grid;
   gap: 6px;
   padding: 0 12px 8px;
 }
 
-.action-item {
+.action-item,
+.shortcut-item {
   display: grid;
   gap: 6px;
   padding: 6px 8px;
@@ -258,6 +261,39 @@ button:disabled {
 .action-buttons button {
   min-height: 30px;
   padding: 0 10px;
+}
+
+.shortcut-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.schedule-dialog {
+  width: min(340px, calc(100vw - 24px));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
+
+.schedule-dialog form {
+  display: grid;
+  gap: 12px;
+}
+
+.schedule-dialog label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.schedule-dialog input,
+.schedule-dialog select {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px;
+  color: var(--ink);
 }
 
 .reject {

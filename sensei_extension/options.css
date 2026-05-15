@@ -121,6 +121,7 @@ label {
 
 input,
 select,
+textarea,
 button {
   min-height: 38px;
   border: 1px solid var(--line);
@@ -129,7 +130,8 @@ button {
 }
 
 input,
-select {
+select,
+textarea {
   padding: 0 10px;
   color: var(--ink);
   background: white;

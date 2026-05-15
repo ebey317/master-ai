@@ -13,7 +13,9 @@
   },
   "permissions": [
     "activeTab",
+    "alarms",
     "debugger",
+    "nativeMessaging",
     "scripting",
     "sidePanel",
     "storage",

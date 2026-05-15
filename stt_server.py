@@ -77,7 +77,7 @@ _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
 _ACTION_LINE_RE = re.compile(
-    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|BROWSER_JS|BROWSER_CONSOLE|BROWSER_NETWORK|BROWSER_RESIZE_WINDOW):\s*(.*?)\s*$",
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|BROWSER_JS|BROWSER_CONSOLE|BROWSER_NETWORK|BROWSER_RESIZE_WINDOW|REMOTE_MCP):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -811,6 +811,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
     lines.extend([
         "Branch B: do not execute local machine or browser actions inside the backend request.",
         "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.",
+        "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
         "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
         "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
@@ -1123,6 +1124,9 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         if re.search(r"(?i)(checkout\.|billing\.|payments?\.)", target):
             return {"tier": "sensitive", "gated_by": "payment_nav", "error_code": None}
 
+    if kind == "REMOTE_MCP":
+        return {"tier": "sensitive", "gated_by": "remote_mcp", "error_code": None}
+
     if kind in ("CREATE", "EDIT"):
         # File writes outside the active approved cwd list. Use the path
         # as-is; master_ai's _cwd_fence_ok will refuse at dispatch time
@@ -1264,6 +1268,73 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
         add(action)
 
     return actions
+
+
+def _tool_find(payload):
+    """Phase 7: semantic browser find over the compact AX tree.
+
+    The extension sends the active page's accessibility snapshot. This endpoint
+    routes through subagent_registry so the find implementation stays swappable
+    without adding another dispatch surface.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise ValueError("missing query")
+    ax_tree = payload.get("ax_tree") or payload.get("tree") or {}
+    if not isinstance(ax_tree, dict):
+        ax_tree = {}
+    _scripts_on_path()
+    import subagent_registry as _sr
+    result = _sr.run("find", query, context={"ax_tree": ax_tree})
+    matches = result.get("matches") if isinstance(result, dict) else []
+    if not isinstance(matches, list):
+        matches = []
+    clean = []
+    for item in matches[:20]:
+        if not isinstance(item, dict):
+            continue
+        clean.append({
+            "ref": _safe_context_text(item.get("ref"), 80),
+            "name": _safe_context_text(item.get("name"), 240),
+            "role": _safe_context_text(item.get("role"), 80),
+            "selector": _safe_context_text(item.get("selector"), 300),
+            "confidence": float(item.get("confidence") or 0.0),
+        })
+    return {
+        "ok": True,
+        "query": _safe_context_text(query, 240),
+        "matches": clean,
+        "count": len(clean),
+        "subagent": "find",
+    }
+
+
+def _tool_describe_step(payload):
+    """Phase 9.3: one-line labels for recorded workflow steps."""
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    step = payload.get("step") if isinstance(payload.get("step"), dict) else {}
+    transcript = _safe_context_text(payload.get("transcript") or "", 600)
+    _scripts_on_path()
+    import subagent_registry as _sr
+    result = _sr.run("workflow_describer", "", context={
+        "step": step,
+        "transcript": transcript,
+    })
+    desc = ""
+    if isinstance(result, dict):
+        desc = result.get("description") or ""
+    if not desc:
+        kind = _safe_context_text(step.get("kind") or step.get("type") or "step", 80)
+        target = _safe_context_text(step.get("target") or step.get("selector") or "", 120)
+        desc = f"{kind} {target}".strip()
+    return {
+        "ok": True,
+        "description": _safe_context_text(desc, 240),
+        "subagent": "workflow_describer",
+    }
 
 
 _DONE_DIRECTIVE_RE = re.compile(r"^\s*DONE:\s*\S")
@@ -2517,6 +2588,35 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 return self._json({'error': 'domain/url must be a string'}, 400)
             result = _classify_domain(target)
             return self._json({'ok': True, **result})
+
+        # /tool/find — Phase 7 semantic browser find. Body:
+        #   {query, ax_tree}
+        # Returns up to 20 {ref, name, role, selector, confidence} matches.
+        # The implementation lives in subagents/find.py and is routed through
+        # subagent_registry so the nested-search tool has one registry surface.
+        if self.path == '/tool/find':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+                return self._json(_tool_find(payload))
+            except ValueError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            except Exception as e:
+                return self._json({'ok': False, 'error': str(e)}, 500)
+
+        # /tool/describe_step — Phase 9.3 workflow-step description.
+        # Body: {step, transcript?}. Returns {description}.
+        if self.path == '/tool/describe_step':
+            if not self._require_extension_auth():
+                return
+            try:
+                payload = json.loads(data or b'{}')
+                return self._json(_tool_describe_step(payload))
+            except ValueError as e:
+                return self._json({'ok': False, 'error': str(e)}, 400)
+            except Exception as e:
+                return self._json({'ok': False, 'error': str(e)}, 500)
 
         # /extension/resolve_local_file — deterministic local-document resolver
         # for user phrases like "my résumé" or "the AI query doc". It does not

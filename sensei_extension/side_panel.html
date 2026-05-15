@@ -52,10 +52,42 @@
       </div>
       <textarea id="promptInput" rows="3" placeholder="Ask Sensei"></textarea>
       <div class="composer-actions">
+        <button id="recordButton" class="secondary" type="button">Record</button>
         <button id="micButton" class="secondary" type="button">Mic</button>
         <button id="sendButton" type="submit">Send</button>
       </div>
     </form>
+
+    <section id="shortcutDock" class="shortcut-dock" hidden>
+      <div class="dock-head">
+        <h2>Shortcuts</h2>
+        <button id="refreshShortcuts" class="text-button" type="button">Refresh</button>
+      </div>
+      <div id="shortcutList" class="shortcut-list"></div>
+    </section>
+
+    <dialog id="scheduleDialog" class="schedule-dialog">
+      <form method="dialog" id="scheduleForm">
+        <h2>Schedule</h2>
+        <label>
+          Cadence
+          <select id="scheduleCadence">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="annual">Annual</option>
+          </select>
+        </label>
+        <label>
+          Time
+          <input id="scheduleTime" type="time" value="09:00">
+        </label>
+        <div class="action-buttons">
+          <button id="cancelSchedule" class="secondary" value="cancel" type="button">Cancel</button>
+          <button class="primary" value="default" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
   </main>
   <script src="side_panel.js"></script>
 </body>

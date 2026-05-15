@@ -91,7 +91,10 @@ by default.
   `chrome.tabs.update` for NAV), including Google Drive row extraction
   and empty-folder detection for Drive inspection.
 - `options.html / .css / .js` — backend URL, token, default mode,
-  session ID, résumé file path (Phase 2.1), approved sites manager.
+  session ID, résumé file path (Phase 2.1), approved sites manager,
+  and remote MCP server allowlist.
+- `sensei_native_host.py` (repo root) + `install_native_host.sh` —
+  optional native messaging bridge for local desktop-bridge requests.
 - `icons/` — 16 / 32 / 48 / 128 PNG icon set.
 - `test/` — deterministic smoke fixtures:
   - `loop_smoke.html` + `LOOP_CHECKLIST.md` — single-field FILL +
@@ -120,6 +123,10 @@ by default.
   the model as `[PREVIOUS ROUND RESULTS]` in the next round, with
   `observed_tab_url` as ground truth — the model can't claim
   success a navigation that didn't happen.
+- **REMOTE_MCP approval gate.** Remote MCP calls are not browser
+  actions and never auto-run. The side panel requires explicit
+  approval and only sends `tools/list` or `tools/call` to configured
+  server URLs.
 
 ## Known limits
 
@@ -136,9 +143,23 @@ by default.
   the explicit PLAN-block UX today, prefix the prompt with `fast:`
   (Groq) or `deep:` (DeepSeek-R1 via OpenRouter) — both cloud lanes
   carry the same CLOUD_SYSTEM teaching and follow it reliably.
-- **Single tab.** Multi-tab orchestration (the Anthropic extension
-  groups tabs into a workflow) is not yet wired. The current build
-  drives the active tab only.
+- **Chrome must be running for schedules.** Workflow schedules use
+  `chrome.alarms`; if Chrome is closed and background apps are off,
+  the browser cannot fire the alarm. Late wakeups are marked
+  `delayed_execution` in the saved schedule.
+
+## Native Messaging + Workflows
+
+Install the native messaging host after loading the unpacked extension
+and copying its Chrome extension ID:
+
+```bash
+bash ~/scripts/sensei_extension/install_native_host.sh <extension-id>
+```
+
+Use **Record** in the side panel to capture clicks and fills into a
+saved shortcut. Saved shortcuts appear in the Shortcuts dock and can be
+run immediately or scheduled daily, weekly, monthly, or annually.
 
 ## Verifying it works
 

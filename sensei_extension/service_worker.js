@@ -2,8 +2,214 @@ const DEFAULTS = {
   backendUrl: "http://127.0.0.1:8080",
   mode: "review",
   token: "",
-  sessionId: ""
+  sessionId: "",
+  shortcuts: [],
+  schedules: [],
+  mcpServers: []
 };
+
+const NATIVE_HOST_NAME = "com.master_ai.sensei_extension";
+const SCHEDULE_ALARM_PREFIX = "sensei-schedule:";
+
+function storageGet(keys) {
+  return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+}
+
+function storageSet(values) {
+  return new Promise((resolve) => chrome.storage.local.set(values, resolve));
+}
+
+function sendNativeMessage(message) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.sendNativeMessage) {
+      resolve({ ok: false, error: "nativeMessaging unavailable" });
+      return;
+    }
+    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message, (response) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        resolve({ ok: false, error: err.message || String(err) });
+        return;
+      }
+      resolve(response || { ok: false, error: "empty native response" });
+    });
+  });
+}
+
+function _scheduleAlarmName(id) {
+  return `${SCHEDULE_ALARM_PREFIX}${id}`;
+}
+
+function _nextScheduleTime(schedule, from = new Date()) {
+  const time = String(schedule?.time || "09:00");
+  const m = time.match(/^(\d{1,2}):(\d{2})$/);
+  const hour = m ? Math.max(0, Math.min(23, Number(m[1]))) : 9;
+  const minute = m ? Math.max(0, Math.min(59, Number(m[2]))) : 0;
+  const cadence = String(schedule?.cadence || "daily").toLowerCase();
+  const next = new Date(from.getTime());
+  next.setSeconds(0, 0);
+  next.setHours(hour, minute, 0, 0);
+  if (next <= from) {
+    if (cadence === "weekly") next.setDate(next.getDate() + 7);
+    else if (cadence === "monthly") next.setMonth(next.getMonth() + 1);
+    else if (cadence === "annual") next.setFullYear(next.getFullYear() + 1);
+    else next.setDate(next.getDate() + 1);
+  }
+  return next.getTime();
+}
+
+function _periodMinutes(schedule) {
+  const cadence = String(schedule?.cadence || "daily").toLowerCase();
+  if (cadence === "weekly") return 7 * 24 * 60;
+  if (cadence === "monthly" || cadence === "annual") return null;
+  return 24 * 60;
+}
+
+async function restoreSchedules() {
+  if (!chrome.alarms?.create) return;
+  const stored = await storageGet(["schedules"]);
+  const schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  for (const schedule of schedules) {
+    if (!schedule?.id || schedule.enabled === false) continue;
+    const opts = { when: _nextScheduleTime(schedule) };
+    const period = _periodMinutes(schedule);
+    if (period) opts.periodInMinutes = period;
+    await chrome.alarms.create(_scheduleAlarmName(schedule.id), opts);
+  }
+}
+
+async function saveSchedule(schedule) {
+  if (!schedule?.id || !schedule?.shortcutId) {
+    return { ok: false, error: "schedule id and shortcutId required" };
+  }
+  const stored = await storageGet(["schedules"]);
+  const schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  const next = [
+    ...schedules.filter((item) => item.id !== schedule.id),
+    { ...schedule, enabled: schedule.enabled !== false, updatedAt: new Date().toISOString() }
+  ];
+  await storageSet({ schedules: next });
+  await restoreSchedules();
+  return { ok: true, schedules: next };
+}
+
+async function deleteSchedule(id) {
+  const stored = await storageGet(["schedules"]);
+  const schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  const next = schedules.filter((item) => item.id !== id);
+  await storageSet({ schedules: next });
+  if (chrome.alarms?.clear) await chrome.alarms.clear(_scheduleAlarmName(id));
+  return { ok: true, schedules: next };
+}
+
+function _substituteInputs(text, params = {}) {
+  return String(text || "").replace(/<([a-zA-Z0-9_-]+)>/g, (_m, key) =>
+    params[key] !== undefined ? String(params[key]) : `<${key}>`
+  );
+}
+
+async function _ensureContentScriptForTab(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "SENSEI_PING" });
+    return true;
+  } catch (_err) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content_script.js"] });
+      await chrome.tabs.sendMessage(tabId, { type: "SENSEI_PING" });
+      return true;
+    } catch (_err2) {
+      return false;
+    }
+  }
+}
+
+function _wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function _waitForTabSettled(tabId, timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab?.status === "complete") return tab;
+    } catch (_err) {
+      return null;
+    }
+    await _wait(150);
+  }
+  try { return await chrome.tabs.get(tabId); } catch (_err) { return null; }
+}
+
+async function executeWorkflowShortcut(shortcut, params = {}, meta = {}) {
+  const steps = Array.isArray(shortcut?.steps) ? shortcut.steps : [];
+  if (!steps.length) return { ok: false, error: "shortcut has no steps" };
+  const firstNav = steps.find((s) => String(s.kind || "").toUpperCase() === "BROWSER_NAV");
+  const startUrl = _substituteInputs(firstNav?.target || shortcut.startUrl || "about:blank", params);
+  const tab = await chrome.tabs.create({ url: startUrl || "about:blank", active: false });
+  try {
+    const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+    await chrome.tabGroups.update(groupId, { title: "Sensei schedule", color: "blue" });
+  } catch (_err) {
+    // Grouping is useful for cleanup but not required for the scheduled run.
+  }
+  const results = [];
+  await _waitForTabSettled(tab.id, 10000);
+  for (const rawStep of steps) {
+    const kind = String(rawStep.kind || "").toUpperCase();
+    const target = _substituteInputs(rawStep.target || "", params);
+    const value = _substituteInputs(rawStep.value || "", params);
+    try {
+      if (kind === "BROWSER_NAV") {
+        await chrome.tabs.update(tab.id, { url: target });
+        await _waitForTabSettled(tab.id, 10000);
+        results.push({ ok: true, kind, target });
+        continue;
+      }
+      if (kind === "BROWSER_WAIT") {
+        const ms = Math.max(250, Math.min(Number(target || rawStep.ms || 1000), 15000));
+        await _wait(ms);
+        results.push({ ok: true, kind, waited_ms: ms });
+        continue;
+      }
+      const ready = await _ensureContentScriptForTab(tab.id);
+      if (!ready) throw new Error("content script unavailable");
+      const actionTarget = kind === "BROWSER_FILL" && value
+        ? `${target} :: ${value}`
+        : target;
+      const result = await chrome.tabs.sendMessage(tab.id, {
+        type: "SENSEI_EXECUTE_ACTION",
+        action: { kind, target: actionTarget, extras: { scheduled: true, schedule_id: meta.scheduleId || "" } }
+      });
+      results.push({ kind, target, result });
+    } catch (err) {
+      results.push({ ok: false, kind, target, error: String(err?.message || err) });
+      break;
+    }
+    await _wait(250);
+  }
+  return { ok: results.every((r) => r.ok !== false && r.result?.ok !== false), tabId: tab.id, results };
+}
+
+async function runScheduledWorkflow(scheduleId) {
+  const stored = await storageGet(["schedules", "shortcuts"]);
+  const schedules = Array.isArray(stored.schedules) ? stored.schedules : [];
+  const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+  const schedule = schedules.find((s) => s.id === scheduleId);
+  if (!schedule || schedule.enabled === false) return { ok: false, error: "schedule not found or disabled" };
+  const shortcut = shortcuts.find((s) => s.id === schedule.shortcutId);
+  if (!shortcut) return { ok: false, error: "shortcut not found" };
+  const firedAt = Date.now();
+  const expected = Number(schedule.nextRunAt || 0);
+  const delayed = expected && firedAt - expected > 5 * 60 * 1000;
+  const result = await executeWorkflowShortcut(shortcut, schedule.params || {}, { scheduleId });
+  schedule.lastRunAt = new Date(firedAt).toISOString();
+  schedule.lastResult = result;
+  schedule.lastStatus = delayed ? "delayed_execution" : (result.ok ? "success" : "failure");
+  schedule.nextRunAt = _nextScheduleTime(schedule, new Date(firedAt));
+  await saveSchedule(schedule);
+  return result;
+}
 
 // ─── AX-tree snapshot (Claude-Chrome-style page read).
 // Plan: ~/.claude/plans/https-www-claudechrome-com-blog-how-clau-hidden-bentley.md
@@ -375,17 +581,29 @@ async function buildAxSnapshot(tabId) {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));
+  const stored = await storageGet(Object.keys(DEFAULTS));
   const next = {};
   for (const [key, value] of Object.entries(DEFAULTS)) {
     if (stored[key] === undefined) next[key] = value;
   }
   if (!stored.sessionId) next.sessionId = `sensei-${crypto.randomUUID()}`;
-  if (Object.keys(next).length) await chrome.storage.local.set(next);
+  if (Object.keys(next).length) await storageSet(next);
 
   if (chrome.sidePanel?.setPanelBehavior) {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   }
+  await restoreSchedules();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  restoreSchedules().catch(() => {});
+});
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  const name = String(alarm?.name || "");
+  if (!name.startsWith(SCHEDULE_ALARM_PREFIX)) return;
+  const scheduleId = name.slice(SCHEDULE_ALARM_PREFIX.length);
+  runScheduledWorkflow(scheduleId).catch(() => {});
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -494,6 +712,38 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       capture(tab.windowId);
     });
+    return true;
+  }
+
+  if (message?.type === "SENSEI_NATIVE_PING") {
+    sendNativeMessage({ type: "ping", id: crypto.randomUUID() })
+      .then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "SENSEI_NATIVE_TOOL_REQUEST") {
+    sendNativeMessage({
+      type: "tool_request",
+      id: message.id || crypto.randomUUID(),
+      token: message.token || "",
+      payload: message.payload || {}
+    }).then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "SENSEI_SAVE_SCHEDULE") {
+    saveSchedule(message.schedule || {}).then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "SENSEI_DELETE_SCHEDULE") {
+    deleteSchedule(String(message.id || "")).then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "SENSEI_RUN_SHORTCUT") {
+    executeWorkflowShortcut(message.shortcut || {}, message.params || {}, { manual: true })
+      .then(sendResponse);
     return true;
   }
 

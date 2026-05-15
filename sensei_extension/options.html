@@ -66,6 +66,31 @@
         <ul id="approvedSites" class="site-list"></ul>
       </section>
 
+      <section class="permissions">
+        <div>
+          <h2>Remote MCP Servers</h2>
+          <p>Configured servers can answer REMOTE_MCP tools/list and tools/call requests after side-panel approval.</p>
+        </div>
+
+        <label>
+          Server name
+          <input id="mcpName" type="text" placeholder="local-tools" autocomplete="off">
+        </label>
+        <label>
+          Server URL
+          <input id="mcpUrl" type="url" placeholder="https://example.com/mcp">
+        </label>
+        <label>
+          Domain scopes
+          <input id="mcpScopes" type="text" placeholder="example.com, github.com" autocomplete="off">
+        </label>
+        <div class="site-head">
+          <span>Configured MCP Servers</span>
+          <button id="addMcpServer" type="button">Add</button>
+        </div>
+        <ul id="mcpServers" class="site-list"></ul>
+      </section>
+
       <div class="actions">
         <button id="generateToken" type="button">Generate Token</button>
         <button id="testBackend" type="button">Test</button>

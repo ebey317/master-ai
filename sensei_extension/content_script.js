@@ -507,6 +507,152 @@ async function pageContextAsync(options = {}) {
   return pageContext(options);
 }
 
+// Phase 9 — workflow recording. Captures actionable DOM events as both a
+// lightweight rrweb-style event stream and directly replayable BROWSER_* steps.
+globalThis.__SENSEI_WORKFLOW_RECORDING__ = globalThis.__SENSEI_WORKFLOW_RECORDING__ || {
+  active: false,
+  started_at: "",
+  events: [],
+  rrweb_events: [],
+  steps: [],
+  handlers: null,
+  rrweb_stop: null,
+};
+
+function recordedLabelFor(el) {
+  return safePageText(renderedLabelFor(el) || elementName(el) || elementText(el, 80), 120);
+}
+
+function pushWorkflowEvent(type, el, extra = {}) {
+  const rec = globalThis.__SENSEI_WORKFLOW_RECORDING__;
+  if (!rec.active) return;
+  const selector = el ? safeSelectorFor(el) : "";
+  const label = el ? recordedLabelFor(el) : "";
+  const event = {
+    type,
+    ts: Date.now(),
+    url: safePageText(location.href, 2000),
+    title: safePageText(document.title || "", 300),
+    selector,
+    label,
+    role: el ? elementRole(el) : "",
+    ...extra,
+  };
+  rec.events.push(event);
+  if (rec.events.length > 500) rec.events.shift();
+  const step = eventToWorkflowStep(event);
+  if (step) {
+    const prev = rec.steps[rec.steps.length - 1];
+    if (prev && prev.kind === step.kind && prev.target === step.target) {
+      rec.steps[rec.steps.length - 1] = step;
+    } else {
+      rec.steps.push(step);
+      if (rec.steps.length > 120) rec.steps.shift();
+    }
+  }
+}
+
+function eventToWorkflowStep(event) {
+  if (!event || !event.selector) return null;
+  if (event.type === "click") {
+    return {
+      kind: "BROWSER_CLICK",
+      target: event.selector,
+      label: event.label || event.selector,
+    };
+  }
+  if (event.type === "dblclick") {
+    return {
+      kind: "BROWSER_DOUBLE_CLICK",
+      target: event.selector,
+      label: event.label || event.selector,
+    };
+  }
+  if (event.type === "input" || event.type === "change") {
+    return {
+      kind: "BROWSER_FILL",
+      target: event.selector,
+      value: safePageText(event.value || "", 1000),
+      label: event.label || event.selector,
+    };
+  }
+  return null;
+}
+
+function startWorkflowRecording() {
+  const rec = globalThis.__SENSEI_WORKFLOW_RECORDING__;
+  if (rec.active) return { ok: true, already_recording: true };
+  rec.active = true;
+  rec.started_at = new Date().toISOString();
+  rec.events = [{
+    type: "navigation",
+    ts: Date.now(),
+    url: safePageText(location.href, 2000),
+    title: safePageText(document.title || "", 300),
+  }];
+  rec.rrweb_events = [];
+  rec.steps = [{
+    kind: "BROWSER_NAV",
+    target: location.href,
+    label: document.title || location.href,
+  }];
+  if (globalThis.rrweb?.record) {
+    try {
+      rec.rrweb_stop = globalThis.rrweb.record({
+        emit(event) {
+          rec.rrweb_events.push(event);
+          if (rec.rrweb_events.length > 500) rec.rrweb_events.shift();
+        }
+      });
+    } catch (_err) {
+      rec.rrweb_stop = null;
+    }
+  }
+  const onClick = (event) => pushWorkflowEvent("click", event.target);
+  const onDblClick = (event) => pushWorkflowEvent("dblclick", event.target);
+  const onInput = (event) => pushWorkflowEvent("input", event.target, {
+    value: currentElementValue(event.target),
+  });
+  const onChange = (event) => pushWorkflowEvent("change", event.target, {
+    value: currentElementValue(event.target),
+  });
+  document.addEventListener("click", onClick, true);
+  document.addEventListener("dblclick", onDblClick, true);
+  document.addEventListener("input", onInput, true);
+  document.addEventListener("change", onChange, true);
+  rec.handlers = { onClick, onDblClick, onInput, onChange };
+  return { ok: true, started_at: rec.started_at, url: location.href };
+}
+
+function stopWorkflowRecording() {
+  const rec = globalThis.__SENSEI_WORKFLOW_RECORDING__;
+  if (!rec.active) {
+    return { ok: true, active: false, events: rec.events || [], steps: rec.steps || [] };
+  }
+  const h = rec.handlers || {};
+  document.removeEventListener("click", h.onClick, true);
+  document.removeEventListener("dblclick", h.onDblClick, true);
+  document.removeEventListener("input", h.onInput, true);
+  document.removeEventListener("change", h.onChange, true);
+  if (rec.rrweb_stop) {
+    try { rec.rrweb_stop(); } catch (_err) {}
+  }
+  rec.active = false;
+  rec.handlers = null;
+  rec.rrweb_stop = null;
+  return {
+    ok: true,
+    active: false,
+    started_at: rec.started_at,
+    stopped_at: new Date().toISOString(),
+    events: rec.events || [],
+    rrweb_events: rec.rrweb_events || [],
+    steps: rec.steps || [],
+    url: location.href,
+    title: document.title || "",
+  };
+}
+
 installPageObservationHooks();
 
 function isVisible(el) {
@@ -1089,6 +1235,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       ? all
       : all.filter((e) => String(e?.level || "").toLowerCase() === filter);
     sendResponse(filtered);
+    return false;
+  }
+
+  if (message?.type === "SENSEI_RECORD_START") {
+    sendResponse(startWorkflowRecording());
+    return false;
+  }
+
+  if (message?.type === "SENSEI_RECORD_STOP") {
+    sendResponse(stopWorkflowRecording());
     return false;
   }
 
