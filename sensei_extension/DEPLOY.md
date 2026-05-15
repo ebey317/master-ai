@@ -5,15 +5,25 @@ and verify the full Anthropic-spec UX is live.
 
 ## TL;DR
 
+One-shot script for the backend half (rebuilds local model + restarts
+the service + verifies /health, then prints the manual Chrome steps):
+
+```bash
+bash ~/scripts/sensei_extension/redeploy.sh
+```
+
+Or run the underlying steps yourself:
+
 ```bash
 # Activate the backend changes (CLOUD_SYSTEM teaching + auto-routing
 # + UnboundLocalError fix). Shared-infra restart — admin terminal:
+ollama create master-ai -f ~/scripts/Modelfile-master-ai
 systemctl --user restart master-ai-ui.service
 
 # Activate the side-panel changes (Approve-All plan card, mode-name
 # copy, friendly 503 UX, brand icons). Chrome → chrome://extensions
 # → reload the Sensei extension (the circular-arrow icon on its
-# tile).
+# tile). Then refresh the target tab.
 
 # Verify with the deterministic smoke suite (each test stands alone):
 python3 ~/scripts/test_api_handle_wedge.py            # 2 tests, ~0.5s
@@ -21,6 +31,7 @@ python3 ~/scripts/test_extension_e2e_smoke.py         # 1 test, ~5-15s
 python3 ~/scripts/test_chrome_headless_e2e.py         # 1 test, ~1-2s
 python3 ~/scripts/test_cloud_plan_emission.py         # 1 test, ~1s
 python3 ~/scripts/test_plan_block_emission.py         # 2 tests, ~10s
+python3 ~/scripts/test_drive_inspect_handler.py       # 2 tests, ~3s
 ```
 
 If every test prints `OK`, the spec UX is live on the cloud lane and
