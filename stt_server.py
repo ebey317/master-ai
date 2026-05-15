@@ -1800,6 +1800,35 @@ def api_handle(payload):
             "safety_policy_version": _pv_dict.get("safety_policy_version"),
         })
 
+    # Phase 5.5 — extract the structured plan block when the model emits one.
+    # The model is taught to put EITHER labeled prose OR a JSON object inside
+    # `<PLAN>…</PLAN>`. We try JSON first; on parse failure we leave plan=None
+    # and the extension renders the existing prose card unchanged.
+    plan_struct = None
+    try:
+        _m_plan = re.search(r"<PLAN>\s*(\{[\s\S]*?\})\s*</PLAN>", reply or "")
+        if _m_plan:
+            _p_obj = json.loads(_m_plan.group(1))
+            if isinstance(_p_obj, dict) and ("domains" in _p_obj or "steps" in _p_obj):
+                plan_struct = {
+                    "domains": list(_p_obj.get("domains") or [])[:10],
+                    "steps": list(_p_obj.get("steps") or [])[:20],
+                    "irreversible": list(_p_obj.get("irreversible") or [])[:10],
+                }
+    except Exception:
+        plan_struct = None
+
+    # Phase 5.6 — fire the turn_answer_start hook once per /chat response,
+    # right before the reply is handed back. Observers only (the hook never
+    # blocks); used for transcript tees + metrics. Best-effort: if the hook
+    # bus errors, the response still ships.
+    try:
+        import hooks as _hooks_module  # noqa: WPS433
+        _hooks_module.fire("turn_answer_start", reply or "",
+                           action={"turn_id": turn_id, "round_num": round_num, "mode": effective_mode})
+    except Exception:
+        pass
+
     return {
         "reply": reply or "",
         "route": route,
@@ -1810,6 +1839,7 @@ def api_handle(payload):
         "turn_id": turn_id,
         "turn_root": turn_root or turn_id,
         "round_num": round_num,
+        "plan": plan_struct,  # Phase 5.5 — structured plan when emitted; null otherwise.
         "round_budget": round_budget,
         "round_remaining": round_remaining,
         "done": done,

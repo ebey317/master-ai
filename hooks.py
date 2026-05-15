@@ -46,6 +46,12 @@ KINDS = frozenset({
     "on_blocked",  # 2026-05-11: fires when ANY action lands BLOCKED.
                    # Sibling to pre_/post_ — observes a state outcome,
                    # not a lifecycle phase. Used by auto-extract-lesson.
+    "turn_answer_start",  # Phase 5.6 (2026-05-15): fires once per /chat
+                          # response right before the assistant reply text
+                          # is returned to the extension. target = the
+                          # reply string. Subscribers can record metrics,
+                          # tee to a transcript log, or trigger UI hints.
+                          # NEVER blocks — observers only.
 })
 
 
