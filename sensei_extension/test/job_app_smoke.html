@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sensei Job App Smoke</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --panel: #ffffff;
+      --ink: #1c2220;
+      --muted: #66706a;
+      --line: #dce2dc;
+      --accent: #0f766e;
+      --error: #b91c1c;
+      --ok: #166534;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(720px, calc(100vw - 32px));
+      margin: 32px auto;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 16px; margin-top: 24px; color: var(--muted); }
+    .intro { margin-top: 8px; color: var(--muted); }
+    fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 16px; }
+    legend { padding: 0 8px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    .grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+    .grid > .full { grid-column: 1 / -1; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    input, select, textarea, button {
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+    input, select, textarea {
+      padding: 0 12px;
+      color: var(--ink);
+      background: white;
+    }
+    textarea { min-height: 90px; padding: 10px 12px; resize: vertical; }
+    button#submitButton {
+      margin-top: 16px;
+      width: fit-content;
+      padding: 0 20px;
+      border-color: var(--accent);
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    .radio-row { display: flex; gap: 16px; align-items: center; }
+    .radio-row label { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); }
+    .radio-row input { min-height: auto; }
+    #result {
+      min-height: 28px;
+      margin-top: 18px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+    }
+    #result.ok { border-color: var(--ok); }
+    #result.error { border-color: var(--error); color: var(--error); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sensei Job App Smoke</h1>
+    <p class="intro">
+      Fake job-application page for verifying the Chrome extension end-to-end:
+      fill 10 fields, optionally upload a résumé, and click Submit. Multi-step
+      navigation is NOT exercised here — the form is single-page so the smoke
+      stays under 5 minutes.
+    </p>
+
+    <form id="jobApp" autocomplete="off" novalidate>
+      <fieldset>
+        <legend>Contact</legend>
+        <div class="grid">
+          <label>
+            First name
+            <input id="firstName" name="firstName" type="text" required aria-label="First name">
+          </label>
+          <label>
+            Last name
+            <input id="lastName" name="lastName" type="text" required aria-label="Last name">
+          </label>
+          <label class="full">
+            Email
+            <input id="email" name="email" type="email" required aria-label="Email">
+          </label>
+          <label>
+            Phone
+            <input id="phone" name="phone" type="tel" required aria-label="Phone">
+          </label>
+          <label>
+            City
+            <input id="city" name="city" type="text" required aria-label="City">
+          </label>
+          <label>
+            State
+            <select id="state" name="state" required aria-label="State">
+              <option value="">— select —</option>
+              <option value="IN">Indiana</option>
+              <option value="IL">Illinois</option>
+              <option value="OH">Ohio</option>
+              <option value="KY">Kentucky</option>
+              <option value="MI">Michigan</option>
+            </select>
+          </label>
+          <label>
+            ZIP
+            <input id="zip" name="zip" type="text" required aria-label="ZIP code">
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Experience</legend>
+        <div class="grid">
+          <label>
+            Years of experience
+            <input id="yearsExperience" name="yearsExperience" type="number" min="0" max="60" required aria-label="Years of experience">
+          </label>
+          <label>
+            Authorized to work in US
+            <div class="radio-row" role="radiogroup" aria-label="Work authorization">
+              <label><input type="radio" name="workAuth" value="yes" required> Yes</label>
+              <label><input type="radio" name="workAuth" value="no"> No</label>
+            </div>
+          </label>
+          <label class="full">
+            Cover letter
+            <textarea id="coverLetter" name="coverLetter" required aria-label="Cover letter"></textarea>
+          </label>
+          <label class="full">
+            Résumé (PDF)
+            <input id="resume" name="resume" type="file" accept=".pdf,application/pdf" aria-label="Résumé file">
+          </label>
+        </div>
+      </fieldset>
+
+      <button id="submitButton" type="submit" aria-label="Submit application">Submit application</button>
+    </form>
+
+    <p id="result" role="status" aria-live="polite">Not submitted yet.</p>
+  </main>
+
+  <script>
+    const form = document.querySelector("#jobApp");
+    const result = document.querySelector("#result");
+
+    // Public state global, mirrored from loop_smoke.html's pattern. The
+    // extension never inspects this; it's for the human running the
+    // smoke and for any future automated harness to assert against.
+    window.__senseiJobAppSmoke = {
+      submitted: false,
+      submittedAt: null,
+      values: null,
+      missing: [],
+      attempts: 0
+    };
+
+    const FIELD_IDS = [
+      "firstName", "lastName", "email", "phone",
+      "city", "state", "zip", "yearsExperience", "coverLetter"
+    ];
+
+    function collectValues() {
+      const v = {};
+      for (const id of FIELD_IDS) {
+        const el = form.elements[id];
+        if (el) v[id] = el.value || "";
+      }
+      const workAuth = form.elements["workAuth"];
+      v.workAuth = workAuth ? (workAuth.value || "") : "";
+      const resume = form.elements["resume"];
+      v.resumeName = resume?.files?.[0]?.name || "";
+      v.resumeSize = resume?.files?.[0]?.size || 0;
+      return v;
+    }
+
+    function findMissing(values) {
+      const missing = [];
+      for (const id of FIELD_IDS) {
+        if (!String(values[id] || "").trim()) missing.push(id);
+      }
+      if (!values.workAuth) missing.push("workAuth");
+      return missing;
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = collectValues();
+      const missing = findMissing(values);
+      window.__senseiJobAppSmoke.attempts += 1;
+      window.__senseiJobAppSmoke.values = values;
+      window.__senseiJobAppSmoke.missing = missing;
+
+      if (missing.length) {
+        result.className = "error";
+        result.textContent =
+          "Submit BLOCKED — missing required fields:\n  " + missing.join(", ") +
+          "\n\nFilled so far:\n" + JSON.stringify(values, null, 2);
+        console.log("[Sensei job app smoke] submit blocked", JSON.stringify({
+          missing, attempts: window.__senseiJobAppSmoke.attempts
+        }));
+        return;
+      }
+
+      window.__senseiJobAppSmoke.submitted = true;
+      window.__senseiJobAppSmoke.submittedAt = new Date().toISOString();
+      result.className = "ok";
+      result.textContent =
+        "Application SUBMITTED at " + window.__senseiJobAppSmoke.submittedAt +
+        "\n\n" + JSON.stringify(values, null, 2);
+      console.log("[Sensei job app smoke] submit success", JSON.stringify(window.__senseiJobAppSmoke));
+    });
+  </script>
+</body>
+</html>
