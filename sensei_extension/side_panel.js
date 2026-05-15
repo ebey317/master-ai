@@ -2070,11 +2070,56 @@ async function toggleMic() {
 function installTabCacheInvalidation() {
   chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
     if (changeInfo.url || changeInfo.status === "loading") invalidatePageContext(tabId);
+    if (changeInfo.url || changeInfo.status === "complete") refreshDomainBlockBanner();
   });
   chrome.tabs.onRemoved?.addListener((tabId) => invalidatePageContext(tabId));
   chrome.tabs.onActivated?.addListener(() => {
     state.contextCache = null;
+    refreshDomainBlockBanner();
   });
+}
+
+// Phase 1.4 — Domain-block banner. Mirrors the classifier verdict for the
+// active tab into a top-of-panel alert when category 1 (malicious) or 2
+// (sensitive auth surface) fires. Category 3 stays silent here; its
+// per-action force-confirm already surfaces in each card.
+async function refreshDomainBlockBanner() {
+  const banner = document.getElementById("domainBlockBanner");
+  if (!banner) return;
+  let tab = null;
+  try {
+    tab = await activeTab();
+  } catch (_err) {
+    banner.hidden = true;
+    return;
+  }
+  if (!tab?.url || !/^https?:/i.test(tab.url)) {
+    banner.hidden = true;
+    return;
+  }
+  let verdict = null;
+  try {
+    verdict = await classifyOrigin(tab.url);
+  } catch (_err) {
+    verdict = null;
+  }
+  if (!verdict || (verdict.category !== 1 && verdict.category !== 2)) {
+    banner.hidden = true;
+    return;
+  }
+  const title = document.getElementById("domainBlockTitle");
+  const reason = document.getElementById("domainBlockReason");
+  if (title) {
+    title.textContent = verdict.category === 1
+      ? "Sensei refuses: this page is on the malicious list."
+      : "Sensei refuses: sensitive auth surface.";
+  }
+  if (reason) {
+    const matched = verdict.matched ? `${verdict.matched}` : "(matched)";
+    const why = verdict.reason ? ` — ${verdict.reason}` : "";
+    reason.textContent = `Matched ${matched}${why}`;
+  }
+  banner.hidden = false;
 }
 
 async function prewarmActiveTab() {
@@ -2108,6 +2153,7 @@ async function init() {
   $("#openOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
   $("#stopButton")?.addEventListener("click", stopLoop);
   prewarmActiveTab();
+  refreshDomainBlockBanner();
   startHeartbeat();
   appendMessage("assistant", "Ready.");
 }

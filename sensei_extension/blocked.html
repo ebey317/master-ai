@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sensei — site blocked</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 640px;
+    margin: 32px auto;
+    padding: 0 20px;
+    color: #222;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22px; color: #b00020; margin-bottom: 4px; }
+  .hd-sub { color: #555; margin-top: 0; }
+  section { margin-top: 24px; }
+  h2 { font-size: 15px; margin-bottom: 6px; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #f3f3f3;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+  .footer {
+    margin-top: 36px;
+    padding-top: 16px;
+    border-top: 1px solid #ddd;
+    color: #777;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+  <h1>Sensei refused to act on this page.</h1>
+  <p class="hd-sub">The active tab matches an entry in Sensei's local domain-classes list.</p>
+
+  <section>
+    <h2>Why this page is blocked</h2>
+    <p>The extension classifies hosts into four categories using a local list at
+       <code>~/.master_ai_domain_classes.json</code>. Two of those categories
+       cause hard blocks:</p>
+    <ul>
+      <li><strong>Category 1 — known malicious / phishing.</strong> The host appears on a list of credential-harvest, malware-drop, or known fraud sites. Sensei will not navigate, click, fill, or read this page.</li>
+      <li><strong>Category 2 — sensitive auth surface.</strong> Banking, healthcare, government portals, and similar surfaces where automated action carries unrecoverable risk. Use these sites yourself in a regular tab — Sensei stays out.</li>
+    </ul>
+    <p>Category 3 hosts (adult / gambling / crypto-exchange) are not blocked, but every action there requires a per-action confirm.</p>
+  </section>
+
+  <section>
+    <h2>If you believe this is wrong</h2>
+    <p>The list is local and editable. To inspect the matched entry, open
+       <code>~/.master_ai_domain_classes.json</code>. The category buckets are
+       <code>category_1</code>, <code>category_2</code>, and <code>category_3</code>;
+       each entry is <code>"domain.example": "reason text"</code>. Removing
+       an entry takes effect on the next classifier call (cached for 60 seconds).</p>
+    <p>The list refreshes weekly via the maintenance window
+       (<code>~/scripts/refresh_domain_classes.sh</code>); manual edits survive
+       until the next refresh.</p>
+  </section>
+
+  <section>
+    <h2>What to do now</h2>
+    <ul>
+      <li>Close this tab and ask Sensei something on a different site.</li>
+      <li>If the task is essential and this site is genuinely safe in your context, edit the JSON list to remove the entry, then retry.</li>
+      <li>Open the Sensei options page (right-click the toolbar icon → Options) to manage the user-side blockedOrigins list separately.</li>
+    </ul>
+  </section>
+
+  <p class="footer">Sensei is local-first. Classifier decisions never leave your machine.</p>
+</body>
+</html>

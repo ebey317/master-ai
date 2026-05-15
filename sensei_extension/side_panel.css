@@ -339,3 +339,60 @@ select:focus-visible {
 .stop-button:hover {
   background: #a33024;
 }
+
+/* Phase 1.4 — Domain-block banner. Shown at the top of the side panel when
+   the active tab's host classifies as category 1 (malicious) or 2 (sensitive
+   auth surface). The link opens blocked.html in a new tab for the full
+   explanation. */
+.domain-block-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  background: #fde8e8;
+  border: 1px solid #d96666;
+  border-left: 4px solid #b00020;
+  border-radius: 6px;
+  color: #4a0d0d;
+  font-size: 13px;
+}
+
+.domain-block-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #b00020;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.domain-block-body {
+  flex: 1 1 auto;
+  line-height: 1.35;
+}
+
+.domain-block-body strong {
+  display: block;
+  color: #b00020;
+}
+
+.domain-block-reason {
+  margin: 2px 0 0;
+  color: #4a0d0d;
+}
+
+.domain-block-link {
+  color: #b00020;
+  font-weight: 600;
+  text-decoration: underline;
+  flex-shrink: 0;
+}
+
+.domain-block-link:hover {
+  color: #7a0017;
+}
