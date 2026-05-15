@@ -1,0 +1,13 @@
+{
+  "_meta": {
+    "version": 1,
+    "updated_iso": "2026-05-15T00:00:00Z",
+    "source": "seed",
+    "notes": "Seed list. category 0 = ok (implicit, not listed). category 1 = known malicious/phishing — HARD BLOCK. category 2 = sensitive auth surface (banking/health/gov auth) — HARD BLOCK from the extension; user must visit in a regular tab. category 3 = high-friction (adult/gambling/crypto-exchange) — force confirm every action. Domains are matched as suffix matches: a domain entry 'foo.com' matches 'foo.com', 'www.foo.com', 'login.foo.com', etc. Refresh via ~/scripts/refresh_domain_classes.sh; weekly via the maintenance window timer."
+  },
+  "category_1": {
+    "phishing-example.test": "Reserved test domain used by classifier unit tests."
+  },
+  "category_2": {},
+  "category_3": {}
+}

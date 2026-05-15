@@ -56,6 +56,10 @@ const state = {
   contextCache: null,
   auditQueue: [],
   auditFlushing: false,
+  // Phase 1.1 — Domain classifier cache. host -> {result, ts}. Result shape:
+  // {category, reason, matched, host, ttl_s}. Pre-warmed before renderActions
+  // for the active-tab origin and any BROWSER_NAV targets in the round.
+  domainClassCache: new Map(),
   // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
   // proposed actions, the user approves/rejects each one. As each result is
   // reported to /extension/action_result, it's also appended to loop.results.
@@ -868,9 +872,72 @@ async function allowOrigin(origin, action) {
   await rememberPermission("always_allow_site", origin, action);
 }
 
+// Phase 1.1 domain-classifier wiring. The backend at /extension/classify_domain
+// returns one of four categories per host; we cache the result per host with a
+// TTL hint from the response. Categories 1/2 are blocked at classifyBrowserAction
+// time; category 3 forces per-action confirm even on otherwise-safe kinds.
+const DOMAIN_CLASS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function hostFromOriginOrUrl(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+    return (url.hostname || "").toLowerCase();
+  } catch (_err) {
+    return raw.toLowerCase().split("/")[0].split(":")[0];
+  }
+}
+
+async function classifyOrigin(originOrUrl) {
+  const host = hostFromOriginOrUrl(originOrUrl);
+  if (!host) return { category: 0, reason: "no host", matched: "", host: "" };
+  const now = Date.now();
+  const cached = state.domainClassCache.get(host);
+  if (cached && (now - cached.ts) < DOMAIN_CLASS_CACHE_TTL_MS) return cached.result;
+  try {
+    const result = await backendFetch("/extension/classify_domain", {
+      method: "POST",
+      body: { domain: host },
+      timeoutMs: 4000
+    });
+    if (result && typeof result.category === "number") {
+      state.domainClassCache.set(host, { result, ts: now });
+      return result;
+    }
+  } catch (_err) {
+    // Fail open. Classifier unreachable means we don't add classifier-based
+    // blocks; the local blockedOrigins list + category regex below still apply.
+  }
+  return { category: 0, reason: "classifier unreachable", matched: "", host };
+}
+
+async function ensureOriginsClassified(origins = []) {
+  const hosts = [...new Set(origins.filter(Boolean).map(hostFromOriginOrUrl).filter(Boolean))];
+  if (!hosts.length) return;
+  await Promise.all(hosts.map((host) => classifyOrigin(host)));
+}
+
+function originDomainClass(originOrUrl) {
+  const host = hostFromOriginOrUrl(originOrUrl);
+  if (!host) return null;
+  const cached = state.domainClassCache.get(host);
+  if (!cached) return null;
+  if ((Date.now() - cached.ts) > DOMAIN_CLASS_CACHE_TTL_MS) return null;
+  return cached.result;
+}
+
 function originBlockedReason(originOrUrl = "") {
   const raw = String(originOrUrl || "");
   const origin = originForUrl(raw) || raw;
+  // Phase 1.1 — classifier verdict wins over local-only signals when present.
+  const verdict = originDomainClass(raw);
+  if (verdict && verdict.category === 1) {
+    return "domain_classifier:cat1_malicious";
+  }
+  if (verdict && verdict.category === 2) {
+    return "domain_classifier:cat2_sensitive_auth";
+  }
   const blocked = state.config.blockedOrigins || [];
   if (blocked.some((entry) => origin === entry || origin.endsWith(`.${String(entry).replace(/^https?:\/\//, "")}`))) {
     return "site_blocklist:user_blocked_site";
@@ -954,7 +1021,8 @@ function setActionStatus(row, text) {
 function classifyBrowserAction(action, origin = "") {
   const kind = String(action?.kind || "").toUpperCase();
   const target = String(action?.target || "").toLowerCase();
-  const blockedReason = originBlockedReason(kind === "BROWSER_NAV" ? target : origin);
+  const checkUrl = kind === "BROWSER_NAV" ? target : origin;
+  const blockedReason = originBlockedReason(checkUrl);
   if (blockedReason) {
     return {
       safe: false,
@@ -964,6 +1032,23 @@ function classifyBrowserAction(action, origin = "") {
       reason: `Blocked by pilot safety policy: ${blockedReason.split(":").pop().replace(/_/g, " ")}`
     };
   }
+
+  // Phase 1.1 — category 3 ("force confirm every action") wins over an
+  // otherwise-safe verdict but does NOT block. Re-checked after the existing
+  // heuristics so explicit purchase/delete/auth gating still surfaces its
+  // own gated_by string.
+  const verdict = originDomainClass(checkUrl);
+  const cat3 = verdict && verdict.category === 3 ? verdict : null;
+  const applyCat3 = (result) => {
+    if (!cat3 || result.blocked || result.requires_confirm) return result;
+    return {
+      ...result,
+      safe: false,
+      requires_confirm: true,
+      gated_by: result.gated_by || "domain_classifier:cat3_force_confirm",
+      reason: result.reason || `High-friction domain — ${cat3.reason || cat3.matched}`
+    };
+  };
 
   const PURCHASE_RE = /\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b/i;
   const DELETE_RE = /\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b/i;
@@ -990,9 +1075,9 @@ function classifyBrowserAction(action, origin = "") {
     }
   }
   if (READONLY_BROWSER_KINDS.has(kind)) {
-    return { safe: true, requires_confirm: false, gated_by: null };
+    return applyCat3({ safe: true, requires_confirm: false, gated_by: null });
   }
-  return { safe: true, requires_confirm: false, gated_by: null };
+  return applyCat3({ safe: true, requires_confirm: false, gated_by: null });
 }
 
 function gateLabel(gatedBy) {
@@ -1344,6 +1429,25 @@ async function renderActions(actions = [], blockedActions = []) {
   const list = $("#actionList");
   list.textContent = "";
   const tab = await activeTab().catch(() => null);
+
+  // Phase 1.1 — pre-warm the domain classifier for every origin we're about
+  // to classify (active-tab origin + any BROWSER_NAV targets in this round).
+  // Synchronous classifyBrowserAction below reads from state.domainClassCache;
+  // failing to pre-warm just means classifier verdicts won't apply this round
+  // (we still fall back to the local blockedOrigins + regex categories).
+  try {
+    const candidateOrigins = [];
+    if (tab) candidateOrigins.push(actionOrigin({}, tab));
+    for (const action of actions) {
+      candidateOrigins.push(actionOrigin(action, tab));
+      if (String(action?.kind || "").toUpperCase() === "BROWSER_NAV") {
+        candidateOrigins.push(String(action?.target || ""));
+      }
+    }
+    await ensureOriginsClassified(candidateOrigins);
+  } catch (_err) {
+    // Pre-warm is best-effort; never block the render.
+  }
 
   const all = [
     ...actions.map((action) => {
