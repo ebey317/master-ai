@@ -542,7 +542,7 @@ function _parseCdpMouseTarget(rawTarget) {
       if (obj && typeof obj === "object") return obj;
     } catch (_err) { /* fall through to positional */ }
   }
-  // Positional form: "action x y [button|deltaX] [count|deltaY] [modifiers]".
+  // Positional form: "action x y [button|deltaX|toX] [count|deltaY|toY] [modifiers]".
   const parts = raw.split(/\s+/);
   if (parts.length < 3) return null;
   const action = parts[0].toLowerCase();
@@ -556,6 +556,21 @@ function _parseCdpMouseTarget(rawTarget) {
       deltaX: Number(parts[3] || 0),
       deltaY: Number(parts[4] || 0),
     };
+  }
+  if (action === "drag") {
+    // Phase 3.3 — drag x1 y1 x2 y2 [button=left] [modifiers=0]
+    const toX = Number(parts[3]);
+    const toY = Number(parts[4]);
+    if (!Number.isFinite(toX) || !Number.isFinite(toY)) return null;
+    const out = { action: "drag", x, y, toX, toY };
+    if (parts[5] && _CDP_BUTTON_NAMES.has(parts[5].toLowerCase())) {
+      out.button = parts[5].toLowerCase();
+    }
+    if (parts[6]) {
+      const n = Number(parts[6]);
+      if (Number.isFinite(n)) out.modifiers = n;
+    }
+    return out;
   }
   const out = { action, x, y };
   if (parts[3]) {
@@ -617,6 +632,31 @@ async function dispatchCdpMouse(tab, action, timings = {}) {
           type: "mouseReleased", x, y, button, buttons: 0, modifiers, clickCount,
         });
         return { ok: true, action: "release", x, y, button, clickCount };
+      }
+      if (op === "drag") {
+        // Phase 3.3 — drag composite: press at (x,y), step-move to (toX,toY), release.
+        const toX = Number(parsed.toX);
+        const toY = Number(parsed.toY);
+        if (!Number.isFinite(toX) || !Number.isFinite(toY)) {
+          return { ok: false, error: "drag requires numeric toX and toY" };
+        }
+        await send("Input.dispatchMouseEvent", {
+          type: "mousePressed", x, y, button, buttons: buttonsMask, modifiers, clickCount: 1,
+        });
+        // Step the move so SPAs that listen for mousemove updates see motion.
+        const STEPS = 5;
+        for (let i = 1; i <= STEPS; i += 1) {
+          const stepX = x + ((toX - x) * i) / STEPS;
+          const stepY = y + ((toY - y) * i) / STEPS;
+          await send("Input.dispatchMouseEvent", {
+            type: "mouseMoved", x: stepX, y: stepY,
+            button, buttons: buttonsMask, modifiers,
+          });
+        }
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseReleased", x: toX, y: toY, button, buttons: 0, modifiers, clickCount: 1,
+        });
+        return { ok: true, action: "drag", from: { x, y }, to: { x: toX, y: toY }, button };
       }
       // Default + "click": composite press + release at the same point.
       await send("Input.dispatchMouseEvent", {

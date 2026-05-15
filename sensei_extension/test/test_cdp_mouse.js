@@ -110,6 +110,30 @@ check("JSON with stray fields preserved", () => {
   eq(out.action, "press", "action"); eq(out.custom, "x", "custom passthrough");
 });
 
+// Phase 3.3 — drag composite parsing.
+check("shorthand drag", () => {
+  const out = parse("drag 10 20 100 200");
+  eq(out.action, "drag", "action");
+  eq(out.x, 10, "x"); eq(out.y, 20, "y");
+  eq(out.toX, 100, "toX"); eq(out.toY, 200, "toY");
+});
+
+check("shorthand drag with button + modifiers", () => {
+  const out = parse("drag 0 0 50 50 right 8");
+  eq(out.button, "right", "button");
+  eq(out.modifiers, 8, "modifiers");
+});
+
+check("shorthand drag missing toX/toY → null", () => {
+  if (parse("drag 10 20 abc def") !== null) throw new Error("expected null for non-numeric toX/toY");
+  if (parse("drag 10 20") !== null) throw new Error("expected null for missing toX/toY");
+});
+
+check("JSON drag", () => {
+  const out = parse('{"action":"drag","x":0,"y":0,"toX":100,"toY":50}');
+  eq(out.action, "drag", "action"); eq(out.toX, 100, "toX"); eq(out.toY, 50, "toY");
+});
+
 if (failures) {
   console.error(`---\n${failures} assertion(s) FAILED`);
   process.exit(1);
