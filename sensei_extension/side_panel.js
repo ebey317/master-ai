@@ -449,7 +449,12 @@ function classifyBrowserAction(action) {
   const PURCHASE_RE = /\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b/i;
   const DELETE_RE = /\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b/i;
   const AUTH_RE = /\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out|register|authorize|grant\s*access|oauth|api\s*key)\b/i;
-  const SENSITIVE_RE = /\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number)\b/i;
+  // Anthropic-spec hard-limit list (https://support.anthropic.com/en/collections/13228104-claude-for-chrome):
+  // never enter passwords, SSNs, financial account numbers, passport numbers,
+  // or medical data. Existing terms (password / ssn / credit card / etc.)
+  // covered the first three; passport + medical-class terms + driver license
+  // + date of birth close the documented gap.
+  const SENSITIVE_RE = /\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number|passport|passport.*number|medical(.*record)?|diagnosis|health.*insurance|patient.*id|driver.*license|driver.*licence|date.*of.*birth|dob)\b/i;
   const PASSWORD_SEL = /type=["']?password["']?|name=["']?(password|pwd|passwd)["']?/i;
 
   if (kind === "BROWSER_FILL" && (PASSWORD_SEL.test(target) || SENSITIVE_RE.test(target))) {

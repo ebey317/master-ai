@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 PURCHASE_RE = re.compile(r"\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b", re.I)
 DELETE_RE = re.compile(r"\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b", re.I)
 AUTH_RE = re.compile(r"\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out|register|authorize|grant\s*access|oauth|api\s*key)\b", re.I)
-SENSITIVE_RE = re.compile(r"\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number)\b", re.I)
+SENSITIVE_RE = re.compile(r"\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number|passport|passport.*number|medical(.*record)?|diagnosis|health.*insurance|patient.*id|driver.*license|driver.*licence|date.*of.*birth|dob)\b", re.I)
 PASSWORD_SEL = re.compile(r"type=[\"']?password[\"']?|name=[\"']?(password|pwd|passwd)[\"']?", re.I)
 PURCHASE_URL_RE = re.compile(r"/(checkout|cart|pay|order)\b", re.I)
 
@@ -79,6 +79,51 @@ class BrowserHeuristicTests(unittest.TestCase):
     def test_password_fill_is_sensitive_gated(self):
         self.assert_gated(
             {"kind": "BROWSER_FILL", "target": "input[type='password']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_passport_fill_is_sensitive_gated(self):
+        # Anthropic-spec hard-limit category — passport numbers.
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[name='passport-number']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_medical_record_fill_is_sensitive_gated(self):
+        # Anthropic-spec hard-limit category — medical data.
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[aria-label='medical record number']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_diagnosis_fill_is_sensitive_gated(self):
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "textarea[name='diagnosis-notes']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_health_insurance_fill_is_sensitive_gated(self):
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[aria-label='Health Insurance ID']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_drivers_license_fill_is_sensitive_gated(self):
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[name='drivers-license']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_dob_fill_is_sensitive_gated(self):
+        # Date of birth — birth-class identifier per Anthropic's PII guidance.
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[name='dob']"},
+            "irreversible_heuristic:sensitive_fill",
+        )
+
+    def test_date_of_birth_phrase_fill_is_sensitive_gated(self):
+        self.assert_gated(
+            {"kind": "BROWSER_FILL", "target": "input[aria-label='Date of Birth']"},
             "irreversible_heuristic:sensitive_fill",
         )
 
