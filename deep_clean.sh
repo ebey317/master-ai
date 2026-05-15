@@ -168,6 +168,23 @@ else
 fi
 report ""
 
+# ── 7b. Domain classifier refresh (Phase 1.5) ─────────────────
+# Pulls fresh URLhaus phishing/malware hosts into ~/.master_ai_domain_classes.json
+# so Sensei's extension classifier stays current. DOMAIN_CLASSES_FETCH=1
+# enables the remote pull; without it the script preserves the local list.
+report "## 4b. Domain classifier refresh"
+report ""
+if [ -x "$HOME/scripts/refresh_domain_classes.sh" ]; then
+    if DOMAIN_CLASSES_FETCH=1 bash "$HOME/scripts/refresh_domain_classes.sh" >>"$LOG" 2>&1; then
+        report "✅ ~/.master_ai_domain_classes.json refreshed."
+    else
+        report "⚠ refresh_domain_classes.sh exited non-zero — see full log."
+    fi
+else
+    report "⚠ refresh_domain_classes.sh missing or not executable."
+fi
+report ""
+
 # ── 8. Summary + stamp
 report "## 5. Summary"
 report ""

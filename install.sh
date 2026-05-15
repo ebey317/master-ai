@@ -343,6 +343,23 @@ PY
     read -rp "  Paste another, or Enter to finish: " key
 done
 
+# ── 7b. Domain classifier list (Phase 1.5) ──────────────────
+# Sensei's extension refuses to act on category 1/2 hosts. The list lives
+# at ~/.master_ai_domain_classes.json and is refreshed weekly by the
+# maintenance window (deep_clean.sh). On first install we seed it from
+# the repo copy so the classifier has something to match against; the
+# weekly refresh layers fresh URLhaus phishing/malware hosts on top.
+DOMAIN_CLASSES_TARGET="$HOME/.master_ai_domain_classes.json"
+DOMAIN_CLASSES_SEED="$TARGET/master_ai_domain_classes.seed.json"
+if [ ! -f "$DOMAIN_CLASSES_TARGET" ] && [ -f "$DOMAIN_CLASSES_SEED" ]; then
+    cp "$DOMAIN_CLASSES_SEED" "$DOMAIN_CLASSES_TARGET"
+    chmod 644 "$DOMAIN_CLASSES_TARGET" 2>/dev/null || true
+    echo -e "  ${BG}✓ Domain-classifier list seeded at${X} ${BW}~/.master_ai_domain_classes.json${X}"
+fi
+if [ -x "$TARGET/refresh_domain_classes.sh" ]; then
+    echo -e "  ${BG}✓ Weekly refresh wired via deep_clean.sh${X} (manual: ${BW}bash ~/scripts/refresh_domain_classes.sh${X})"
+fi
+
 # ── 8. Entry mode ────────────────────────────────────────────
 rm -f "$HOME/.dojo_gate_sealed" 2>/dev/null || true
 echo ""
