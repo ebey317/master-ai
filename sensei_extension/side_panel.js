@@ -213,7 +213,8 @@ function maybeWarnSilentClaim(reply, actions, data) {
   appendWarning(
     "Model claimed a browser action but didn't emit a directive. " +
     "Try rephrasing concretely (e.g., \"take a screenshot of this page\", " +
-    "\"click the Sign in button\") or switch to Auto mode."
+    "\"click the Sign in button\") or switch the mode dropdown to " +
+    "\"Act without asking.\""
   );
 }
 
@@ -501,7 +502,7 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
 
   if (!kind.startsWith("BROWSER_")) {
-    setActionStatus(row, "Backend-only — switch to Auto mode to dispatch");
+    setActionStatus(row, "Backend-only — switch the mode dropdown to \"Act without asking\" to dispatch");
     reportAction(action, "accept", "blocked", { reason: "non-browser action; backend dispatches in auto mode" });
     recordLoopResult(action, "accept", "blocked", { reason: "non-browser action; backend dispatches in auto mode" });
     return;
