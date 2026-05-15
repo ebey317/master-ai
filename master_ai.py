@@ -2531,6 +2531,38 @@ def orchestrate(history, user_text, image_path=None):
                 "stripped_text": _strip_prefix(prefix_len),
                 "reason": "explicit local/private → local 7b"}
 
+    # 2b. Self-determining route for chrome_extension automation turns.
+    #
+    # Anthropic-spec Phase 5 ("Ask before acting" plan-and-approve) requires
+    # the model to emit a <PLAN>…</PLAN> block on multi-step browser tasks.
+    # The local 7B (master-ai / qwen2.5:7b) doesn't reliably emit that
+    # pattern — observed across 4 Modelfile teaching iterations — while
+    # cloud lanes (Groq, Fireworks, OpenRouter) follow the same teaching
+    # baked into CLOUD_SYSTEM reliably.
+    #
+    # Elijah's directive 2026-05-14 evening: the system should SELF-
+    # DETERMINE this routing instead of requiring a `fast:` prefix.
+    # Chrome-extension turns that carry a [BROWSER PAGE CONTEXT] envelope
+    # are automation turns by definition (the extension only sends
+    # page_context when the user is doing real browser work). Route them
+    # to cloud_fast when a Groq key is present so the spec UX ships by
+    # default. Sensei TUI and Pupil chat have no envelope → unaffected,
+    # local-first per `feedback_local_mode_default.md` still holds for
+    # those surfaces.
+    #
+    # Fallback if no Groq key: stay local. Fireworks/Cerebras have the
+    # same CLOUD_SYSTEM teaching but Groq is fastest for interactive
+    # browser work.
+    _envelope_head = stripped[:_user_mark_idx] if _user_mark_idx >= 0 else ""
+    _is_chrome_ext_automation = bool(
+        _envelope_head
+        and re.search(r'(?im)^\s*source\s*:\s*chrome_extension\b', _envelope_head)
+        and "[BROWSER PAGE CONTEXT]" in _envelope_head
+    )
+    if _is_chrome_ext_automation and have_groq:
+        return {"route": "cloud_fast", "model": "groq",
+                "reason": "chrome_extension automation → cloud_fast (Anthropic-spec PLAN-as-block emits reliably)"}
+
     cache_weather_synth = _clear_cache_weather_short_circuit(stripped)
     if cache_weather_synth:
         return {"route": "weather",
