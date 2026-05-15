@@ -60,6 +60,11 @@ const state = {
   // {category, reason, matched, host, ttl_s}. Pre-warmed before renderActions
   // for the active-tab origin and any BROWSER_NAV targets in the round.
   domainClassCache: new Map(),
+  // Phase 1.3 — Last-observed origin per session. Set every time the model
+  // reads the page (BROWSER_READ_PAGE / BROWSER_OBSERVE / BROWSER_READ) and
+  // after a confirmed BROWSER_NAV. Mutating actions abort if the active tab
+  // has drifted away from this host between observation and dispatch.
+  lastObservedOrigin: null,
   // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
   // proposed actions, the user approves/rejects each one. As each result is
   // reported to /extension/action_result, it's also appended to loop.results.
@@ -927,6 +932,40 @@ function originDomainClass(originOrUrl) {
   return cached.result;
 }
 
+// Phase 1.3 — URL verification mid-action. Mutating actions check that the
+// active tab's host still matches the host the model read. Reads + NAV are
+// exempt (reads ARE the snapshot; NAV is the intentional shift).
+const MUTATING_BROWSER_KINDS = new Set([
+  "BROWSER_CLICK",
+  "BROWSER_FILL",
+  "BROWSER_DOUBLE_CLICK",
+  "BROWSER_SCROLL",
+  "BROWSER_DRIVE_INSPECT_FOLDER",
+]);
+
+function recordObservedOrigin(tab) {
+  if (!tab?.url) return;
+  const host = hostFromOriginOrUrl(tab.url);
+  if (!host) return;
+  state.lastObservedOrigin = { host, url: tab.url, ts: Date.now() };
+}
+
+function verifyTabOriginUnchanged(tab, kind) {
+  const upper = String(kind || "").toUpperCase();
+  if (!MUTATING_BROWSER_KINDS.has(upper)) return { ok: true };
+  const snapshot = state.lastObservedOrigin;
+  if (!snapshot) return { ok: true };
+  const currentHost = hostFromOriginOrUrl(tab?.url || "");
+  if (!currentHost) return { ok: true };
+  if (currentHost === snapshot.host) return { ok: true };
+  return {
+    ok: false,
+    reason: `domain shifted mid-action: observed ${snapshot.host}, tab now on ${currentHost}`,
+    observed_host: snapshot.host,
+    current_host: currentHost,
+  };
+}
+
 function originBlockedReason(originOrUrl = "") {
   const raw = String(originOrUrl || "");
   const origin = originForUrl(raw) || raw;
@@ -1143,6 +1182,12 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
     if (blockedReason) {
       throw new Error(`blocked by pilot safety policy: ${blockedReason}`);
     }
+    // Phase 1.3 — URL verification mid-action. Mutating kinds abort if the
+    // active tab drifted off the host the model read in this round.
+    const verify = verifyTabOriginUnchanged(tab, kind);
+    if (!verify.ok) {
+      throw new Error(`[TOOL BLOCKED: ${verify.reason}]`);
+    }
     if (permissionDecision !== "auto") await rememberPermission(permissionDecision, origin, action);
 
     let result;
@@ -1165,9 +1210,16 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       const url = normalizeUrl(action.target);
       await chrome.tabs.update(tab.id, { url });
       await waitForTabSettled(tab.id, 8000);
+      // Phase 1.3 — the intentional navigation is the new baseline.
+      try {
+        const freshTab = await chrome.tabs.get(tab.id);
+        recordObservedOrigin(freshTab);
+      } catch (_err) { /* best-effort */ }
       result = { ok: true, navigated: url };
       invalidatePageContext(tab.id);
     } else if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE") {
+      // Phase 1.3 — reads ARE the snapshot. Update the observed-origin baseline.
+      recordObservedOrigin(tab);
       result = {
         ok: true,
         page_context: await freshPageContextForContinuation(timings),
@@ -1191,6 +1243,11 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
     } else {
       result = await sendToContent(tab, action, timings);
       if (CONTEXT_SETTLING_BROWSER_KINDS.has(kind)) await waitForTabSettled(tab.id, 4000);
+      // Phase 1.3 — BROWSER_READ and other read-only catchall observations
+      // refresh the baseline. The check above already blocked mutating kinds
+      // that drifted; this keeps the snapshot honest for the next mutating
+      // call in the same round.
+      if (READONLY_BROWSER_KINDS.has(kind) && result?.ok) recordObservedOrigin(tab);
       invalidatePageContext(tab.id);
     }
 
