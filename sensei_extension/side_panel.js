@@ -132,6 +132,23 @@ async function backendFetch(path, options = {}) {
     data = { raw: text };
   }
   if (!res.ok) {
+    // HTTP 503 from wedge protection is a temporary backend busy signal
+    // (stt_server.py raises ApiHandleBusy when a runaway local inference
+    // holds _API_HANDLE_LOCK past _API_HANDLE_LOCK_TIMEOUT_S). Surface
+    // it as a recoverable retry message, not a raw error — the user
+    // just has to wait and re-send. Same shape `_chat` endpoint emits.
+    if (res.status === 503 && data?.error === "system_busy") {
+      const retryAfter = Number(data.retry_after_s) || 15;
+      const err = new Error(
+        `Sensei is busy with another task on the local model — ` +
+        `please retry in about ${retryAfter} seconds. ` +
+        `(For an immediate answer, prefix your prompt with "fast:" ` +
+        `to route to the cloud lane.)`
+      );
+      err.code = "system_busy";
+      err.retryAfterS = retryAfter;
+      throw err;
+    }
     const message = data.error || `${res.status} ${res.statusText}`;
     throw new Error(message);
   }
