@@ -22,6 +22,15 @@ AUTH_RE = re.compile(r"\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out
 SENSITIVE_RE = re.compile(r"\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number|passport|passport.*number|medical(.*record)?|diagnosis|health.*insurance|patient.*id|driver.*license|driver.*licence|date.*of.*birth|dob)\b", re.I)
 PASSWORD_SEL = re.compile(r"type=[\"']?password[\"']?|name=[\"']?(password|pwd|passwd)[\"']?", re.I)
 PURCHASE_URL_RE = re.compile(r"/(checkout|cart|pay|order)\b", re.I)
+READONLY_BROWSER_KINDS = {
+    "BROWSER_READ",
+    "BROWSER_SCREENSHOT",
+    "BROWSER_WAIT",
+    "BROWSER_SCROLL",
+    "BROWSER_FIND",
+    "BROWSER_EXTRACT_LIST",
+    "BROWSER_DRIVE_INSPECT_FOLDER",
+}
 
 
 def classify_browser_action(action):
@@ -40,7 +49,7 @@ def classify_browser_action(action):
     if kind == "BROWSER_NAV":
         if PURCHASE_RE.search(target) or PURCHASE_URL_RE.search(target):
             return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:purchase_url"}
-    if kind in ("BROWSER_READ", "BROWSER_SCREENSHOT"):
+    if kind in READONLY_BROWSER_KINDS:
         return {"safe": True, "requires_confirm": False, "gated_by": None}
     return {"safe": True, "requires_confirm": False, "gated_by": None}
 
@@ -139,6 +148,12 @@ class BrowserHeuristicTests(unittest.TestCase):
     def test_screenshot_is_safe(self):
         self.assert_safe({"kind": "BROWSER_SCREENSHOT", "target": "viewport"})
 
+    def test_drive_inspect_is_safe(self):
+        self.assert_safe({
+            "kind": "BROWSER_DRIVE_INSPECT_FOLDER",
+            "target": '{"query":"resume"}',
+        })
+
     def test_read_more_click_is_safe(self):
         self.assert_safe({"kind": "BROWSER_CLICK", "target": "a.read-more"})
 
@@ -158,7 +173,7 @@ class ContinuationFormattingTests(unittest.TestCase):
                 "gated_by": "irreversible_heuristic:purchase",
             }
         ])
-        self.assertIn("gated by irreversible_heuristic:purchase", text)
+        self.assertIn("gated_by: irreversible_heuristic:purchase", text)
 
 
 if __name__ == "__main__":

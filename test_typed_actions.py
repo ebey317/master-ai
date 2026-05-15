@@ -28,7 +28,9 @@ class KindAndRiskConstants(unittest.TestCase):
             frozenset({
                 "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
                 "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
-                "BROWSER_SCREENSHOT",
+                "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
+                "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
+                "BROWSER_DRIVE_INSPECT_FOLDER",
             }),
         )
 
@@ -36,7 +38,9 @@ class KindAndRiskConstants(unittest.TestCase):
         for name in (
             "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
             "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
-            "BROWSER_SCREENSHOT",
+            "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
+            "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
+            "BROWSER_DRIVE_INSPECT_FOLDER",
         ):
             self.assertEqual(getattr(ta.Kind, name), name)
 
@@ -213,6 +217,29 @@ class DirectiveParser(unittest.TestCase):
         self.assertEqual(a.kind, "BROWSER_SCREENSHOT")
         self.assertEqual(a.target, "viewport")
         self.assertTrue(a.requires_confirm)
+
+    def test_parse_drive_inspect_line(self):
+        a = ta.parse_directive(
+            'BROWSER_DRIVE_INSPECT_FOLDER: {"query":"resume","variants":["Resume","resume"]}'
+        )
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_DRIVE_INSPECT_FOLDER")
+        self.assertIn('"query":"resume"', a.target)
+        self.assertEqual(a.risk, ta.Risk.SAFE)
+
+    def test_parse_wait_scroll_find_extract_lines(self):
+        cases = {
+            "BROWSER_WAIT: 2000": "BROWSER_WAIT",
+            "BROWSER_SCROLL: down 800": "BROWSER_SCROLL",
+            "BROWSER_FIND: Resume": "BROWSER_FIND",
+            "BROWSER_EXTRACT_LIST: drive": "BROWSER_EXTRACT_LIST",
+            "BROWSER_DOUBLE_CLICK: [aria-label='Resume']": "BROWSER_DOUBLE_CLICK",
+        }
+        for line, kind in cases.items():
+            with self.subTest(line=line):
+                a = ta.parse_directive(line)
+                self.assertIsNotNone(a)
+                self.assertEqual(a.kind, kind)
 
     def test_lowercase_keyword_accepted(self):
         a = ta.parse_directive("run: ls")

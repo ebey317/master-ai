@@ -16,7 +16,7 @@ keeping the model and your data on-box by default.
 - **Sidebar chat.** Open the side panel on any page; describe what
   you want done. Sensei reads the page, picks selectors, and proposes
   one or more `BROWSER_*` directives (CLICK, FILL, READ, NAV,
-  SCREENSHOT).
+  SCREENSHOT, WAIT, SCROLL, FIND, EXTRACT_LIST, DRIVE_INSPECT_FOLDER).
 - **Three permission modes** (dropdown on the chat composer):
   - **Ask before acting** — Sensei proposes; you approve each card.
     Default safe state.
@@ -88,7 +88,8 @@ by default.
 - `content_script.js` — page-context collection (visible text +
   interactive-elements list with accessible names) + `BROWSER_*`
   action dispatch on the page (`setElementValue`, `el.click()`,
-  `chrome.tabs.update` for NAV).
+  `chrome.tabs.update` for NAV), including Google Drive row extraction
+  and empty-folder detection for Drive inspection.
 - `options.html / .css / .js` — backend URL, token, default mode,
   session ID, résumé file path (Phase 2.1), approved sites manager.
 - `icons/` — 16 / 32 / 48 / 128 PNG icon set.

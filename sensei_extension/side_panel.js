@@ -5,6 +5,10 @@ const DEFAULT_CONFIG = {
   sessionId: "",
   actionPermissionMode: "ask",
   approvedOrigins: [],
+  blockedOrigins: [
+    "https://accounts.google.com",
+    "https://pay.google.com",
+  ],
   permissionHistory: []
 };
 
@@ -18,7 +22,16 @@ const REQUEST_TIMEOUTS = {
 const PAGE_CONTEXT_TTL_MS = 1500;
 const PAGE_CONTEXT_TEXT_LIMIT = 1800;
 const PAGE_CONTEXT_PROMPT_RE =
-  /\b(browser|button|click|current\s+(page|tab|site)|field|fill|form|link|page|read|screen|screenshot|select|selected|selection|tab|this|visible|website)\b/i;
+  /\b(browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|link|page|read|screen|screenshot|search|select|selected|selection|tab|this|visible|website)\b/i;
+const READONLY_BROWSER_KINDS = new Set([
+  "BROWSER_READ",
+  "BROWSER_SCREENSHOT",
+  "BROWSER_WAIT",
+  "BROWSER_SCROLL",
+  "BROWSER_FIND",
+  "BROWSER_EXTRACT_LIST",
+  "BROWSER_DRIVE_INSPECT_FOLDER",
+]);
 
 const state = {
   config: { ...DEFAULT_CONFIG },
@@ -61,6 +74,7 @@ async function loadConfig() {
   const stored = await chromeGet(Object.keys(DEFAULT_CONFIG));
   state.config = { ...DEFAULT_CONFIG, ...stored };
   if (!Array.isArray(state.config.approvedOrigins)) state.config.approvedOrigins = [];
+  if (!Array.isArray(state.config.blockedOrigins)) state.config.blockedOrigins = [];
   if (!Array.isArray(state.config.permissionHistory)) state.config.permissionHistory = [];
   if (!["ask", "act"].includes(state.config.actionPermissionMode)) state.config.actionPermissionMode = "ask";
   if (!state.config.sessionId) {
@@ -164,7 +178,7 @@ function setConnection(text, tone = "") {
 function cleanReply(text) {
   const lines = String(text || "").split(/\n/);
   const cleaned = lines.filter((line) => {
-    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):/i.test(line)
+    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_[A-Z_]+):/i.test(line)
       && !/^\s*<<<(CONTENT|FIND|REPLACE)\s*$/i.test(line)
       && !/^\s*>>>(CONTENT|FIND|REPLACE)\s*$/i.test(line);
   }).join("\n").trim();
@@ -208,7 +222,7 @@ function appendError(text) {
 //       pinterest.com — model returned "[BROWSER_SCREENSHOT] url: ...").
 //       The parser only matches ^\s*BROWSER_X: so any non-column-0 or
 //       wrapped form needs the warning path.
-const CLAIMED_BROWSER_ACTION_RE = /(?:\b(?:captur(?:ed|ing)|took (?:a |the )?(?:screenshot|snapshot|picture|photo)|taking (?:a |the )?(?:screenshot|snapshot|picture|photo)|screenshot(?:ted|ed)?|navigated to|opened (?:the |this )?(?:page|tab|link|url|site|website))\b)|(?:\b(?:clicked|filled (?:in |out )?(?:the )?|typed (?:into )?(?:the )?|pressed (?:the )?|scrolled (?:to |up |down )?)\b.{0,40}\b(?:button|link|field|form|input|tab|key|enter|return|escape|element|icon|email|password|down|up|bottom|top)\b)|(?:BROWSER_(?:NAV|CLICK|FILL|READ|SCREENSHOT|WAIT|SCROLL|KEY))/i;
+const CLAIMED_BROWSER_ACTION_RE = /(?:\b(?:captur(?:ed|ing)|took (?:a |the )?(?:screenshot|snapshot|picture|photo)|taking (?:a |the )?(?:screenshot|snapshot|picture|photo)|screenshot(?:ted|ed)?|navigated to|opened (?:the |this )?(?:page|tab|link|url|site|website))\b)|(?:\b(?:clicked|filled (?:in |out )?(?:the )?|typed (?:into )?(?:the )?|pressed (?:the )?|scrolled (?:to |up |down )?)\b.{0,40}\b(?:button|link|field|form|input|tab|key|enter|return|escape|element|icon|email|password|down|up|bottom|top)\b)|(?:BROWSER_[A-Z_]+)/i;
 
 function appendWarning(text) {
   appendMessage("error", `⚠ ${text}`);
@@ -380,6 +394,26 @@ async function allowOrigin(origin, action) {
   await rememberPermission("always_allow_site", origin, action);
 }
 
+function originBlockedReason(originOrUrl = "") {
+  const raw = String(originOrUrl || "");
+  const origin = originForUrl(raw) || raw;
+  const blocked = state.config.blockedOrigins || [];
+  if (blocked.some((entry) => origin === entry || origin.endsWith(`.${String(entry).replace(/^https?:\/\//, "")}`))) {
+    return "site_blocklist:user_blocked_site";
+  }
+  const host = (() => {
+    try { return new URL(origin.startsWith("http") ? origin : `https://${origin}`).hostname; }
+    catch (_err) { return raw; }
+  })().toLowerCase();
+  const categoryPatterns = [
+    ["financial", /\b(bank|banking|paypal|stripe|venmo|cashapp|coinbase|robinhood|fidelity|vanguard|schwab|chase|wellsfargo|capitalone|amex|visa|mastercard)\b/i],
+    ["adult", /\b(adult|porn|xxx|onlyfans)\b/i],
+    ["piracy", /\b(torrent|pirate|crack|warez)\b/i],
+  ];
+  const matched = categoryPatterns.find(([, pattern]) => pattern.test(host));
+  return matched ? `site_blocklist:high_risk_${matched[0]}` : "";
+}
+
 async function sendToContent(tab, action, timings = {}) {
   const ready = await ensureContentScript(tab, timings);
   if (!ready) throw new Error("cannot access this tab");
@@ -442,9 +476,19 @@ function setActionStatus(row, text) {
   if (status) status.textContent = text;
 }
 
-function classifyBrowserAction(action) {
+function classifyBrowserAction(action, origin = "") {
   const kind = String(action?.kind || "").toUpperCase();
   const target = String(action?.target || "").toLowerCase();
+  const blockedReason = originBlockedReason(kind === "BROWSER_NAV" ? target : origin);
+  if (blockedReason) {
+    return {
+      safe: false,
+      requires_confirm: true,
+      blocked: true,
+      gated_by: blockedReason,
+      reason: `Blocked by pilot safety policy: ${blockedReason.split(":").pop().replace(/_/g, " ")}`
+    };
+  }
 
   const PURCHASE_RE = /\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b/i;
   const DELETE_RE = /\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b/i;
@@ -470,7 +514,7 @@ function classifyBrowserAction(action) {
       return { safe: false, requires_confirm: true, gated_by: "irreversible_heuristic:purchase_url" };
     }
   }
-  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") {
+  if (READONLY_BROWSER_KINDS.has(kind)) {
     return { safe: true, requires_confirm: false, gated_by: null };
   }
   return { safe: true, requires_confirm: false, gated_by: null };
@@ -510,16 +554,17 @@ function shouldAutoRunAction(action, origin = "") {
   if (action?.classification?.requires_confirm) return false;
   if (action?.gated_by) return false;
 
-  // Auto-mode safe BROWSER_*: approved-origin auto-run, plus READ/SCREENSHOT
-  // (read-only, no page-state change).
+  // Auto-mode safe BROWSER_*: approved-origin auto-run, plus read-only
+  // observation/navigation-assist actions that do not mutate page data.
   if (origin && state.config.approvedOrigins.includes(origin)) return true;
-  if (kind === "BROWSER_READ" || kind === "BROWSER_SCREENSHOT") return true;
+  if (READONLY_BROWSER_KINDS.has(kind)) return true;
   return false;
 }
 
 async function approveAction(action, row, permissionDecision = "allow_once") {
   const kind = String(action.kind || "").toUpperCase();
   const timings = {};
+  let tab = null;
   setActionStatus(row, "Running");
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
 
@@ -531,9 +576,13 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
   }
 
   try {
-    const tab = await activeTab();
+    tab = await activeTab();
     if (!tab?.id) throw new Error("no active tab");
     const origin = actionOrigin(action, tab);
+    const blockedReason = originBlockedReason(kind === "BROWSER_NAV" ? action.target : origin);
+    if (blockedReason) {
+      throw new Error(`blocked by pilot safety policy: ${blockedReason}`);
+    }
     if (permissionDecision !== "auto") await rememberPermission(permissionDecision, origin, action);
 
     let result;
@@ -555,6 +604,9 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       const url = normalizeUrl(action.target);
       await chrome.tabs.update(tab.id, { url });
       result = { ok: true, navigated: url };
+      invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
+      result = await inspectDriveFolderWorkflow(tab, action);
       invalidatePageContext(tab.id);
     } else {
       result = await sendToContent(tab, action, timings);
@@ -596,6 +648,192 @@ async function readObservedTabUrl(tab) {
   }
 }
 
+function normalizeDriveTerm(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function parseDriveInspectTarget(action) {
+  const raw = String(action?.target || "").trim();
+  let parsed = {};
+  if (raw.startsWith("{")) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_err) {
+      parsed = {};
+    }
+  }
+  const query = String(parsed.query || parsed.folder || raw || "resume").trim();
+  const variants = Array.isArray(parsed.variants) ? parsed.variants : [];
+  const terms = [query, ...variants].filter(Boolean).map(String);
+  if (/\b(resume|cv|career)\b/i.test(normalizeDriveTerm(query)) || !terms.length) {
+    terms.push("Resume", "resume", "résumé", "CV", "career");
+  }
+  const uniqueTerms = [];
+  const seen = new Set();
+  for (const term of terms) {
+    const cleaned = String(term || "").trim();
+    const key = normalizeDriveTerm(cleaned);
+    if (!cleaned || seen.has(key)) continue;
+    seen.add(key);
+    uniqueTerms.push(cleaned);
+  }
+  return {
+    query: query || uniqueTerms[0] || "resume",
+    variants: uniqueTerms.length ? uniqueTerms : ["resume"],
+    folderOnly: parsed.folderOnly !== false,
+    maxSearches: Math.max(1, Math.min(Number(parsed.maxSearches || 5), 8)),
+  };
+}
+
+async function sleepMs(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForTabSettled(tabId, timeoutMs = 10000) {
+  const start = performance.now();
+  while (performance.now() - start < timeoutMs) {
+    try {
+      const current = await chrome.tabs.get(tabId);
+      if (current?.status === "complete") break;
+    } catch (_err) {
+      break;
+    }
+    await sleepMs(250);
+  }
+  // Google Drive is an SPA; complete fires before the result grid finishes.
+  await sleepMs(1600);
+}
+
+async function driveExtract(tab, action, phase, query) {
+  const target = JSON.stringify({ phase, query });
+  const result = await sendToContent(tab, {
+    ...action,
+    kind: "BROWSER_DRIVE_INSPECT_FOLDER",
+    target,
+  });
+  return result?.drive_state || result?.list_state || result || {};
+}
+
+function scoreDriveItem(item, terms, folderOnly) {
+  if (!item || typeof item !== "object") return 0;
+  const name = normalizeDriveTerm(item.name || "");
+  const haystack = normalizeDriveTerm([
+    item.name,
+    item.aria_label,
+    item.text,
+    item.kind
+  ].filter(Boolean).join(" "));
+  let score = item.selected ? 35 : 0;
+  if (item.is_folder) score += 20;
+  if (folderOnly && item.kind === "file") score -= 20;
+  for (const term of terms) {
+    const t = normalizeDriveTerm(term);
+    if (!t) continue;
+    if (name === t) score += 80;
+    else if (name.includes(t)) score += 45;
+    else if (haystack.includes(t)) score += 25;
+  }
+  return score;
+}
+
+function pickDriveItem(state, opts) {
+  const items = Array.isArray(state?.items) ? state.items : [];
+  const scored = items
+    .map((item) => ({ item, score: scoreDriveItem(item, opts.variants, opts.folderOnly) }))
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.item || null;
+}
+
+function summarizeDriveState(state) {
+  if (!state || typeof state !== "object") return "No Drive state returned.";
+  if (state.empty) {
+    return `Drive folder appears empty (${state.empty_reason || "empty-state text visible"}).`;
+  }
+  const items = Array.isArray(state.items) ? state.items : [];
+  if (!items.length) return state.summary || "No visible Drive items were extracted.";
+  const names = items.slice(0, 12).map((item) => {
+    const suffix = item.kind && item.kind !== "unknown" ? ` (${item.kind})` : "";
+    return `${item.name || item.aria_label || "unnamed"}${suffix}`;
+  });
+  const extra = items.length > names.length ? ` and ${items.length - names.length} more` : "";
+  return `Drive items: ${names.join("; ")}${extra}.`;
+}
+
+async function openDriveItem(tab, item) {
+  if (item?.href && /^https:\/\/drive\.google\.com\//i.test(item.href)) {
+    await chrome.tabs.update(tab.id, { url: item.href });
+    invalidatePageContext(tab.id);
+    return { method: "href", href: item.href };
+  }
+  if (!item?.selector) throw new Error("matching Drive item has no selector");
+  const result = await sendToContent(tab, {
+    kind: "BROWSER_DOUBLE_CLICK",
+    target: item.selector,
+  });
+  if (!result?.ok) throw new Error(result?.error || "Drive item open failed");
+  invalidatePageContext(tab.id);
+  return { method: "double_click", selector: item.selector };
+}
+
+async function inspectDriveFolderWorkflow(tab, action) {
+  const opts = parseDriveInspectTarget(action);
+  const searchStates = [];
+  let lastUrl = tab?.url || "";
+
+  for (const variant of opts.variants.slice(0, opts.maxSearches)) {
+    const searchUrl = `https://drive.google.com/drive/search?q=${encodeURIComponent(variant)}`;
+    await chrome.tabs.update(tab.id, { url: searchUrl });
+    invalidatePageContext(tab.id);
+    await waitForTabSettled(tab.id);
+    tab = await chrome.tabs.get(tab.id);
+    lastUrl = tab?.url || searchUrl;
+    const searchState = await driveExtract(tab, action, "search", variant);
+    searchStates.push({
+      variant,
+      url: searchState.url || lastUrl,
+      summary: summarizeDriveState(searchState),
+      empty: Boolean(searchState.empty),
+      items: Array.isArray(searchState.items) ? searchState.items.slice(0, 20) : [],
+    });
+    const match = pickDriveItem(searchState, opts);
+    if (!match) continue;
+
+    const openResult = await openDriveItem(tab, match);
+    await waitForTabSettled(tab.id);
+    tab = await chrome.tabs.get(tab.id);
+    const folderState = await driveExtract(tab, action, "folder", variant);
+    const observedUrl = await readObservedTabUrl(tab);
+    const summary = summarizeDriveState(folderState);
+    return {
+      ok: true,
+      drive_workflow: "folder_inspected",
+      query: opts.query,
+      matched_variant: variant,
+      found_item: match,
+      open_result: openResult,
+      observed_tab_url: observedUrl,
+      search_states: searchStates,
+      folder_state: folderState,
+      text: summary,
+    };
+  }
+
+  return {
+    ok: true,
+    drive_workflow: "no_matching_folder",
+    query: opts.query,
+    observed_tab_url: lastUrl,
+    search_states: searchStates,
+    text: `No matching Drive folder was extracted after searching: ${opts.variants.slice(0, opts.maxSearches).join(", ")}.`,
+  };
+}
+
 async function rejectAction(action, row) {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
   setActionStatus(row, "Rejected");
@@ -613,8 +851,15 @@ async function renderActions(actions = [], blockedActions = []) {
 
   const all = [
     ...actions.map((action) => {
-      const classification = classifyBrowserAction(action);
-      return { ...action, blocked: false, classification, gated_by: classification.gated_by };
+      const origin = actionOrigin(action, tab);
+      const classification = classifyBrowserAction(action, origin);
+      return {
+        ...action,
+        blocked: Boolean(classification.blocked),
+        reason: classification.reason || action.reason,
+        classification,
+        gated_by: classification.gated_by
+      };
     }),
     ...blockedActions.map((action) => ({ ...action, blocked: true }))
   ];

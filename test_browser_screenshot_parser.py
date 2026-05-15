@@ -78,6 +78,34 @@ class ApiParseActionsTests(unittest.TestCase):
         reply = "I took a screenshot of this page for you."
         self.assertEqual(_api_parse_actions(reply, model="cloud_fast"), [])
 
+    def test_drive_inspect_line_yields_action(self):
+        reply = 'BROWSER_DRIVE_INSPECT_FOLDER: {"query":"resume","variants":["Resume","resume"]}'
+        actions = _api_parse_actions(reply, model="cloud_fast", source="chrome_extension", mode="auto")
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["kind"], "BROWSER_DRIVE_INSPECT_FOLDER")
+        self.assertEqual(actions[0]["risk"], "safe")
+        self.assertFalse(actions[0]["requires_confirm"])
+
+    def test_new_browser_observation_actions_parse(self):
+        reply = "\n".join([
+            "BROWSER_WAIT: 2000",
+            "BROWSER_SCROLL: down",
+            "BROWSER_FIND: Resume",
+            "BROWSER_EXTRACT_LIST: drive",
+            "BROWSER_DOUBLE_CLICK: [aria-label='Resume']",
+        ])
+        actions = _api_parse_actions(reply, model="cloud_fast", source="chrome_extension", mode="auto")
+        self.assertEqual(
+            [a["kind"] for a in actions],
+            [
+                "BROWSER_WAIT",
+                "BROWSER_SCROLL",
+                "BROWSER_FIND",
+                "BROWSER_EXTRACT_LIST",
+                "BROWSER_DOUBLE_CLICK",
+            ],
+        )
+
     def test_indented_bare_screenshot_yields_action(self):
         reply = "  BROWSER_SCREENSHOT:"
         actions = _api_parse_actions(reply, model="cloud_fast")

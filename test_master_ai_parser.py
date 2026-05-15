@@ -1163,7 +1163,7 @@ class DirectiveParserTests(unittest.TestCase):
             "[API REQUEST]\n"
             "source: chrome_extension\n"
             "Branch B: do not execute local machine or browser actions inside the backend request.\n"
-            "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.\n"
+            "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.\n"
             "\n"
             "[BROWSER PAGE CONTEXT]\n"
             "url: https://www.indeed.com/\n"
@@ -1182,6 +1182,58 @@ class DirectiveParserTests(unittest.TestCase):
             decision.get("route"), "link_lookup",
             f"router misrouted form-fill prompt to link_lookup; envelope chrome words leaked. decision={decision!r}",
         )
+
+    def test_chrome_extension_page_context_skips_pre_model_shortcircuits(self):
+        # Browser page-context turns must reach a real model-bearing lane so
+        # the model can inspect the page state and emit BROWSER_* directives.
+        # These prompts are chosen because the raw TUI path would normally be
+        # eligible for deterministic shortcuts: weather, system query,
+        # desktop launch, link lookup, or scope check.
+        master_ai.MODE = "auto"
+        model_routes = {"local", "cloud", "cloud_fast", "cloud_deep", "cloud_vision"}
+        forbidden_routes = {
+            "weather", "system_query", "desktop_launch", "link_lookup",
+            "scope_check", "ask_user", "cached", "time_sensitive_warn",
+            "recall_memory",
+        }
+
+        def envelope(user_prompt):
+            return (
+                "[API REQUEST]\n"
+                "source: chrome_extension\n"
+                "Branch B: do not execute local machine or browser actions inside the backend request.\n"
+                "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.\n"
+                "\n"
+                "[BROWSER PAGE CONTEXT]\n"
+                "url: https://www.indeed.com/jobs?q=elevator+helper\n"
+                "title: Elevator Helper Jobs | Indeed\n"
+                "interactive_elements: 1. button \"Easy apply\" selector=button[data-testid='indeedApplyButton']\n"
+                "2. link \"Elevator Helper\" selector=a[data-jk='abc123']\n"
+                "visible_text: Elevator Helper Easy apply Apply now Company benefits\n"
+                "\n"
+                "[USER PROMPT]\n"
+                f"{user_prompt}"
+            )
+
+        cases = (
+            "what's the weather",
+            "where is CLAUDE.md on my computer",
+            "open hypnotix",
+            "official GitHub ebey317",
+            "can you fill out an application from start to finish?",
+        )
+        for prompt in cases:
+            with self.subTest(prompt=prompt):
+                decision = master_ai.orchestrate([], envelope(prompt))
+                self.assertIn(
+                    decision.get("route"), model_routes,
+                    f"chrome page-context turn did not reach a model-bearing route. decision={decision!r}",
+                )
+                self.assertNotIn("synth_reply", decision)
+                self.assertNotIn(
+                    decision.get("route"), forbidden_routes,
+                    f"chrome page-context turn hit a pre-model shortcut. decision={decision!r}",
+                )
 
     def test_chrome_extension_envelope_does_not_leak_into_tool_required(self):
         # Sibling probe to the link_lookup fix: words from [BROWSER PAGE

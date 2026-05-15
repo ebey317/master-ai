@@ -38,7 +38,7 @@ def _wrap(user_text: str, page_url: str = "https://www.google.com/") -> str:
         "[API REQUEST]\n"
         "source: chrome_extension\n"
         "Branch B: do not execute local machine or browser actions inside the backend request.\n"
-        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.\n"
+        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.\n"
         "\n"
         "[BROWSER PAGE CONTEXT]\n"
         f"url: {page_url}\n"

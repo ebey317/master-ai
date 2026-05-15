@@ -77,7 +77,7 @@ _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
 _ACTION_LINE_RE = re.compile(
-    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT):\s*(.*?)\s*$",
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -441,7 +441,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         lines.append(f"continuation_round: {round_num}{budget_str}")
     lines.extend([
         "Branch B: do not execute local machine or browser actions inside the backend request.",
-        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.",
+        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.",
         "The HTTP API will return directives as actions[] for the extension to confirm.",
         "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.",
         "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.",
@@ -648,7 +648,11 @@ def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
         target = "viewport"
     if not kind or not target:
         return None
-    risk = "safe" if kind in ("READ", "BROWSER_READ") else "normal"
+    risk = "safe" if kind in (
+        "READ", "BROWSER_READ", "BROWSER_SCREENSHOT", "BROWSER_WAIT",
+        "BROWSER_SCROLL", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
+        "BROWSER_DRIVE_INSPECT_FOLDER",
+    ) else "normal"
     return {
         "id": str(uuid.uuid4()),
         "kind": kind,

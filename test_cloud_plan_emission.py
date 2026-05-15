@@ -56,7 +56,7 @@ USER_PROMPT = (
     "[API REQUEST]\n"
     "source: chrome_extension\n"
     "Branch B: do not execute local machine or browser actions inside the backend request.\n"
-    "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, or BROWSER_SCREENSHOT directives.\n"
+    "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.\n"
     "The HTTP API will return directives as actions[] for the extension to confirm.\n"
     "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.\n"
     "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.\n"
@@ -120,6 +120,7 @@ def _build_cloud_system():
         "BROWSER_READ: <css-selector>\n"
         "BROWSER_NAV: <url>\n"
         "BROWSER_SCREENSHOT: viewport\n\n"
+        "BROWSER_DRIVE_INSPECT_FOLDER: {\"query\":\"resume\"}\n\n"
         + PLAN_AS_BLOCK_CONTRACT
     )
 
