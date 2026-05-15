@@ -2359,6 +2359,144 @@ async function renderActions(actions = [], blockedActions = []) {
   }
 }
 
+// Phase 6 — Quick Mode parser + executor + screenshot-feedback loop.
+// The model emits one single-letter command per reply terminated by the
+// literal token `<<END>>`. We parse, run, capture a screenshot, and send the
+// next /chat round with the screenshot as page_context — up to 8 rounds.
+const QUICK_MODE_MAX_ROUNDS = 8;
+
+function parseQuickCommand(reply) {
+  if (!reply) return null;
+  // Drop everything from the literal token onward; first non-empty line wins.
+  const text = String(reply).split("<<END>>")[0].trim();
+  if (!text) return null;
+  const line = text.split(/\r?\n/).find((l) => l.trim()) || "";
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  if (/^DONE\s*:/i.test(trimmed)) {
+    return { op: "done", summary: trimmed.replace(/^DONE\s*:\s*/i, "") };
+  }
+  const m = trimmed.match(/^(C|T|K|N|J|W|ST)\b\s*([\s\S]*)$/i);
+  if (!m) return null;
+  const op = m[1].toUpperCase();
+  const rest = (m[2] || "").trim();
+  if (op === "C") {
+    const parts = rest.split(/\s+/);
+    const x = Number(parts[0]); const y = Number(parts[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { op: "click", x, y };
+  }
+  if (op === "T") return { op: "type", text: rest };
+  if (op === "K") return { op: "key", key: rest.split(/\s+/)[0] || "" };
+  if (op === "N") return { op: "nav", url: rest };
+  if (op === "J") return { op: "js", source: rest };
+  if (op === "W") {
+    const ms = Number(rest.split(/\s+/)[0]);
+    return { op: "wait", ms: Number.isFinite(ms) ? Math.min(Math.max(ms, 0), 10000) : 500 };
+  }
+  if (op === "ST") {
+    const tabId = Number(rest.split(/\s+/)[0]);
+    return Number.isFinite(tabId) ? { op: "switch_tab", tabId } : null;
+  }
+  return null;
+}
+
+async function dispatchQuickCommand(tab, cmd, timings = {}) {
+  if (!cmd) return { ok: false, error: "no command parsed" };
+  if (cmd.op === "click") {
+    return dispatchCdpMouse(tab, { target: JSON.stringify({ action: "click", x: cmd.x, y: cmd.y }) }, timings);
+  }
+  if (cmd.op === "type") {
+    return dispatchCdpKey(tab, { target: `type ${cmd.text}` }, timings);
+  }
+  if (cmd.op === "key") {
+    if (!cmd.key) return { ok: false, error: "K command requires a key name" };
+    return dispatchCdpKey(tab, { target: `press ${cmd.key}` }, timings);
+  }
+  if (cmd.op === "nav") {
+    if (!cmd.url) return { ok: false, error: "N command requires a URL" };
+    // Reuse the Phase 1 classifier guard via originBlockedReason.
+    await ensureOriginsClassified([cmd.url]);
+    const reason = originBlockedReason(cmd.url);
+    if (reason) return { ok: false, error: `nav blocked: ${reason}` };
+    await chrome.tabs.update(tab.id, { url: normalizeUrl(cmd.url) });
+    await waitForTabSettled(tab.id, 8000);
+    try { recordObservedOrigin(await chrome.tabs.get(tab.id)); } catch (_err) {}
+    invalidatePageContext(tab.id);
+    return { ok: true, navigated: cmd.url };
+  }
+  if (cmd.op === "js") {
+    return dispatchBrowserJs(tab, { target: cmd.source }, timings);
+  }
+  if (cmd.op === "wait") {
+    await new Promise((resolve) => setTimeout(resolve, cmd.ms));
+    return { ok: true, waited_ms: cmd.ms };
+  }
+  if (cmd.op === "switch_tab") {
+    try {
+      await chrome.tabs.update(cmd.tabId, { active: true });
+      return { ok: true, switched_to: cmd.tabId };
+    } catch (err) {
+      return { ok: false, error: `switch_tab failed: ${err?.message || err}` };
+    }
+  }
+  return { ok: false, error: `unknown op ${cmd.op}` };
+}
+
+async function runQuickModeLoop(originalPrompt, firstData, timings) {
+  let data = firstData;
+  for (let round = 1; round <= QUICK_MODE_MAX_ROUNDS; round += 1) {
+    const cmd = parseQuickCommand(data?.reply || "");
+    if (!cmd) {
+      appendMessage("assistant", "[Quick Mode] no parsable command; stopping loop.");
+      break;
+    }
+    if (cmd.op === "done") {
+      appendMessage("assistant", `[Quick Mode] DONE round ${round}: ${cmd.summary || "(no summary)"}`);
+      break;
+    }
+    const tab = await activeTab().catch(() => null);
+    if (!tab?.id) {
+      appendMessage("assistant", "[Quick Mode] no active tab; stopping loop.");
+      break;
+    }
+    const result = await dispatchQuickCommand(tab, cmd, timings);
+    appendMessage("assistant",
+      `[Quick Mode r${round}] ${cmd.op}${result?.ok ? " ✓" : ` ✗ ${result?.error || "failed"}`}`);
+    if (!result?.ok) break;
+    // Capture screenshot for the next round.
+    let screenshotDataUrl = "";
+    try {
+      const capture = await chrome.runtime.sendMessage({
+        type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
+      });
+      if (capture?.ok) screenshotDataUrl = capture.dataUrl || "";
+    } catch (_err) { /* non-fatal */ }
+    if (round >= QUICK_MODE_MAX_ROUNDS) {
+      appendMessage("assistant", `[Quick Mode] hit ${QUICK_MODE_MAX_ROUNDS}-round cap; stopping.`);
+      break;
+    }
+    // Continuation round.
+    const tabsContext = await gatherTabsContext();
+    const nextBody = {
+      prompt: originalPrompt,
+      mode: "quick",
+      source: "chrome_extension",
+      session_id: state.config.sessionId,
+      parent_turn_id: data?.turn_id || null,
+      page_context: { screenshot_data_url: screenshotDataUrl.slice(0, 200000) },
+    };
+    if (tabsContext.length) nextBody.tabs_context = tabsContext;
+    try {
+      data = await backendFetch("/chat", { method: "POST", body: nextBody });
+      appendMessage("assistant", cleanReply(data.reply || ""));
+    } catch (err) {
+      appendMessage("assistant", `[Quick Mode] backend error: ${err.message}`);
+      break;
+    }
+  }
+}
+
 async function sendPrompt() {
   const input = $("#promptInput");
   const prompt = input.value.trim();
@@ -2441,11 +2579,18 @@ async function sendPrompt() {
     const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);
-    startLoop(data);
     appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
-    await renderActions(data.actions || [], data.blocked_actions || []);
-    maybeWarnSilentClaim(data.reply, data.actions || [], data);
+    // Phase 6 — Quick Mode bypasses the actions[] approval flow. The reply
+    // body carries one single-letter command + `<<END>>`; we parse, run, and
+    // auto-continue with a fresh screenshot as page_context.
+    if (body.mode === "quick") {
+      await runQuickModeLoop(prompt, data, timings);
+    } else {
+      startLoop(data);
+      await renderActions(data.actions || [], data.blocked_actions || []);
+      maybeWarnSilentClaim(data.reply, data.actions || [], data);
+    }
     setConnection("Backend ready");
   } catch (err) {
     appendError(err.message);

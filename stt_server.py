@@ -728,10 +728,38 @@ def _format_tabs_context(tabs_context):
     return "\n".join(lines)
 
 
+def _quick_mode_teaching():
+    """Phase 6 — Quick Mode instructs the model to emit one single-letter
+    command per reply, ending with `\\n<<END>>`. The extension parses and
+    executes one at a time, then sends a fresh /chat round with a screenshot
+    as page_context. This mirrors Anthropic's Quick Mode shape on top of
+    Lane B's existing routing (no stop_sequences param needed because the
+    teaching keeps replies short on its own)."""
+    return (
+        "QUICK MODE — emit exactly ONE single-letter command per reply, then "
+        "the literal token `<<END>>` on its own line. The extension parses "
+        "and executes the command, takes a fresh screenshot, and sends the "
+        "next round. Commands (case-insensitive):\n"
+        "  C x y               click at viewport pixel x,y\n"
+        "  T <text>            type text into the focused element\n"
+        "  K <key>             press a single key (Enter / Tab / Escape / Backspace / ArrowDown / etc.)\n"
+        "  N <url>             navigate the active tab to URL\n"
+        "  J <expr>            evaluate a JS expression in the page\n"
+        "  W <ms>              wait N milliseconds for SPA settling\n"
+        "  ST <tabId>          switch focus to that tab in the session group\n"
+        "Reply shape:\n"
+        "  one_command_line\n"
+        "  <<END>>\n"
+        "Do NOT emit the BROWSER_* directives in Quick Mode. Do NOT emit\n"
+        "multiple commands in one reply. When the goal is reached, reply with\n"
+        "`DONE: <one-line summary>` followed by `<<END>>`.\n"
+    )
+
+
 def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
                 action_results=None, round_num=1, round_budget=None,
                 request_id="", resume_path="", local_file_hints=None,
-                tabs_context=None):
+                tabs_context=None, mode=""):
     context, scrub_meta = _format_page_context(page_context)
     # Audit even if no formatted context survived (e.g., every field was empty
     # after sanitize) — the scrub still happened and Elijah needs the row.
@@ -748,6 +776,11 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         "[API REQUEST]",
         f"source: {_safe_context_text(source or 'pupil', 80)}",
     ]
+    # Phase 6 — inject Quick Mode teaching at the top of the prompt so it
+    # frames every other instruction the model reads below it.
+    if str(mode or "").lower() == "quick":
+        lines.append("")
+        lines.append(_quick_mode_teaching())
     if resume_path:
         # Phase 2.1: tell the model where the user's résumé file is. Used by
         # the model to emit BROWSER_FILL targets like
@@ -1300,7 +1333,7 @@ def api_handle(payload):
     if not prompt:
         raise ValueError("missing prompt")
     mode_req = (payload.get("mode") or "").strip().lower()
-    if mode_req and mode_req not in ("plan", "review", "auto"):
+    if mode_req and mode_req not in ("plan", "review", "auto", "quick"):
         raise ValueError("invalid mode")
     # Compute the effective mode once. Used by _api_parse_actions to set
     # status taxonomy (planned/waiting_for_approval/running) and by the
@@ -1315,7 +1348,7 @@ def api_handle(payload):
     _m_module_for_mode = sys.modules.get("master_ai")
     _module_mode_default = getattr(_m_module_for_mode, "MODE", "plan") if _m_module_for_mode else "plan"
     effective_mode = (mode_req or _module_mode_default or "plan").lower()
-    if effective_mode not in ("plan", "review", "auto"):
+    if effective_mode not in ("plan", "review", "auto", "quick"):
         effective_mode = "plan"
 
     source_raw = payload.get("source")
@@ -1410,6 +1443,7 @@ def api_handle(payload):
         resume_path=str(payload.get("resume_path") or "").strip(),
         local_file_hints=payload.get("local_file_hints") if isinstance(payload.get("local_file_hints"), dict) else None,
         tabs_context=tabs_context,
+        mode=effective_mode,
     )
 
     # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
