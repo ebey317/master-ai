@@ -856,13 +856,109 @@ function actionOrigin(action, tab) {
   return originForUrl(tab?.url || "");
 }
 
+// Phase 1.2 — PermissionManager taxonomy. Eight named types per the
+// Claude-for-Chrome reference (claude.com/chrome), two durations. This
+// module labels the existing approvedOrigins + permissionDecision flow
+// rather than replacing it — the binary "is this origin allowed for this
+// action" check still gates dispatch, and "always" still maps to
+// state.config.approvedOrigins. The taxonomy gives audit logs and
+// reportAction() a stable vocabulary that maps to the spec.
+const PermissionType = Object.freeze({
+  NAVIGATE: "NAVIGATE",
+  READ_PAGE_CONTENT: "READ_PAGE_CONTENT",
+  CLICK: "CLICK",
+  TYPE: "TYPE",
+  UPLOAD_IMAGE: "UPLOAD_IMAGE",
+  PLAN_APPROVAL: "PLAN_APPROVAL",
+  REMOTE_MCP: "REMOTE_MCP",
+  DOMAIN_TRANSITION: "DOMAIN_TRANSITION",
+});
+
+const PermissionDuration = Object.freeze({
+  ONCE: "once",     // tied to action.id; auto-revoked when the action completes
+  ALWAYS: "always", // persistent per-domain via state.config.approvedOrigins
+});
+
+const PermissionManager = {
+  // Maps an action to one of the 8 permission types. Returns null for
+  // actions that don't carry a permission gate (e.g. backend-only directives
+  // that never reach the extension).
+  typeFor(action, contextOrigin = "") {
+    const kind = String(action?.kind || "").toUpperCase();
+    const target = String(action?.target || "").toLowerCase();
+    if (kind === "BROWSER_NAV") {
+      // DOMAIN_TRANSITION when the target is an explicit URL whose origin
+      // differs from the current tab. Bareword / relative-path targets stay
+      // NAVIGATE — the backend's normalizeUrl already injects the scheme,
+      // and being conservative here avoids false DOMAIN_TRANSITION labels
+      // on intra-origin navigations.
+      if (/^https?:/i.test(target)) {
+        try {
+          const targetOrigin = new URL(target).origin;
+          if (contextOrigin && targetOrigin && contextOrigin !== targetOrigin) {
+            return PermissionType.DOMAIN_TRANSITION;
+          }
+        } catch (_err) { /* malformed → still NAVIGATE */ }
+      }
+      return PermissionType.NAVIGATE;
+    }
+    if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE" || kind === "BROWSER_READ") {
+      return PermissionType.READ_PAGE_CONTENT;
+    }
+    if (kind === "BROWSER_CLICK" || kind === "BROWSER_DOUBLE_CLICK" ||
+        kind === "BROWSER_SCROLL" || kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
+      return PermissionType.CLICK;
+    }
+    if (kind === "BROWSER_FILL") {
+      // File upload uses CDP DOM.setFileInputFiles; UPLOAD_IMAGE per spec
+      // even when the file isn't strictly an image (the type covers any
+      // local-file payload landing in the page).
+      if (action?.file_payload || /file:\/\//.test(target)) return PermissionType.UPLOAD_IMAGE;
+      return PermissionType.TYPE;
+    }
+    if (kind === "BROWSER_SCREENSHOT") return PermissionType.READ_PAGE_CONTENT;
+    return null;
+  },
+
+  // True when the action is permitted to run without an additional approval
+  // gate. Used by audit + diagnostic surfaces; the dispatch path itself
+  // still uses the existing classifyBrowserAction + approvedOrigins logic.
+  isGranted(action, origin = "") {
+    if (!origin) return false;
+    return Array.isArray(state.config.approvedOrigins) &&
+           state.config.approvedOrigins.includes(origin);
+  },
+
+  // Map an existing "permissionDecision" string to a duration.
+  durationFor(decision) {
+    if (decision === "always_allow_site") return PermissionDuration.ALWAYS;
+    if (decision === "auto") return PermissionDuration.ONCE;
+    if (decision === "allow_once") return PermissionDuration.ONCE;
+    return PermissionDuration.ONCE;
+  },
+
+  // Build the audit envelope a reportAction() consumer can store.
+  envelopeFor(action, origin, decision) {
+    const type = this.typeFor(action, origin);
+    return {
+      permission_type: type,
+      permission_duration: this.durationFor(decision),
+      permission_decision: decision || "",
+      origin: origin || "",
+    };
+  },
+};
+
 async function rememberPermission(decision, origin, action) {
+  const envelope = PermissionManager.envelopeFor(action, origin, decision);
   const entry = {
     ts: new Date().toISOString(),
     decision,
     origin: origin || "",
     kind: action?.kind || "",
-    target: String(action?.target || "").slice(0, 300)
+    target: String(action?.target || "").slice(0, 300),
+    permission_type: envelope.permission_type,
+    permission_duration: envelope.permission_duration,
   };
   state.config.permissionHistory = [entry, ...(state.config.permissionHistory || [])].slice(0, 100);
   await chromeSet({ permissionHistory: state.config.permissionHistory });
@@ -1260,6 +1356,9 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       permission: permissionDecision,
       origin,
       observed_tab_url: observedTabUrl,
+      // Phase 1.2 — typed permission envelope alongside the legacy decision
+      // string. Backend / audit can read either field.
+      permission_envelope: PermissionManager.envelopeFor(action, origin, permissionDecision),
     };
     reportAction(action, "accept", ok ? "success" : "failure", finalState);
     recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
