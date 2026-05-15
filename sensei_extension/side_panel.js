@@ -632,6 +632,92 @@ async function dispatchCdpMouse(tab, action, timings = {}) {
   }
 }
 
+// Phase 3.2 — CDP-driven keyboard dispatch. Parses BROWSER_CDP_KEY targets:
+//   shorthand: "type <text>"           — emit char events for every char
+//   shorthand: "press <key> [modifiers]" — keyDown + keyUp on one key
+//   shorthand: "down <key> [modifiers]"  — keyDown only
+//   shorthand: "up <key> [modifiers]"    — keyUp only
+//   JSON: {"action":"press","key":"Enter","modifiers":4,"code":"Enter"}
+// Modifiers bitmask (CDP): Alt=1, Ctrl=2, Meta=4, Shift=8.
+function _keyToCode(key) {
+  const k = String(key || "");
+  if (k.length === 1) {
+    if (/[a-zA-Z]/.test(k)) return "Key" + k.toUpperCase();
+    if (/[0-9]/.test(k)) return "Digit" + k;
+  }
+  const named = {
+    Enter: "Enter", Tab: "Tab", Escape: "Escape", Backspace: "Backspace",
+    Space: "Space", " ": "Space",
+    ArrowUp: "ArrowUp", ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight",
+    Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+    Delete: "Delete", Insert: "Insert",
+    F1:"F1", F2:"F2", F3:"F3", F4:"F4", F5:"F5", F6:"F6", F7:"F7", F8:"F8",
+    F9:"F9", F10:"F10", F11:"F11", F12:"F12",
+  };
+  return named[k] || k;
+}
+
+function _parseCdpKeyTarget(rawTarget) {
+  const raw = String(rawTarget || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === "object") return obj;
+    } catch (_err) { /* fall through */ }
+  }
+  // First word is the action verb; rest is action-specific.
+  const m = raw.match(/^(\S+)\s+([\s\S]+)$/);
+  if (!m) return null;
+  const action = m[1].toLowerCase();
+  const rest = m[2];
+  if (action === "type") {
+    return { action: "type", text: rest };
+  }
+  if (action === "press" || action === "down" || action === "up") {
+    const parts = rest.trim().split(/\s+/);
+    const key = parts[0];
+    const modifiers = parts[1] !== undefined ? Number(parts[1]) : 0;
+    return { action, key, modifiers: Number.isFinite(modifiers) ? modifiers : 0 };
+  }
+  return null;
+}
+
+async function dispatchCdpKey(tab, action, timings = {}) {
+  const parsed = _parseCdpKeyTarget(action?.target);
+  if (!parsed) {
+    return { ok: false, error: "BROWSER_CDP_KEY target malformed; use `type <text>`, `press <key> [modifiers]`, or JSON" };
+  }
+  const op = String(parsed.action || "press").toLowerCase();
+  const modifiers = Number.isFinite(Number(parsed.modifiers)) ? Number(parsed.modifiers) : 0;
+  try {
+    return await withChromeDebugger(tab, timings, async (send) => {
+      if (op === "type") {
+        const text = String(parsed.text || "");
+        if (!text) return { ok: false, error: "type action requires non-empty text" };
+        for (const ch of text) {
+          await send("Input.dispatchKeyEvent", { type: "char", text: ch });
+        }
+        return { ok: true, action: "type", chars: text.length };
+      }
+      const key = String(parsed.key || "");
+      if (!key) return { ok: false, error: "press/down/up requires key" };
+      const code = String(parsed.code || _keyToCode(key));
+      const base = { key, code, modifiers };
+      if (op === "down" || op === "press") {
+        await send("Input.dispatchKeyEvent", { ...base, type: "keyDown" });
+      }
+      if (op === "up" || op === "press") {
+        await send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
+      }
+      return { ok: true, action: op, key, modifiers };
+    });
+  } catch (err) {
+    return { ok: false, error: `cdp key dispatch failed: ${err?.message || err}` };
+  }
+}
+
 async function withChromeDebugger(tab, timings, fn) {
   if (!chrome.debugger?.attach || !tab?.id) throw new Error("chrome.debugger unavailable");
   const target = { tabId: tab.id };
@@ -1443,6 +1529,14 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       if (result?.ok) {
         // CDP clicks can cause navigation; settle and invalidate so the next
         // action reads a fresh page_context.
+        await waitForTabSettled(tab.id, 4000);
+      }
+      invalidatePageContext(tab.id);
+    } else if (kind === "BROWSER_CDP_KEY") {
+      result = await dispatchCdpKey(tab, action, timings);
+      if (result?.ok) {
+        // Enter / Escape / shortcut keys can submit forms or trigger SPA
+        // routes. Treat the same way as a CDP mouse click.
         await waitForTabSettled(tab.id, 4000);
       }
       invalidatePageContext(tab.id);

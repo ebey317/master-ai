@@ -10984,6 +10984,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "BROWSER_SCROLL: <up|down|top|bottom|N>   — scroll the active page and return updated context\n"
         "BROWSER_DOUBLE_CLICK: <css-selector>     — double-click/open an item on the active page\n"
         "BROWSER_CDP_MOUSE: <json or shorthand>   — low-level mouse via Chrome DevTools Protocol; use ONLY when BROWSER_CLICK can't reach (canvas, custom widget, SVG button without a stable selector). JSON form: {\"action\":\"click\",\"x\":300,\"y\":400} or {\"action\":\"wheel\",\"x\":0,\"y\":0,\"deltaY\":100}. Shorthand: `click 300 400` or `wheel 0 0 0 100`.\n"
+        "BROWSER_CDP_KEY: <json or shorthand>     — low-level keyboard via CDP; use ONLY when BROWSER_FILL can't drive the input (custom widget that listens for keydown, modal opened by Escape, in-app shortcuts like Ctrl+S). Shorthand: `type Hello world`, `press Enter`, `press s 2` (Ctrl+S; modifiers bitmask Alt=1,Ctrl=2,Meta=4,Shift=8). JSON: {\"action\":\"press\",\"key\":\"Enter\",\"modifiers\":2}.\n"
         "BROWSER_FIND: <text>                     — find visible elements containing text and return selectors\n"
         "BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items\n"
         "BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — extract the current Google Drive view only (items, empty flag, selectors); it does not search or open folders\n"
