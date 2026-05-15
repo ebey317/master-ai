@@ -184,6 +184,29 @@ button:disabled {
   background: var(--panel);
 }
 
+.action-item.plan-card {
+  /* Approve-All summary card surfaces multi-step turns as a single
+     reviewable plan per the Anthropic spec. Distinguished from regular
+     per-action cards with the brand accent border + slightly heavier
+     background. */
+  border: 1.5px solid var(--accent);
+  background: #f0fbf8;
+}
+
+.plan-steps {
+  margin: 4px 0 0;
+  padding: 0 0 0 22px;
+  list-style: decimal;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.plan-steps li {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+}
+
 .action-main {
   display: flex;
   align-items: center;

@@ -622,6 +622,96 @@ async function renderActions(actions = [], blockedActions = []) {
   // status taxonomy already honored by shouldAutoRunAction.
   const currentMode = ($("#modeSelect")?.value || state.config.mode || "review").toLowerCase();
 
+  // Anthropic-spec "Ask before acting" UI: when the model emits 3+
+  // pending browser actions in one round AND none of them auto-flow
+  // yet (no Always-allow on the origin, none read-only), surface a
+  // single "Approve All" header card at the top of the dock instead
+  // of forcing the user to approve 11 cards one at a time. This
+  // matches "Review Claude's approach once, then let it run" without
+  // depending on whether the model emitted a literal <PLAN>…</PLAN>
+  // block in its reply text (the cloud lane emits the block; the
+  // local 7B doesn't reliably). The actions are the same data either
+  // way — this is render, not a workaround.
+  const tabOrigin = tab ? actionOrigin(all[0] || {}, tab) : "";
+  const pendingActions = all.filter((action) => {
+    if (action.blocked) return false;
+    const isPlanned = String(action?.status || "").toLowerCase() === "planned";
+    const isPlanInert = currentMode === "plan" && isPlanned;
+    if (isPlanInert) return false;
+    const o = actionOrigin(action, tab);
+    if (shouldAutoRunAction(action, o)) return false;
+    return true;
+  });
+  const showApproveAll = currentMode !== "plan" && pendingActions.length >= 3;
+
+  // Row lookup map for the Approve-All click handler — keyed by the
+  // action object identity, so we don't depend on stable action.id
+  // being present on every dispatcher version.
+  const _actionRows = new Map();
+
+  if (showApproveAll) {
+    const planCard = document.createElement("section");
+    planCard.className = "action-item plan-card";
+    const heading = document.createElement("div");
+    heading.className = "action-main";
+    const headLabel = document.createElement("span");
+    headLabel.className = "kind";
+    headLabel.textContent = "PLAN";
+    const headSummary = document.createElement("span");
+    headSummary.className = "target";
+    headSummary.textContent =
+      `${pendingActions.length} actions on ${tabOrigin || "this page"} — review and approve once`;
+    heading.append(headLabel, headSummary);
+
+    const stepsList = document.createElement("ol");
+    stepsList.className = "plan-steps";
+    pendingActions.forEach((action) => {
+      const li = document.createElement("li");
+      const k = String(action.kind || "").replace(/^BROWSER_/, "").toLowerCase();
+      const t = String(action.target || "").slice(0, 100);
+      li.textContent = `${k}: ${t}`;
+      stepsList.appendChild(li);
+    });
+
+    const buttons = document.createElement("div");
+    buttons.className = "action-buttons";
+    const approveAll = document.createElement("button");
+    approveAll.className = "primary";
+    approveAll.type = "button";
+    approveAll.textContent = "Approve all";
+    approveAll.addEventListener("click", async () => {
+      buttons.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
+      // Remember the origin once so subsequent actions on this page
+      // flow through auto-run on future rounds too (Phase 4 semantics).
+      const origin = tabOrigin || actionOrigin(pendingActions[0], tab);
+      if (origin) {
+        await allowOrigin(origin, pendingActions[0]).catch(() => null);
+      }
+      for (const action of pendingActions) {
+        const row = _actionRows.get(action);
+        if (row) await approveAction(action, row, "always_allow_site");
+      }
+    });
+    buttons.appendChild(approveAll);
+
+    const declineAll = document.createElement("button");
+    declineAll.className = "reject";
+    declineAll.type = "button";
+    declineAll.textContent = "Decline all";
+    declineAll.addEventListener("click", () => {
+      buttons.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
+      pendingActions.forEach((action) => {
+        const row = _actionRows.get(action);
+        if (row) rejectAction(action, row);
+      });
+    });
+    buttons.appendChild(declineAll);
+
+    heading.appendChild(buttons);
+    planCard.append(heading, stepsList);
+    list.appendChild(planCard);
+  }
+
   for (const action of all) {
     const row = document.createElement("section");
     row.className = "action-item";
@@ -697,6 +787,7 @@ async function renderActions(actions = [], blockedActions = []) {
 
     row.append(main, target, policy, status);
     list.appendChild(row);
+    _actionRows.set(action, row);
 
     if (autoRun) {
       setTimeout(() => approveAction(action, row, "auto"), 0);
