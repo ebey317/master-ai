@@ -1159,6 +1159,97 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
     return {"tier": "safe", "gated_by": None, "error_code": None}
 
 
+_5WH_DIRECTIVE_PREFIXES = (
+    "RUN:", "RUNTERM:", "READ:", "CREATE:", "EDIT:", "REMEMBER:",
+    "BROWSER_CLICK:", "BROWSER_FILL:", "BROWSER_NAV:", "BROWSER_WAIT:",
+    "BROWSER_SCROLL:", "BROWSER_READ_PAGE:", "BROWSER_SUBMIT:",
+    "BROWSER_SCREENSHOT:", "BROWSER_OBSERVE:", "BROWSER_READ:",
+    "BROWSER_DOUBLE_CLICK:", "BROWSER_FIND:", "BROWSER_EXTRACT_LIST:",
+)
+
+
+def _extract_why_for_action(reply_text, action_kind):
+    """Pull a one-line rationale from the assistant reply preceding the directive.
+
+    Walk backward from the directive line, skip other directive lines, return
+    the first prose sentence found. Empty string if no candidate. Cap ~240 chars.
+    """
+    if not reply_text or not action_kind:
+        return ""
+    upper_kind = action_kind.upper()
+    lines = reply_text.splitlines()
+    for i, line in enumerate(lines):
+        if upper_kind not in line.upper():
+            continue
+        for j in range(i - 1, max(-1, i - 5), -1):
+            prev = lines[j].strip()
+            if not prev:
+                continue
+            if any(prev.upper().startswith(p) for p in _5WH_DIRECTIVE_PREFIXES):
+                continue
+            cleaned = prev.lstrip("-*• 0123456789.")
+            if not cleaned:
+                continue
+            return (cleaned[:237] + "...") if len(cleaned) > 240 else cleaned
+        break
+    return ""
+
+
+def _synthesize_5wh(action_kind, target, reply_text, page_url):
+    """Per-tool 5W+H card for chrome_extension actions.
+
+    Per feedback_who_what_where_cascade — walk the cascade per case.
+    Server is the single source of truth so the model never invents the card
+    and the extension never has to guess.
+    """
+    kind = (action_kind or "").upper()
+    where_base = page_url or "current tab"
+    who = "Pupil agent on your behalf"
+    target = target or ""
+
+    if kind == "BROWSER_CLICK":
+        what = "click element"
+        where = f"{target} on {where_base}"
+        how = "synthetic click event via content script"
+    elif kind == "BROWSER_FILL":
+        sep = re.search(r"^(.+?)\s*(?:::|=>|:=)\s*(.+)$", target)
+        sel = sep.group(1).strip() if sep else target
+        what = "type text into form field"
+        where = f"{sel} on {where_base}"
+        how = "synthetic input + change events via content script"
+    elif kind == "BROWSER_NAV":
+        what = "navigate active tab"
+        where = f"to {target}"
+        how = "chrome.tabs.update with new URL"
+    elif kind == "BROWSER_WAIT":
+        what = "wait for page rendering"
+        where = f"{target}ms"
+        how = "setTimeout in content script"
+    elif kind == "BROWSER_SCROLL":
+        what = "scroll page"
+        where = f"{target} on {where_base}"
+        how = "window.scrollBy / scrollIntoView via content script"
+    elif kind == "BROWSER_READ_PAGE":
+        what = "observe current page (DOM + a11y tree)"
+        where = where_base
+        how = "DOM query + accessibility snapshot via content script"
+    elif kind == "BROWSER_SUBMIT":
+        what = "submit form"
+        where = f"{target} on {where_base}"
+        how = "form.submit() via content script"
+    elif kind == "BROWSER_SCREENSHOT":
+        what = "capture viewport screenshot"
+        where = where_base
+        how = "chrome.tabs.captureVisibleTab"
+    else:
+        what = (action_kind or "").lower().replace("_", " ") or "action"
+        where = where_base
+        how = "via content script"
+
+    why = _extract_why_for_action(reply_text or "", action_kind or "") or "as proposed by Pupil agent"
+    return {"who": who, "what": what, "where": where, "why": why, "how": how}
+
+
 def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id="", schedule_id="", page_context=None):
     actions = []
     seen = set()
@@ -1241,6 +1332,8 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
         if isinstance(page_context, dict) and page_context.get("url"):
             extras["page_url"] = _safe_context_text(page_context.get("url"), 500)
         action["extras"] = extras
+        if chrome_extension:
+            action["_5wh"] = _synthesize_5wh(action["kind"], action["target"], reply or "", page_url)
         actions.append(action)
 
     try:
@@ -1400,7 +1493,10 @@ def api_handle(payload):
     Round budget caps the loop.
     """
     payload = payload if isinstance(payload, dict) else {}
-    prompt = (payload.get("prompt") or "").strip()
+    # Accept either `prompt` (canonical / Pupil web) or `user_input` (Pupil
+    # Hands chrome_extension contract). Same semantic, different field name
+    # so the extension request shape matches the goal-spec verbatim.
+    prompt = (payload.get("prompt") or payload.get("user_input") or "").strip()
     if not prompt:
         raise ValueError("missing prompt")
     mode_req = (payload.get("mode") or "").strip().lower()
@@ -1907,6 +2003,7 @@ def api_handle(payload):
         "latency_ms": int((time.time() - t0) * 1000),
         "actions": captured_actions,
         "blocked_actions": blocked_actions,
+        "mode": effective_mode,
         "turn_id": turn_id,
         "turn_root": turn_root or turn_id,
         "round_num": round_num,
