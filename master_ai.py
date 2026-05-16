@@ -4277,6 +4277,53 @@ def _inject_identity(messages):
         return [{"role": "system", "content": merged}] + list(messages[1:])
     return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
 
+# Groq free-tier payload trim (2026-05-16). Every groq call was returning
+# HTTP 413 because the request body exceeded the per-request budget. The
+# char-based heuristic over-counts vs the model tokenizer (~3-4 chars/token),
+# safe in the undertrim direction. Drops oldest non-system messages until
+# the serialized payload is below _GROQ_MAX_INPUT_CHARS. Empirically tunable.
+# NOTE: this trim helps history-laden sessions; on fresh sessions the system
+# message alone can exceed Groq's threshold (sys_chars=81467 observed) and
+# the trim is a no-op there — see Task #8 (slim cloud_fast system prompt).
+_GROQ_MAX_INPUT_CHARS = 22000
+
+def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
+    """Trim oldest non-system messages until total chars <= max_chars.
+    Keep the system message (if any) in full, and keep the latest user
+    message in full. Char-based, no external dep, safe-undertrim."""
+    if not messages:
+        return messages
+    sys_msg = messages[0] if messages[0].get("role") == "system" else None
+    body = list(messages[1:]) if sys_msg else list(messages)
+    latest_user_idx = next(
+        (i for i in range(len(body) - 1, -1, -1) if body[i].get("role") == "user"),
+        None,
+    )
+    latest_user = body.pop(latest_user_idx) if latest_user_idx is not None else None
+    def _total(parts):
+        return sum(len((m.get("content") or "")) for m in parts)
+    pinned = [m for m in (sys_msg, latest_user) if m]
+    pinned_chars = _total(pinned)
+    body_chars = _total(body)
+    orig_total = pinned_chars + body_chars
+    dropped = 0
+    while pinned_chars + body_chars > max_chars and body:
+        body.pop(0)
+        dropped += 1
+        body_chars = _total(body)
+    out = []
+    if sys_msg:
+        out.append(sys_msg)
+    out.extend(body)
+    if latest_user:
+        out.append(latest_user)
+    if dropped:
+        try:
+            log(f"GROQ_TRIM: dropped={dropped} chars {orig_total}->{pinned_chars + body_chars} budget={max_chars}")
+        except Exception:
+            pass
+    return out
+
 def ask_cloud_groq(messages):
     if not _cloud_allowed("groq"):
         return None
@@ -4284,10 +4331,19 @@ def ask_cloud_groq(messages):
     if not key:
         return None
     messages = _inject_identity(messages)
+    messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
     log("CLOUD [groq/llama-3.3-70b]")
     payload = {"model": "llama-3.3-70b-versatile", "messages": messages,
                "max_tokens": 1024, "stream": False}
     data = json.dumps(payload).encode()
+    # GROQ_PAYLOAD diagnostic (2026-05-16). Captures real bytes + msg count +
+    # system-message size before urlopen so _GROQ_MAX_INPUT_CHARS can be tuned
+    # against actual 413 boundaries instead of guessed token-equivalents.
+    try:
+        _sys_chars = len(messages[0].get("content", "")) if messages and messages[0].get("role") == "system" else 0
+        log(f"GROQ_PAYLOAD: bytes={len(data)} msgs={len(messages)} sys_chars={_sys_chars}")
+    except Exception:
+        pass
     req = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions", data=data,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
