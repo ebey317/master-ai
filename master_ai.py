@@ -4579,7 +4579,27 @@ def ask_cloud_openrouter_qwen3coder(messages):
     return _ask_openrouter(messages, "qwen/qwen3-coder:free", "qwen3-coder", timeout=60)
 
 def ask_cloud_openrouter_r1(messages):
-    return _ask_openrouter(messages, "deepseek/deepseek-r1:free", "deepseek-r1", timeout=90)
+    # OpenRouter slug audit 2026-05-16:
+    #   - "deepseek/deepseek-r1:free" was removed from the catalog (verified
+    #     via /api/v1/models). It now 404s on every call; we no longer try it.
+    #   - "deepseek/deepseek-r1" (paid) is still listed but credit-gated. On
+    #     a zero-balance OpenRouter account it returns 402 OUT OF CREDITS; on
+    #     a topped-up account it serves normally. Kept first as cheap insurance.
+    #   - "deepseek/deepseek-v4-flash:free" is OpenRouter's current free
+    #     reasoning slug per the same audit; rate-limit handling at
+    #     _cloud_trip covers its free-tier daily quota.
+    # Distinct labels (deepseek-r1-paid / deepseek-v4-flash-free /
+    # openrouter-free) keep master.log + metrics rows tellable apart per
+    # call site. The previous single "deepseek-r1" label collapsed two
+    # attempts into one apparent error and nearly cost an unnecessary
+    # keying-fix patch — see feedback_grep_log_before_cloud_patch.md.
+    r = _ask_openrouter(messages, "deepseek/deepseek-r1", "deepseek-r1-paid", timeout=90)
+    if r:
+        return r
+    r = _ask_openrouter(messages, "deepseek/deepseek-v4-flash:free", "deepseek-v4-flash-free", timeout=60)
+    if r:
+        return r
+    return _ask_openrouter(messages, "openrouter/free", "openrouter-free", timeout=60)
 
 def ask_cloud_openrouter(messages):
     return _ask_openrouter(messages, "meta-llama/llama-3.3-70b-instruct:free", "llama-3.3-70b", timeout=30)
