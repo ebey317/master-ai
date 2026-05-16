@@ -809,8 +809,10 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         budget_str = f"/{round_budget}" if round_budget else ""
         lines.append(f"continuation_round: {round_num}{budget_str}")
     lines.extend([
-        "Branch B: do not execute local machine or browser actions inside the backend request.",
-        "If browser work is needed, emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives.",
+        "Branch B: you have BOTH lanes — browser (via the extension) AND local terminal + filesystem (server-dispatched). Pick whichever lane is most natural for each step; don't claim anything has been executed until the dispatch path returns results.",
+        "Local terminal + filesystem lane — for file ops, downloads, PDF text extraction, opening desktop apps, or anything cleaner in a shell, emit RUN, RUNTERM, READ, CREATE, or EDIT directives. The backend runs them server-side and the stdout/output appears appended to the reply context for your next round. Sudo, dangerous patterns, and the self-mod denylist are still gated.",
+        "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, find, submit), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives. The extension confirms and dispatches them in-tab.",
+        "Lane choice heuristic: if the step is 'open a webpage, click something, read what's on screen, fill a field' → browser lane. If it's 'open a PDF, extract text from a file, download something, launch a desktop app, move/edit/delete files, run a CLI tool' → terminal lane. Interleave freely within one multi-step plan.",
         "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
         "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
         "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
