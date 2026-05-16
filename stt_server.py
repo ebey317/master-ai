@@ -811,7 +811,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
     lines.extend([
         "Branch B: you have BOTH lanes — browser (via the extension) AND local terminal + filesystem (server-dispatched). Pick whichever lane is most natural for each step; don't claim anything has been executed until the dispatch path returns results.",
         "Local terminal + filesystem lane — for file ops, downloads, PDF text extraction, opening desktop apps, or anything cleaner in a shell, emit RUN, RUNTERM, READ, CREATE, or EDIT directives. The backend runs them server-side and the stdout/output appears appended to the reply context for your next round. Sudo, dangerous patterns, and the self-mod denylist are still gated.",
-        "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, find, submit), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives. The extension confirms and dispatches them in-tab.",
+        "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, submit), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, or BROWSER_EXTRACT_LIST directives. The extension confirms and dispatches them in-tab.",
         "Lane choice — code-first: PREFER the terminal lane when both lanes work. A 5-line bash or python script that finishes the step is faster, deterministic, and auditable. Only drive the browser when there is no terminal path — login-walled UI, form with no exposed API, JS-rendered submit, in-tab visual confirmation. Only use the terminal when there is no browser path — system services, package install, file permissions, anything below the URL bar. Never duplicate work across both — pick one per step. Interleave freely (terminal step → browser step → terminal step) within a multi-step plan when each step genuinely needs the lane chosen.",
         "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
         "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
@@ -1032,8 +1032,7 @@ def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
         return None
     risk = "safe" if kind in (
         "READ", "BROWSER_READ", "BROWSER_READ_PAGE", "BROWSER_OBSERVE",
-        "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-        "BROWSER_DRIVE_INSPECT_FOLDER",
+        "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL", "BROWSER_EXTRACT_LIST",
     ) else "normal"
     return {
         "id": str(uuid.uuid4()),
