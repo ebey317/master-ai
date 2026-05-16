@@ -1125,6 +1125,18 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         if re.search(r"(?i)(checkout\.|billing\.|payments?\.)", target):
             return {"tier": "sensitive", "gated_by": "payment_nav", "error_code": None}
 
+    if kind == "BROWSER_CDP_MOUSE":
+        # Pixel-coord clicks can't be statically inspected for what they hit;
+        # the target is just "x,y". Gate on the active page URL instead.
+        # NON-NEGOTIABLE: no auto-mode override, no prompt-side switch.
+        url_lc = (page_url or "").lower()
+        if re.search(r"(/apply|/checkout|/submit|/share|/delete)\b", url_lc):
+            return {"tier": "sensitive", "gated_by": "cdp_mouse_on_sensitive_url", "error_code": None}
+        if re.search(r"(?i)(accounts\.google|login\.|signin\.|auth\.|checkout\.|billing\.|payments?\.)", url_lc):
+            return {"tier": "sensitive", "gated_by": "cdp_mouse_on_auth_or_payment_host", "error_code": None}
+        if "drive.google.com" in url_lc and ("/share" in url_lc or "sharingdialog" in url_lc):
+            return {"tier": "sensitive", "gated_by": "drive_share_surface", "error_code": None}
+
     if kind == "REMOTE_MCP":
         return {"tier": "sensitive", "gated_by": "remote_mcp", "error_code": None}
 
