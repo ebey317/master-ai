@@ -7,12 +7,36 @@ const ACTION_TARGETS =
 
 const DEFAULT_VISIBLE_TEXT_LIMIT = 1800;
 const READ_TEXT_LIMIT = 5000;
+const READ_PAGE_FULL_LIMIT = 500;
 const FOCUSED_TEXT_LIMIT = 1200;
 const INTERACTIVE_LIMIT = 80;
 const CONSOLE_LIMIT = 40;
 const PAGE_STABLE_DEBOUNCE_MS = 650;
 const PAGE_STABLE_MAX_WAIT_MS = 3500;
 const SKIP_TEXT_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "CANVAS"]);
+const SUBMIT_TEXT_RE = /^(submit|submit application|send application|apply now|finish|complete application)$/i;
+const CONFIRM_URL_RE = /confirmation|submitted|thank-you|success|applied/i;
+const CONFIRM_TEXT_RE = /application (has been )?submitted|thanks for applying|we('?ve| have) received your application|your application is complete/i;
+const REFERENCE_BATTERY = [
+  /reference\s*(number|id|#)[:\s]*([A-Z0-9-]{4,})/i,
+  /confirmation\s*(number|id|#)[:\s]*([A-Z0-9-]{4,})/i,
+  /application\s*(number|id|#)[:\s]*([A-Z0-9-]{4,})/i,
+  /tracking\s*(number|id|#)[:\s]*([A-Z0-9-]{4,})/i,
+];
+const INDEED_REFERENCE_RE = /smartapply\.indeed\.com\/.+\/([a-f0-9]{16,})/i;
+const DEFAULT_ROUTER_BASE = "http://127.0.0.1:8080";
+const DISPATCH_PATH = "/dispatch";
+
+globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ = globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ || {
+  first_app_pause_armed: true,
+  pending_submit: null,
+};
+globalThis.__SENSEI_SIMPLIFY_DISMISS_STATE__ = globalThis.__SENSEI_SIMPLIFY_DISMISS_STATE__ || {
+  page_key: "",
+  attempts: 0,
+};
+
+try { console.log("injected"); } catch (_err) {}
 
 globalThis.__SENSEI_PAGE_OBSERVER_STATE__ = globalThis.__SENSEI_PAGE_OBSERVER_STATE__ || {
   version: 0,
@@ -159,6 +183,58 @@ function safePageText(value, limit) {
   return sanitizePageString(clipText(value, limit));
 }
 
+function _normalizeRouterBase(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, "");
+  return "";
+}
+
+function _routerBaseFromAction(action) {
+  const extras = action?.extras && typeof action.extras === "object" ? action.extras : {};
+  const candidates = [
+    action?.router_base,
+    action?.routerBase,
+    action?.backend_url,
+    action?.backendUrl,
+    extras.router_base,
+    extras.routerBase,
+    extras.backend_url,
+    extras.backendUrl,
+    extras.dispatch_base,
+    extras.dispatchBase,
+    globalThis.__SENSEI_ROUTER_BASE__,
+  ];
+  for (const raw of candidates) {
+    const normalized = _normalizeRouterBase(raw);
+    if (normalized) return normalized;
+  }
+  return DEFAULT_ROUTER_BASE;
+}
+
+async function postDispatchEvent(event, payload, action = null) {
+  const base = _routerBaseFromAction(action);
+  const url = `${base}${DISPATCH_PATH}`;
+  const body = {
+    event: safePageText(event || "", 80),
+    payload: payload && typeof payload === "object" ? payload : {},
+    ts: new Date().toISOString(),
+  };
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      keepalive: true,
+      mode: "cors",
+      credentials: "omit",
+    });
+    return { ok: resp.ok, status: resp.status };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err), dispatch_url: url };
+  }
+}
+
 function shouldSkipTextNode(node) {
   let el = node.parentElement;
   while (el && el !== document.body) {
@@ -278,6 +354,14 @@ function structuralSelectorFor(el) {
 
 function safeSelectorFor(el) {
   const selector = selectorFor(el);
+  const tag = el?.tagName?.toLowerCase?.() || "";
+  const role = String(el?.getAttribute?.("role") || "").toLowerCase();
+  const forceStructural = (
+    selector === tag &&
+    (tag === "tr" || tag === "td" || tag === "li" ||
+     role === "row" || role === "gridcell" || role === "treeitem" || role === "listitem")
+  );
+  if (forceStructural) return structuralSelectorFor(el);
   return sanitizePageString(selector) === selector ? selector : structuralSelectorFor(el);
 }
 
@@ -662,6 +746,535 @@ function isVisible(el) {
   return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
 }
 
+function hasAriaHiddenAncestor(el) {
+  let cur = el;
+  while (cur && cur.nodeType === Node.ELEMENT_NODE) {
+    if (cur.getAttribute && cur.getAttribute("aria-hidden") === "true") return true;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+function actionableCategoryFor(el) {
+  if (!el) return "text_input";
+  const tag = String(el.tagName || "").toLowerCase();
+  const role = String(el.getAttribute?.("role") || "").toLowerCase();
+  if (tag === "a" || role === "link") return "link";
+  if (tag === "button" || role === "button") return "button";
+  if (tag === "select" || role === "combobox") return "select";
+  if (tag === "textarea") return "textarea";
+  if (tag === "input") {
+    const type = String(el.getAttribute("type") || "text").toLowerCase();
+    if (type === "email") return "email_input";
+    if (type === "password") return "password_input";
+    if (type === "checkbox") return "checkbox";
+    if (type === "radio") return "radio";
+    if (type === "button" || type === "submit" || type === "reset") return "button";
+    return "text_input";
+  }
+  if (role === "checkbox") return "checkbox";
+  if (role === "radio") return "radio";
+  if (role === "textbox") return "text_input";
+  if (el.isContentEditable) return "textarea";
+  return "text_input";
+}
+
+function actionableTypeFor(el) {
+  const tag = String(el?.tagName || "").toLowerCase();
+  if (!tag) return "";
+  if (tag === "input") return String(el.getAttribute("type") || "text").toLowerCase();
+  return tag;
+}
+
+function actionableValueFor(el, category) {
+  if (!el) return null;
+  if (category === "checkbox") return el.checked ? "checked" : null;
+  if (category === "radio") {
+    const checked = Boolean(el.checked || el.getAttribute("aria-checked") === "true");
+    if (!checked) return null;
+    return safePageText(el.value || renderedLabelFor(el) || "selected", 200);
+  }
+  if (category === "button" || category === "link") return null;
+  const v = currentElementValue(el);
+  return v ? safePageText(v, 300) : null;
+}
+
+function actionableLabelFor(el) {
+  return safePageText(
+    renderedLabelFor(el) || elementName(el) || el.innerText || el.textContent || "",
+    240
+  );
+}
+
+function isActionableCandidate(el) {
+  if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+  if (el.hasAttribute("disabled")) return false;
+  if (hasAriaHiddenAncestor(el)) return false;
+  if (!isVisible(el)) return false;
+  const category = actionableCategoryFor(el);
+  return [
+    "button",
+    "text_input",
+    "email_input",
+    "password_input",
+    "select",
+    "checkbox",
+    "radio",
+    "link",
+    "textarea",
+  ].includes(category);
+}
+
+function _readPageElementRect(el) {
+  const bounds = elementBounds(el);
+  if (!bounds) return { x: 0, y: 0, w: 0, h: 0 };
+  return {
+    x: Number(bounds.x || 0),
+    y: Number(bounds.y || 0),
+    w: Number(bounds.width || 0),
+    h: Number(bounds.height || 0),
+  };
+}
+
+function _readPageRole(el) {
+  return safePageText(String(el.getAttribute("role") || String(el.tagName || "").toLowerCase()), 60);
+}
+
+function _readPageName(el) {
+  return safePageText(
+    renderedLabelFor(el)
+      || elementName(el)
+      || (isVisible(el) ? elementText(el, 240) : "")
+      || el.getAttribute("name")
+      || "",
+    240
+  );
+}
+
+function _isInteractiveForReadPage(el) {
+  if (!el) return false;
+  if (isActionableCandidate(el)) return true;
+  const tag = String(el.tagName || "").toLowerCase();
+  return tag === "form" || String(el.getAttribute("role") || "").toLowerCase() === "form";
+}
+
+function _collectReadPageFallbackElements(limit = READ_PAGE_FULL_LIMIT) {
+  const out = [];
+  const selector = "main,section,article,form,[role],button,a,input,select,textarea,label,h1,h2,h3,p,li,div,span";
+  const seen = new Set();
+  for (const el of collectDeep(selector, limit * 20)) {
+    if (!el || seen.has(el)) continue;
+    seen.add(el);
+    if (hasAriaHiddenAncestor(el)) continue;
+    if (!isVisible(el)) continue;
+    const rect = _readPageElementRect(el);
+    if (rect.w <= 0 || rect.h <= 0) continue;
+    const text = _readPageName(el);
+    const interactive = _isInteractiveForReadPage(el);
+    if (!interactive && !text) continue;
+    out.push(el);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function collectReadPageFullElements(limit = READ_PAGE_FULL_LIMIT) {
+  const selector = [
+    "form",
+    "[role='form']",
+    "button",
+    "a[href]",
+    "input",
+    "textarea",
+    "select",
+    "[role]",
+    "[aria-label]",
+    "[contenteditable='true']",
+  ].join(",");
+  const seeded = collectDeep(selector, limit * 30);
+  const source = seeded.length >= 25 ? seeded : _collectReadPageFallbackElements(limit * 4);
+  const rows = [];
+  const seen = new Set();
+  for (const el of source) {
+    if (!el || seen.has(el)) continue;
+    seen.add(el);
+    if (hasAriaHiddenAncestor(el)) continue;
+    const visible = isVisible(el);
+    if (!visible) continue;
+    const rect = _readPageElementRect(el);
+    if (rect.w <= 0 || rect.h <= 0) continue;
+    const interactive = _isInteractiveForReadPage(el);
+    const roleAttr = String(el.getAttribute("role") || "");
+    const roleLike = Boolean(roleAttr);
+    const name = _readPageName(el);
+    if (!interactive && !roleLike && !name) continue;
+    const category = actionableCategoryFor(el);
+    rows.push({
+      _el: el,
+      role: _readPageRole(el),
+      name,
+      value: safePageText(currentElementValue(el), 300),
+      visible,
+      rect,
+      selector: safeSelectorFor(el),
+      tag: String(el.tagName || "").toLowerCase(),
+      type: actionableTypeFor(el),
+      category,
+      label: actionableLabelFor(el),
+      required: Boolean(el.required || String(el.getAttribute("aria-required") || "").toLowerCase() === "true"),
+      _priority: interactive ? 3 : roleLike ? 2 : 1,
+    });
+  }
+  rows.sort((a, b) => {
+    if (b._priority !== a._priority) return b._priority - a._priority;
+    if (a.rect.y !== b.rect.y) return a.rect.y - b.rect.y;
+    return a.rect.x - b.rect.x;
+  });
+  const out = [];
+  for (const row of rows.slice(0, limit)) {
+    out.push({
+      ...row,
+      ref: `ref_${out.length + 1}`,
+    });
+  }
+  return out;
+}
+
+function elementRefLookup(limit = READ_PAGE_FULL_LIMIT) {
+  const lookup = new Map();
+  for (const row of collectReadPageFullElements(limit)) lookup.set(row._el, row.ref);
+  return lookup;
+}
+
+function parseProgressText(raw) {
+  const text = String(raw || "");
+  const patterns = [
+    /(?:step|page|section|question)\s*(\d{1,3})\s*(?:\/|of)\s*(\d{1,3})/i,
+    /(\d{1,3})\s*of\s*(\d{1,3})\s*(?:steps?|pages?|sections?|questions?)/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const current = Number(m[1]);
+    const total = Number(m[2]);
+    if (Number.isFinite(current) && Number.isFinite(total) && current > 0 && total >= current) {
+      return { current, total };
+    }
+  }
+  return null;
+}
+
+function detectProgress() {
+  try {
+    const bar = document.querySelector("progress[value][max],[aria-valuenow][aria-valuemax]");
+    if (bar) {
+      const current = Number(bar.getAttribute("aria-valuenow") || bar.getAttribute("value"));
+      const total = Number(bar.getAttribute("aria-valuemax") || bar.getAttribute("max"));
+      if (Number.isFinite(current) && Number.isFinite(total) && current > 0 && total >= current) {
+        return { current, total };
+      }
+    }
+  } catch (_err) {}
+  const fromVisible = parseProgressText(visibleText(5000));
+  if (fromVisible) return fromVisible;
+  return parseProgressText(`${document.title || ""} ${location.href || ""}`);
+}
+
+function buttonLikeElements() {
+  const selector = "button,input[type='submit'],input[type='button'],[role='button'],a[role='button']";
+  return collectDeep(selector, 400).filter((el) => isVisible(el) && !hasAriaHiddenAncestor(el));
+}
+
+function isPrimaryStyledButton(el) {
+  if (!el) return false;
+  const classes = [
+    el.className || "",
+    el.id || "",
+    el.getAttribute("data-testid") || "",
+    el.getAttribute("aria-label") || "",
+    el.getAttribute("name") || "",
+    el.getAttribute("type") || "",
+  ].join(" ").toLowerCase();
+  if (/(?:^|\b)(primary|submit|apply|finish|complete|btn-primary|button--primary)(?:\b|$)/.test(classes)) return true;
+  try {
+    const style = window.getComputedStyle(el);
+    const bg = String(style.backgroundColor || "");
+    const fg = String(style.color || "");
+    const weight = Number(style.fontWeight) || 0;
+    if (weight >= 600 && bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent" && fg) return true;
+  } catch (_err) {}
+  return false;
+}
+
+function submitSignalsForElement(el) {
+  const signals = [];
+  const label = safePageText((renderedLabelFor(el) || elementText(el, 180) || ""), 180);
+  const compact = label.replace(/\s+/g, " ").trim();
+  if (SUBMIT_TEXT_RE.test(compact)) signals.push("visible_text");
+  const tag = String(el.tagName || "").toLowerCase();
+  const role = String(el.getAttribute("role") || "").toLowerCase();
+  const type = String(el.getAttribute("type") || "").toLowerCase();
+  if (role === "button" || tag === "button" || (tag === "input" && type === "submit")) signals.push("button_role_or_tag");
+  if (el.closest && el.closest("form,[role='form']")) signals.push("inside_form");
+  const attrs = [
+    el.getAttribute("aria-label") || "",
+    el.getAttribute("data-testid") || "",
+    el.getAttribute("data-action") || "",
+    el.getAttribute("name") || "",
+  ].join(" ");
+  if (/submit|apply|finish|complete|send/i.test(attrs)) signals.push("submit_intent_attr");
+  const buttons = buttonLikeElements();
+  const actionContainer = el.closest("footer,[role='toolbar'],[class*='footer' i],[class*='toolbar' i],[class*='action' i]");
+  const peers = actionContainer
+    ? buttons.filter((btn) => actionContainer.contains(btn))
+    : buttons;
+  if (peers.length > 0) {
+    const rect = el.getBoundingClientRect();
+    const maxRight = Math.max(...peers.map((btn) => {
+      const r = btn.getBoundingClientRect();
+      return r.left + r.width;
+    }));
+    const maxBottom = Math.max(...peers.map((btn) => {
+      const r = btn.getBoundingClientRect();
+      return r.top + r.height;
+    }));
+    const right = rect.left + rect.width;
+    const bottom = rect.top + rect.height;
+    if (right >= maxRight - 2 || bottom >= maxBottom - 2) signals.push("rightmost_or_bottommost");
+  }
+  return signals;
+}
+
+function detectSubmitPage(refLookup = null) {
+  const buttons = buttonLikeElements();
+  const refs = refLookup || elementRefLookup();
+  const ranked = [];
+  for (const el of buttons) {
+    const signals = submitSignalsForElement(el);
+    if (signals.length >= 2) {
+      const rect = _readPageElementRect(el);
+      ranked.push({
+        ref: refs.get(el) || null,
+        signals,
+        signal_count: signals.length,
+        selector: safeSelectorFor(el),
+        name: _readPageName(el),
+        rect,
+      });
+    }
+  }
+  ranked.sort((a, b) => {
+    if (b.signal_count !== a.signal_count) return b.signal_count - a.signal_count;
+    if (b.rect.y !== a.rect.y) return b.rect.y - a.rect.y;
+    return b.rect.x - a.rect.x;
+  });
+  return {
+    is_submit_page: ranked.length > 0,
+    submit_ref: ranked[0]?.ref || null,
+    submit_signals: ranked[0]?.signals || [],
+    submit_candidates: ranked,
+  };
+}
+
+function extractReferenceNumberDetailed() {
+  const body = `${visibleText(12000)}\n${document.body?.innerText || ""}`;
+  for (const re of REFERENCE_BATTERY) {
+    const m = body.match(re);
+    const candidate = safePageText((m && (m[2] || m[1])) || "", 140);
+    if (candidate) {
+      return { reference_number: candidate, source: re.source, fallback: false };
+    }
+  }
+  const urlMatch = String(location.href || "").match(INDEED_REFERENCE_RE);
+  if (urlMatch && urlMatch[1]) {
+    return {
+      reference_number: safePageText(urlMatch[1], 140),
+      source: "indeed_url",
+      fallback: false,
+    };
+  }
+  const fallback = `no_reference_captured_fallback:${safePageText(location.href || "", 2000)}#${Date.now()}`;
+  return {
+    reference_number: fallback,
+    source: "fallback",
+    fallback: true,
+  };
+}
+
+function extractReferenceNumber() {
+  return extractReferenceNumberDetailed().reference_number;
+}
+
+function detectConfirmationPage() {
+  const urlHit = CONFIRM_URL_RE.test(location.href || "");
+  const bodyText = visibleText(12000);
+  const bodyHit = CONFIRM_TEXT_RE.test(bodyText);
+  let liveHit = false;
+  try {
+    const liveNodes = collectDeep("[role='status'],[aria-live]", 120).filter((el) => isVisible(el));
+    liveHit = liveNodes.some((el) => CONFIRM_TEXT_RE.test(elementText(el, 1200)));
+  } catch (_err) {}
+  const ref = extractReferenceNumberDetailed();
+  const refHit = Boolean(ref.reference_number && !ref.fallback);
+  const is_confirmation_page = Boolean(urlHit || bodyHit || liveHit || refHit);
+  return {
+    is_confirmation_page,
+    confirmation_ref: is_confirmation_page ? ref.reference_number : null,
+    confirmation_source: ref.source,
+    reference_fallback: ref.fallback,
+  };
+}
+
+function buildReadPageFullPayload() {
+  const rows = collectReadPageFullElements(READ_PAGE_FULL_LIMIT);
+  const refLookup = new Map();
+  for (const row of rows) refLookup.set(row._el, row.ref);
+  const submit = detectSubmitPage(refLookup);
+  const confirm = detectConfirmationPage();
+  const forms = collectDeep("form,[role='form']", 120)
+    .filter((el) => isVisible(el) && !hasAriaHiddenAncestor(el))
+    .map((formEl) => {
+      const formRef = refLookup.get(formEl) || null;
+      const fieldRefs = rows
+        .filter((row) => formEl.contains(row._el) && row.ref !== formRef)
+        .map((row) => row.ref);
+      const submitRefs = submit.submit_candidates
+        .filter((candidate) => {
+          const match = rows.find((row) => row.ref === candidate.ref);
+          return Boolean(match && formEl.contains(match._el));
+        })
+        .map((candidate) => candidate.ref)
+        .filter(Boolean);
+      return {
+        form_ref: formRef,
+        fields: fieldRefs,
+        submit_candidates: submitRefs,
+      };
+    });
+  return {
+    url: safePageText(location.href || "", 2000),
+    title: safePageText(document.title || "", 300),
+    viewport: {
+      w: Math.round(window.innerWidth || 0),
+      h: Math.round(window.innerHeight || 0),
+      scroll_y: Math.round(window.scrollY || 0),
+    },
+    elements: rows.map((row) => ({
+      ref: row.ref,
+      role: row.role,
+      name: row.name,
+      value: row.value || "",
+      visible: row.visible,
+      rect: row.rect,
+      selector: row.selector,
+    })),
+    forms,
+    // Compatibility fields kept for orchestrator/session summaries.
+    progress: detectProgress(),
+    is_submit_page: submit.is_submit_page,
+    submit_candidates: submit.submit_candidates,
+    is_confirmation_page: confirm.is_confirmation_page,
+    confirmation_ref: confirm.confirmation_ref,
+  };
+}
+
+async function maybePostConfirmationDetected(action = null) {
+  const confirm = detectConfirmationPage();
+  if (!confirm.is_confirmation_page) return { posted: false, confirmation: confirm };
+  const payload = {
+    url: safePageText(location.href || "", 2000),
+    reference_number: confirm.confirmation_ref || "",
+    company: safePageText((document.title || "").split("-")[0] || "", 160),
+    title: safePageText(document.title || "", 240),
+  };
+  const dispatch = await postDispatchEvent("confirmation_detected", payload, action);
+  return { posted: true, confirmation: confirm, dispatch };
+}
+
+function submittedCountFromAction(action) {
+  const direct = Number(action?.applications_submitted_this_session);
+  if (Number.isFinite(direct)) return Math.max(0, direct);
+  const extras = action?.extras && typeof action.extras === "object" ? action.extras : {};
+  const extra = Number(extras.applications_submitted_this_session);
+  if (Number.isFinite(extra)) return Math.max(0, extra);
+  const summary = action?.state_summary && typeof action.state_summary === "object" ? action.state_summary : {};
+  const nested = Number(summary.applications_submitted_this_session);
+  if (Number.isFinite(nested)) return Math.max(0, nested);
+  return 0;
+}
+
+async function dismissSimplifyOverlays(action = null) {
+  const state = globalThis.__SENSEI_SIMPLIFY_DISMISS_STATE__;
+  const pageKey = `${location.origin}${location.pathname}${location.search}`;
+  if (state.page_key !== pageKey) {
+    state.page_key = pageKey;
+    state.attempts = 0;
+  }
+  if (state.attempts >= 5) {
+    return { closed: 0, attempts: state.attempts, capped: true };
+  }
+  const overlaySelectors = [
+    ".simplify-overlay[role='dialog'], .simplify-overlay",
+    "[class*='simplify' i][role='dialog']",
+    "[aria-label*='simplify' i][role='dialog']",
+  ];
+  const iframeSelector = "iframe[src*='simplify.jobs' i]";
+  const closeSelectors = [
+    "button[aria-label='Close']",
+    "button[aria-label*='close' i]",
+    "button[title='Close']",
+    "button[title*='close' i]",
+    "[role='button'][aria-label*='close' i]",
+    "button, [role='button']",
+  ];
+  const overlays = collectDeep(overlaySelectors.join(","), 80).filter((el) => isVisible(el));
+  const simplifyFrames = collectDeep(iframeSelector, 20).filter((el) => isVisible(el));
+  if (!overlays.length && !simplifyFrames.length) {
+    return { closed: 0, attempts: state.attempts, found: false };
+  }
+  state.attempts += 1;
+  let closed = 0;
+  const closeButtonIn = (root) => {
+    for (const sel of closeSelectors) {
+      try {
+        const nodes = Array.from(root.querySelectorAll(sel));
+        for (const node of nodes) {
+          if (!isVisible(node)) continue;
+          const text = safePageText(node.innerText || node.textContent || node.getAttribute("aria-label") || "", 80);
+          if (sel === "button, [role='button']" && !/^×$|^x$|close/i.test(text)) continue;
+          return node;
+        }
+      } catch (_err) {}
+    }
+    return null;
+  };
+  for (const overlay of overlays) {
+    const closeBtn = closeButtonIn(overlay) || closeButtonIn(document);
+    if (!closeBtn) continue;
+    try {
+      closeBtn.click();
+      closed += 1;
+    } catch (_err) {}
+  }
+  for (const frame of simplifyFrames) {
+    const host = frame.closest("div,[role='dialog'],section,aside") || document;
+    const closeBtn = closeButtonIn(host);
+    if (!closeBtn) continue;
+    try {
+      closeBtn.click();
+      closed += 1;
+    } catch (_err) {}
+  }
+  if (closed > 0) {
+    await postDispatchEvent("simplify_dismissed", {
+      url: safePageText(location.href || "", 2000),
+      attempts: state.attempts,
+      closed,
+    }, action);
+  }
+  return { closed, attempts: state.attempts, found: true };
+}
+
 // Shadow-piercing walker — used by the DOM-fallback page-read path when the
 // extension cannot attach the debugger (chrome:// pages, extension popups,
 // or any tab where Accessibility.getFullAXTree is unavailable). Closed shadow
@@ -687,8 +1300,18 @@ function walkShadowPiercing(root, callback) {
 }
 
 function trySelector(target) {
+  const raw = String(target || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("/") || raw.startsWith("(/")) {
+    try {
+      const result = document.evaluate(raw, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return result?.singleNodeValue || null;
+    } catch (_err) {
+      return null;
+    }
+  }
   try {
-    return document.querySelector(target);
+    return document.querySelector(raw);
   } catch (_err) {
     return null;
   }
@@ -704,13 +1327,72 @@ function normalizedText(el) {
   ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function extractTextNeedleFromXPath(raw) {
+  const m = raw.match(/(?:text\(\)|contains\(\s*(?:\.|text\(\))\s*,)\s*=?\s*['"]([^'"]+)['"]/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
 function findElement(target) {
-  const raw = String(target || "").trim();
+  let raw = String(target || "").trim();
   if (!raw) return null;
+
+  // Strip whitespace-delimited inline comments the model sometimes appends to
+  // selectors, e.g. `a[data-testid="x"]  # click next page`. Do NOT treat `#id`
+  // selectors as comments unless there's whitespace before the `#`.
+  raw = raw.replace(/\s+#.*$/, "").trim();
+  if (!raw) return null;
+
+  // Normalize common "selector=" / "css=" / "xpath=" prefixes. The model
+  // often copies the "selector=..." annotation from page_context verbatim.
+  // Treat it as the underlying selector string.
+  const prefixMatch = raw.match(/^(selector|css|xpath)\s*=\s*(.+)$/i);
+  if (prefixMatch) {
+    raw = String(prefixMatch[2] || "").trim();
+    if (!raw) return null;
+  }
+
+  // ref-json-fix (2026-05-15): model sometimes emits JSON-wrapped targets like
+  // {"selector":"X"}, {"ref":"r-77"}, {"target":"X"}. Extract the resolvable
+  // field. If only "ref" with no mapping is present, return null so the
+  // executor surfaces target_not_found and the model adapts via
+  // SELECTOR-ADAPT DISCIPLINE.
+  if (raw.startsWith("{") || raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      const extracted = parsed.selector || parsed.target || parsed.target_selector || parsed.css || parsed.xpath || "";
+      if (extracted) {
+        raw = String(extracted).trim();
+      } else if (parsed.ref) {
+        // No ref→selector map exists; refs are model hallucinations.
+        return null;
+      } else if (parsed.text) {
+        // Fall through to text-needle search with the text field.
+        raw = String(parsed.text).trim();
+      } else {
+        return null;
+      }
+    } catch (_err) {
+      // Malformed JSON — fall through to legacy selector resolution.
+    }
+  }
+
+  // Prefix normalization again after JSON extraction (e.g. {"selector":"selector=#id"}).
+  const prefixMatch2 = raw.match(/^(selector|css|xpath)\s*=\s*(.+)$/i);
+  if (prefixMatch2) {
+    raw = String(prefixMatch2[2] || "").trim();
+    if (!raw) return null;
+  }
+  // In case the selector was inside the prefix or JSON wrapper, strip trailing
+  // whitespace-delimited comments again.
+  raw = raw.replace(/\s+#.*$/, "").trim();
+  if (!raw) return null;
+
   const bySelector = trySelector(raw);
   if (bySelector && isVisible(bySelector)) return bySelector;
 
-  const needle = raw.toLowerCase();
+  const isXPath = raw.startsWith("/") || raw.startsWith("(/");
+  const xpathNeedle = isXPath ? extractTextNeedleFromXPath(raw) : null;
+  const needle = (xpathNeedle || raw).toLowerCase();
   const candidates = collectDeep(ACTION_TARGETS, 2000).filter(isVisible);
   return candidates.find((el) => normalizedText(el) === needle)
     || candidates.find((el) => normalizedText(el).includes(needle))
@@ -869,37 +1551,49 @@ function driveItemKind(raw) {
 
 function driveItemCandidates(limit = 80) {
   const seen = new Map();
-  const ariaRows = collectDeep("[role='row'][aria-label]", limit * 4).filter(isVisible);
+  const ariaRows = collectDeep(
+    "table[aria-label*='Item List'] tr,[role='row'][aria-label],[role='row'],[role='treeitem']",
+    limit * 4
+  ).filter(isVisible);
   const fallbackSelectors = [
+    "table[aria-label*='Item List'] tr",
+    "[role='row']",
     "[role='gridcell'][aria-label]",
+    "[role='gridcell']",
     "[role='listitem'][aria-label]",
+    "[role='treeitem']",
     "[data-target='doc'][aria-label]"
   ].join(",");
   const candidates = (ariaRows.length ? ariaRows : collectDeep(fallbackSelectors, limit * 4)).filter(isVisible);
 
   for (const el of candidates) {
-    const aria = el.getAttribute("aria-label") || "";
-    const text = el.innerText || el.textContent || "";
+    const primary = el.matches?.("[aria-label]")
+      ? el
+      : el.querySelector?.("[aria-label], a[href], button, [role='gridcell'], td, div, span") || el;
+    const aria = primary?.getAttribute?.("aria-label") || el.getAttribute("aria-label") || "";
+    const text = primary?.innerText || primary?.textContent || el.innerText || el.textContent || "";
     const raw = [aria, firstUsefulLine(text)].filter(Boolean).join(" ");
     const name = cleanDriveName(aria || firstUsefulLine(text));
     const normalized = normalizeSearchText(name || raw);
     if (!normalized || normalized.length < 2) continue;
     if (/^(new|search|settings|help|support|google apps|account|list view|grid view)$/.test(normalized)) continue;
 
-    const selector = safeSelectorFor(el);
+    const selector = safeSelectorFor(primary || el);
     const selected = el.getAttribute("aria-selected") === "true"
-      || el.getAttribute("aria-current") === "true";
+      || el.getAttribute("aria-current") === "true"
+      || primary?.getAttribute?.("aria-selected") === "true"
+      || primary?.getAttribute?.("aria-current") === "true";
     const kind = driveItemKind(raw);
     const rec = {
       name: name || safePageText(firstUsefulLine(text) || aria, 180),
       kind,
       is_folder: kind === "folder",
       selected,
-      role: el.getAttribute("role") || elementRole(el),
+      role: primary?.getAttribute?.("role") || el.getAttribute("role") || elementRole(primary || el),
       selector,
       aria_label: safePageText(aria, 260),
-      text: safePageText(text, 500),
-      href: el.href || el.querySelector?.("a[href]")?.href || ""
+      text: safePageText(el.innerText || el.textContent || text, 500),
+      href: primary?.href || el.href || el.querySelector?.("a[href]")?.href || ""
     };
     const key = `${normalized}|${rec.kind}|${rec.selector}`;
     if (!seen.has(key)) seen.set(key, rec);
@@ -1033,6 +1727,28 @@ function dispatchFormEvents(el, value) {
 function setElementValue(el, value) {
   if (!el) return;
   el.focus();
+  if (el instanceof HTMLInputElement) {
+    const type = String(el.getAttribute("type") || "text").toLowerCase();
+    if (type === "checkbox") {
+      const desired = /^(1|true|yes|y|on|checked)$/i.test(String(value || "").trim());
+      el.checked = desired;
+      dispatchFormEvents(el, desired ? "checked" : "");
+      return;
+    }
+    if (type === "radio") {
+      const targetValue = normalizeSearchText(value);
+      const group = el.name ? Array.from(document.querySelectorAll(`input[type="radio"][name="${cssEscape(el.name)}"]`)) : [el];
+      const pick = group.find((candidate) => {
+        const candidateLabel = renderedLabelFor(candidate);
+        const candidateValue = String(candidate.value || "");
+        return normalizeSearchText(candidateValue) === targetValue || normalizeSearchText(candidateLabel) === targetValue;
+      }) || el;
+      try { pick.click(); } catch (_err) {}
+      pick.checked = true;
+      dispatchFormEvents(pick, pick.value || "checked");
+      return;
+    }
+  }
   if (el.isContentEditable) {
     el.textContent = value;
     dispatchFormEvents(el, value);
@@ -1058,8 +1774,577 @@ function setElementValue(el, value) {
   dispatchFormEvents(el, value);
 }
 
+// Profile-matched form fill (powers BROWSER_FILL_FORM). Walks the visible form
+// fields under scopeEl, matches each against the saved profile by name/id/
+// placeholder/<label>/aria-label, and fills via the existing setElementValue
+// path so React/Angular/Vue controlled inputs notice the change.
+const _PROFILE_FIELD_PATTERNS = [
+  { key: "email", test: (id, el) => /\bemail\b/.test(id) || el.type === "email" },
+  { key: "phone", test: (id, el) => /\b(phone|mobile|cell|telephone|tel)\b/.test(id) || el.type === "tel" },
+  { key: "full_name", test: (id) => /\b(full[\s-]?name|legal[\s-]?name|your[\s-]?name|applicant[\s-]?name|name)\b/.test(id) && !/\b(company|business|file|user|first|last|middle|maiden)\b/.test(id) },
+  { key: "city", test: (id) => /\b(city|town|locality)\b/.test(id) },
+  { key: "recent_job", test: (id, el) => /\b(most[\s-]?recent|current|last|previous)[\s-]?(job|employer|position|title|company|role)\b/.test(id) || (el.tagName === "TEXTAREA" && /\b(experience|work[\s-]?history|employment)\b/.test(id)) },
+];
+
+const _PROFILE_NESTED_PATTERNS = [
+  { path: "demographics.race", test: (id) => /\brace|ethnicity|african american|black\b/.test(id) },
+  { path: "demographics.hispanic_or_latino", test: (id) => /\bhispanic|latino\b/.test(id) },
+  { path: "demographics.gender", test: (id) => /\bgender|sex\b/.test(id) },
+  { path: "demographics.veteran_status", test: (id) => /\bveteran|protected veteran|self[-\s]?identify\b/.test(id) },
+  { path: "demographics.disability_status", test: (id) => /\bdisability|disabled|disclosure|self[-\s]?identify\b/.test(id) },
+  { path: "work_authorization.authorized_us", test: (id) => /\bauthorized\b.*\b(us|u\.s\.|united states)\b|\beligible to work\b/.test(id) },
+  { path: "work_authorization.authorized_us", test: (id) => /\bus citizen|u\.s\. citizen|citizenship\b/.test(id) },
+  { path: "work_authorization.sponsorship_needed", test: (id) => /\bsponsorship|sponsor|visa\b/.test(id) },
+  { path: "work_authorization.eighteen_or_older", test: (id) => /\b18\b|\beighteen\b|\bolder\b/.test(id) },
+  { path: "screener_defaults.drivers_license", test: (id) => /\bdriver'?s?\s*license|valid license\b/.test(id) },
+  { path: "screener_defaults.epa_type_ii", test: (id) => /\bepa\b.*\btype\b.*\bii\b|\bepa certification\b/.test(id) },
+  { path: "screener_defaults.reliable_transportation", test: (id) => /\breliable transportation|transportation\b/.test(id) },
+  { path: "screener_defaults.sms_text_consent", test: (id) => /\bsms|text message|text consent|receive texts?\b/.test(id) },
+  { path: "screener_defaults.background_check_consent", test: (id) => /\bbackground check\b/.test(id) },
+  { path: "screener_defaults.drug_test_willing", test: (id) => /\bdrug test|drug screening\b/.test(id) },
+  { path: "screener_defaults.highest_education", test: (id) => /\bhighest level of education|highest education|education|school\b/.test(id) },
+  { path: "screener_defaults.years_hvac_experience", test: (id) => /\byears?\b.*\bhvac\b.*\bexperience\b|\bhvac\b.*\byears?\b/.test(id) },
+  { path: "screener_defaults.how_did_you_hear", test: (id) => /\bhow did you hear|source|job board|internet\b/.test(id) },
+  { path: "screener_defaults.willing_to_relocate_local", test: (id) => /\brelocate|relocation\b/.test(id) },
+  { path: "screener_defaults.salary_expectation", test: (id) => /\bsalary|compensation|pay expectation\b/.test(id) },
+];
+
+const _PROFILE_DEFAULT_ANSWERS = {
+  "demographics.race": "Black or African American",
+  "demographics.hispanic_or_latino": "No",
+  "demographics.gender": "Male",
+  "demographics.veteran_status": "I don't wish to answer",
+  "demographics.disability_status": "I don't wish to answer",
+  "work_authorization.authorized_us": "Yes",
+  "work_authorization.sponsorship_needed": "No",
+  "work_authorization.eighteen_or_older": "Yes",
+  "screener_defaults.drivers_license": "Yes",
+  "screener_defaults.epa_type_ii": "Yes",
+  "screener_defaults.reliable_transportation": "Yes",
+  "screener_defaults.sms_text_consent": "Yes",
+  "screener_defaults.background_check_consent": "Yes",
+  "screener_defaults.drug_test_willing": "Yes",
+  "screener_defaults.highest_education": "High school diploma or GED",
+  "screener_defaults.years_hvac_experience": "8",
+  "screener_defaults.how_did_you_hear": "Internet",
+  "screener_defaults.willing_to_relocate_local": "Yes",
+};
+
+const _HARD_SKIP_PATTERNS = [
+  { category: "password", re: /\bpassword|passcode|pin\b/ },
+  { category: "ssn", re: /\bssn|social[-\s]?security\b/ },
+  { category: "dob", re: /\bdob|date of birth|birthdate\b/ },
+  { category: "government_id", re: /\bgovernment id|national id|state id\b/ },
+  { category: "drivers_license_number", re: /\bdriver'?s? license number|dl number\b/ },
+  { category: "felony_freetext", re: /\bfelony|conviction|charge\b/ },
+  { category: "felony_freetext", re: /\bexplain|describe your background\b/ },
+  { category: "banking", re: /\bbanking|bank account|routing|account number|ach\b/ },
+  { category: "card", re: /\bcard number|credit card|debit card|cvv|cvc\b/ },
+  { category: "passport", re: /\bpassport\b/ },
+  { category: "tos_consent", re: /\bterms of service|terms and conditions|privacy policy\b/ },
+];
+
+// Sensitive-field gate (post-emit deterministic safety property).
+// Hard-no categories: BROWSER_FILL_FORM will NEVER fill an element matching
+// these patterns, regardless of what's in the profile. The dispatcher returns
+// a `skipped_sensitive` array with full citation so the next turn can emit
+// NEEDS_INPUT: <category> :: <label> instead. Two-tier signal logic:
+//   • DEFINITIVE (1-signal trigger): el.type=password / autocomplete tokens.
+//   • STACKED (2+-signal trigger): name|id regex + label substring + url path,
+//     where url-path is a TIEBREAKER, never a primary signal alone.
+//   • FORM-ACTION FALLBACK: when site authors randomize input names for
+//     anti-bot reasons, the form's action URL (/login, /checkout, etc.) is
+//     promoted from tiebreaker to qualifying signal.
+const _SENSITIVE_CATEGORY_PATTERNS = {
+  password: {
+    type_definitive: (el) => String(el.type || "").toLowerCase() === "password",
+    autocomplete_definitive: (el) => /^(current-password|new-password|one-time-code)$/i.test(String(el.autocomplete || "")),
+    name_id: (id) => /\bpass(?:word|wd|code)?\b|\bpasscode\b/.test(id),
+    label: (id) => /\bpassword\b|\bpasscode\b|\bpin\b/.test(id),
+    url_path: (u) => /\/(login|signin|sign-in|auth|password|reset|account)\b/.test(u),
+  },
+  ssn: {
+    autocomplete_definitive: (el) => /^(off|new-password)$/i.test("") && false,  // SSN has no canonical autocomplete; rely on stacked signals
+    name_id: (id) => /\b(ssn|social[-_\s]?security|tax[-_\s]?id|sin|nin)\b/.test(id),
+    label: (id) => /\b(social\s*security|ssn|sin|tax\s*identification|tax\s*id|national\s*insurance)\b/.test(id),
+    url_path: (u) => /\/(verify|identity|background|tax|onboard)\b/.test(u),
+  },
+  cc_number: {
+    autocomplete_definitive: (el) => /^cc-number$/i.test(String(el.autocomplete || "")),
+    name_id: (id) => /\b(cc|card|credit)[-_\s]?(num|number)\b|^card$|\bcardnumber\b/.test(id),
+    label: (id) => /\b(card\s*number|credit\s*card\s*number|cc\s*number|debit\s*card)\b/.test(id),
+    url_path: (u) => /\/(checkout|payment|billing|pay|order)\b/.test(u),
+  },
+  cvv: {
+    autocomplete_definitive: (el) => /^cc-csc$/i.test(String(el.autocomplete || "")),
+    name_id: (id) => /\b(cvv|cvc|csc|security[-_\s]?code|verification[-_\s]?code)\b/.test(id),
+    label: (id) => /\b(cvv|cvc|csc|security\s*code|card\s*verification)\b/.test(id),
+    url_path: (u) => /\/(checkout|payment|billing|pay|order)\b/.test(u),
+  },
+  routing_number: {
+    name_id: (id) => /\brouting[-_\s]?(num|number)?\b|\baba\b/.test(id),
+    label: (id) => /\brouting\s*number\b|\baba\s*routing\b/.test(id),
+    url_path: (u) => /\/(bank|ach|transfer|deposit)\b/.test(u),
+  },
+  account_number: {
+    name_id: (id) => /\b(bank|checking|savings)?[-_\s]?account[-_\s]?(num|number)\b/.test(id),
+    label: (id) => /\b(bank\s*account\s*number|account\s*number)\b/.test(id),
+    url_path: (u) => /\/(bank|ach|transfer|deposit)\b/.test(u),
+  },
+};
+
+const _SENSITIVE_PATH_FALLBACK_RE = /\/(login|signin|sign-in|auth|checkout|payment|billing|bank|ach|onboard|tax|verify)\b/;
+
+function _detectSensitiveField(el, urlPath) {
+  const idText = _identifierStringForElement(el);
+  let formAction = "";
+  try { formAction = String(el.closest && el.closest("form") && el.closest("form").action || ""); } catch (_e) {}
+  const lowFormAction = formAction.toLowerCase();
+  for (const [category, patterns] of Object.entries(_SENSITIVE_CATEGORY_PATTERNS)) {
+    const signals = [];
+    if (patterns.type_definitive && patterns.type_definitive(el)) signals.push("type");
+    if (patterns.autocomplete_definitive && patterns.autocomplete_definitive(el)) signals.push("autocomplete");
+    // Definitive 1-signal trigger
+    if (signals.length >= 1) return { category, signals, tier: "definitive" };
+    if (patterns.name_id && patterns.name_id(idText)) signals.push("name_id");
+    if (patterns.label && patterns.label(idText)) signals.push("label");
+    if (urlPath && patterns.url_path && patterns.url_path(urlPath)) signals.push("url_path");
+    // Stacked 2-signal trigger
+    if (signals.length >= 2) return { category, signals, tier: "stacked" };
+    // Form-action fallback: anti-bot randomized names get rescued when the
+    // form action declares /login or /checkout (1 in-pattern signal + form_action = qualifies).
+    if (signals.length >= 1 && _SENSITIVE_PATH_FALLBACK_RE.test(lowFormAction)) {
+      signals.push("form_action");
+      return { category, signals, tier: "form_action_fallback" };
+    }
+  }
+  return null;
+}
+
+// Captcha detection (pre-check before form-walk and re-check after each fill).
+// Returns null when no captcha visible, else a citation the result envelope
+// can carry so the next turn's model emits NEEDS_INPUT: captcha.
+const _CAPTCHA_SELECTORS = [
+  'iframe[src*="recaptcha"]',
+  'iframe[src*="hcaptcha"]',
+  'iframe[src*="turnstile"]',
+  'iframe[src*="challenges.cloudflare.com"]',
+  'div.cf-turnstile',
+  'div.g-recaptcha',
+  'div.h-captcha',
+  'div.cf-challenge',
+  '#challenge-form',
+  '[data-sitekey]:not(iframe)',
+];
+
+function _detectCaptchaOnPage(scope) {
+  const root = scope instanceof Element ? scope : document;
+  for (const sel of _CAPTCHA_SELECTORS) {
+    try {
+      const el = root.querySelector(sel);
+      if (!el) continue;
+      // Visible-only — `data-sitekey` widgets can exist in shadow roots and not yet be rendered.
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0 && !el.querySelector('iframe')) continue;
+      let captchaType = "unknown";
+      if (/recaptcha/i.test(sel)) captchaType = "recaptcha";
+      else if (/hcaptcha/i.test(sel)) captchaType = "hcaptcha";
+      else if (/turnstile|cloudflare/i.test(sel)) captchaType = "turnstile";
+      else if (/cf-challenge|challenge-form/i.test(sel)) captchaType = "cf-challenge";
+      else if (/sitekey/i.test(sel)) captchaType = "sitekey-widget";
+      return { selector: sel, captcha_type: captchaType, sitekey: el.getAttribute('data-sitekey') || null };
+    } catch (_e) {}
+  }
+  return null;
+}
+
+function _identifierStringForElement(el) {
+  const parts = [];
+  if (el.name) parts.push(el.name);
+  if (el.id) parts.push(el.id);
+  if (el.placeholder) parts.push(el.placeholder);
+  const ariaLabel = el.getAttribute("aria-label");
+  if (ariaLabel) parts.push(ariaLabel);
+  try {
+    const label = renderedLabelFor(el);
+    if (label) parts.push(label);
+  } catch (_e) {}
+  return parts.join(" ").toLowerCase().replace(/[^a-z0-9\s_-]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function _resolveProfileKey(el) {
+  const id = _identifierStringForElement(el);
+  if (!id) return null;
+  for (const pattern of _PROFILE_FIELD_PATTERNS) {
+    if (pattern.test(id, el)) return pattern.key;
+  }
+  return null;
+}
+
+function _profileValueByPath(profile, path) {
+  let cur = profile;
+  for (const part of String(path || "").split(".")) {
+    if (!cur || typeof cur !== "object") return "";
+    cur = cur[part];
+  }
+  const raw = cur == null ? "" : String(cur);
+  if (raw.trim()) return raw;
+  return String(_PROFILE_DEFAULT_ANSWERS[path] || "");
+}
+
+function _hardSkipForElement(el) {
+  const categoryByType = String(el?.type || "").toLowerCase();
+  if (categoryByType === "password") {
+    return { category: "password", signals: ["type=password"] };
+  }
+  const idText = _identifierStringForElement(el);
+  if (!idText) return null;
+  for (const pattern of _HARD_SKIP_PATTERNS) {
+    if (!pattern.re.test(idText)) continue;
+    if (pattern.category === "felony_freetext") {
+      const tag = String(el.tagName || "").toLowerCase();
+      const role = String(el.getAttribute("role") || "").toLowerCase();
+      if (!(tag === "textarea" || role === "textbox" || el.isContentEditable || String(el.type || "").toLowerCase() === "text")) {
+        continue;
+      }
+    }
+    return { category: pattern.category, signals: [pattern.re.source] };
+  }
+  if (/\b(background check)\b/.test(idText) && /\b(will pass|i will pass|confirm i will pass)\b/.test(idText)) {
+    return { category: "background_check_pass_assertion", signals: ["will_pass_assertion"] };
+  }
+  return null;
+}
+
+function _resolveProfileValue(el, profile) {
+  const directKey = _resolveProfileKey(el);
+  if (directKey) {
+    const direct = profile && Object.prototype.hasOwnProperty.call(profile, directKey) ? profile[directKey] : "";
+    if (direct != null && String(direct).trim()) {
+      return {
+        value: String(direct),
+        source: directKey,
+      };
+    }
+  }
+  const id = _identifierStringForElement(el);
+  if (!id) return null;
+  for (const pattern of _PROFILE_NESTED_PATTERNS) {
+    if (!pattern.test(id, el)) continue;
+    const v = _profileValueByPath(profile, pattern.path);
+    if (String(v).trim()) {
+      return {
+        value: String(v),
+        source: pattern.path,
+      };
+    }
+  }
+  return null;
+}
+
+function fillFormByProfileMatch(scopeEl, profile) {
+  const scope = scopeEl instanceof Element ? scopeEl : document;
+  const urlPath = (() => { try { return window.location.pathname || ""; } catch (_e) { return ""; } })();
+  const refLookup = elementRefLookup();
+  const unmatchedRequiredByRef = new Map();
+  // Pre-check: captcha visible → refuse the entire walk. The next-turn model
+  // owes a NEEDS_INPUT: captcha emission; filling under a captcha gate is the
+  // exact failure pattern (anti-bot drops the application).
+  const captcha_pre = _detectCaptchaOnPage(scope);
+  if (captcha_pre) {
+    return {
+      filled: [],
+      filled_count: 0,
+      skipped_no_match: [],
+      skipped_sensitive: [],
+      unmatched_required: [],
+      fields: [],
+      captcha_present: captcha_pre,
+    };
+  }
+  const selector = "input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=image]):not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), select:not([disabled])";
+  const candidates = scope.querySelectorAll(selector);
+  const filled = [];
+  const skipped_no_match = [];
+  const skipped_sensitive = [];
+  const legacyFields = [];
+  const addUnmatchedRequired = (ref, label) => {
+    if (!ref) return;
+    if (!unmatchedRequiredByRef.has(ref)) {
+      unmatchedRequiredByRef.set(ref, {
+        ref,
+        label: safePageText(label || "", 240),
+      });
+    }
+  };
+  // Password-confirm pairing — when the walk sees two consecutive password-
+  // category sensitives in the same form, the second is annotated as a
+  // password_confirm pair so the model emits ONE NEEDS_INPUT for the pair,
+  // not two for independent fields. Same pattern catches new-password +
+  // confirm-new-password on change-password flows.
+  let last_password_entry = null;
+  for (const el of candidates) {
+    try {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+      const ref = refLookup.get(el) || `ref_${filled.length + skipped_no_match.length + skipped_sensitive.length + 1}`;
+      const labelText = renderedLabelFor(el) || el.placeholder || el.name || el.id || el.getAttribute("aria-label") || "";
+      const required = Boolean(el.required || String(el.getAttribute("aria-required") || "").toLowerCase() === "true");
+      const hardSkip = _hardSkipForElement(el);
+      if (hardSkip) {
+        skipped_sensitive.push({
+          ref,
+          category: hardSkip.category,
+          signals: hardSkip.signals || [],
+          label: safePageText(labelText, 240),
+        });
+        if (required) addUnmatchedRequired(ref, labelText);
+        continue;
+      }
+      // Sensitive-field gate fires BEFORE profile-key match. The model never
+      // gets to invent a password value through this code path.
+      const sensitive = _detectSensitiveField(el, urlPath);
+      if (sensitive) {
+        const entry = {
+          ref,
+          category: sensitive.category,
+          signals: sensitive.signals,
+          label: safePageText(labelText, 240),
+        };
+        // If this is a password and we already saw one in this walk, annotate
+        // as the confirm half of the pair. Model emits one NEEDS_INPUT, not two.
+        if (sensitive.category === "password" && last_password_entry) {
+          entry.category = "password_confirm";
+        } else if (sensitive.category === "password") {
+          last_password_entry = entry;
+        }
+        skipped_sensitive.push(entry);
+        if (required) addUnmatchedRequired(ref, labelText);
+        continue;
+      }
+      const profileHit = _resolveProfileValue(el, profile);
+      if (!profileHit) {
+        skipped_no_match.push({ ref, label: safePageText(labelText, 240) });
+        if (required) addUnmatchedRequired(ref, labelText);
+        continue;
+      }
+      const current = ("value" in el ? String(el.value || "") : "").trim();
+      if (current && current.toLowerCase() === String(profileHit.value).toLowerCase()) {
+        filled.push({ ref, value: safePageText(current, 300) });
+        legacyFields.push({ key: profileHit.source, name: el.name || el.id || "", action: "preserved" });
+        continue;
+      }
+      if (current && current.toLowerCase() !== String(profileHit.value).toLowerCase()) {
+        skipped_no_match.push({ ref, label: safePageText(labelText, 240) });
+        if (required) addUnmatchedRequired(ref, labelText);
+        continue;
+      }
+      setElementValue(el, String(profileHit.value));
+      filled.push({ ref, value: safePageText(String(profileHit.value), 300) });
+      legacyFields.push({ key: profileHit.source, name: el.name || el.id || "", action: "filled" });
+      // Mid-walk captcha re-check (lazy-loaded anti-bot drops captcha after
+      // first few fills). Bail to the same shape as pre-check on detection.
+      const captcha_mid = _detectCaptchaOnPage(scope);
+      if (captcha_mid) {
+        return {
+          filled,
+          filled_count: filled.length,
+          skipped_no_match,
+          skipped_sensitive,
+          unmatched_required: Array.from(unmatchedRequiredByRef.values()),
+          fields: legacyFields,
+          captcha_present: captcha_mid,
+          captcha_phase: "mid-walk",
+        };
+      }
+    } catch (_e) {
+      continue;
+    }
+  }
+  return {
+    filled,
+    filled_count: filled.length,
+    skipped_no_match,
+    skipped_sensitive,
+    unmatched_required: Array.from(unmatchedRequiredByRef.values()),
+    fields: legacyFields,
+    captcha_present: null,
+  };
+}
+
+// Cover-letter merge helper: replaces {{key}} / [key] / <key> with profile
+// values. Used by BROWSER_FILL_FORM for textareas that match recent_job +
+// contain a template, and exported for any future template-style fills.
+function interpolateTemplate(text, profile) {
+  if (!text || typeof text !== "string" || !profile) return text;
+  return text.replace(/(?:\{\{|\[|<)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\}\}|\]|>)/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(profile, key)) {
+      return String(profile[key] || "");
+    }
+    return match;
+  });
+}
+
+async function fetchProfileFromRouter(action) {
+  const base = _routerBaseFromAction(action);
+  const paths = ["/profile", "/apply_profile"];
+  for (const path of paths) {
+    try {
+      const resp = await fetch(`${base}${path}`, { method: "GET", mode: "cors", credentials: "omit" });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (!data || typeof data !== "object") continue;
+      if (data.profile && typeof data.profile === "object") return data.profile;
+      if (data.apply_profile && typeof data.apply_profile === "object") return data.apply_profile;
+      if (data.ready === true && data.profile && typeof data.profile === "object") return data.profile;
+      const looksProfile = data.full_name || data.email || data.demographics || data.work_authorization || data.screener_defaults;
+      if (looksProfile) return data;
+    } catch (_err) {
+      continue;
+    }
+  }
+  return null;
+}
+
+function _pauseState() {
+  return globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__;
+}
+
+function _shouldResumeSubmit(action) {
+  const extras = action?.extras && typeof action.extras === "object" ? action.extras : {};
+  const command = String(
+    action?.command
+    || extras.command
+    || action?.resume_command
+    || extras.resume_command
+    || ""
+  ).toLowerCase();
+  if (command === "resume_click") return true;
+  if (extras.resume === true || action?.resume === true) return true;
+  return false;
+}
+
+function _isAbortCommand(action) {
+  const extras = action?.extras && typeof action.extras === "object" ? action.extras : {};
+  const command = String(action?.command || extras.command || "").toLowerCase();
+  return command === "abort";
+}
+
+async function _resumePendingSubmit(resumeToken = "") {
+  const pauseState = _pauseState();
+  const pending = pauseState.pending_submit;
+  if (!pending) return { ok: false, error: "no pending submit" };
+  if (resumeToken && pending.resume_token && String(resumeToken) !== String(pending.resume_token)) {
+    return { ok: false, error: "resume token mismatch" };
+  }
+  const target = pending.selector;
+  const el = findElement(target);
+  if (!el) return { ok: false, error: "pending submit target not found", target };
+  try { _mirrorMoveGhost(el); } catch (_err) {}
+  el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+  el.click();
+  await waitForPageStable(350, 1800);
+  pauseState.first_app_pause_armed = false;
+  pauseState.pending_submit = null;
+  return { ok: true, resumed: true, target };
+}
+
+// In-page visual mirror (product spec #6): red frame around the tab when an
+// action is in flight, ghost cursor at the target coordinates before click
+// dispatch, current-step text overlay in the corner. Drawn via injected
+// <div>s with extreme z-index and pointer-events:none so the operator's real
+// cursor still works. Does NOT use coordinates from action.target directly;
+// resolves the target element via DOM and reads its center rect — survives
+// page reflow between emit and dispatch.
+const _SENSEI_MIRROR_ROOT_ID = "__sensei_mirror_root__";
+
+function _ensureMirrorRoot() {
+  let root = document.getElementById(_SENSEI_MIRROR_ROOT_ID);
+  if (root) return root;
+  root = document.createElement("div");
+  root.id = _SENSEI_MIRROR_ROOT_ID;
+  root.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;pointer-events:none;z-index:2147483646;";
+  // Red border around the viewport.
+  const frame = document.createElement("div");
+  frame.id = "__sensei_mirror_frame__";
+  frame.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;border:3px solid #c7761a;border-radius:4px;pointer-events:none;box-sizing:border-box;opacity:0;transition:opacity 180ms ease;";
+  root.appendChild(frame);
+  // Ghost cursor (chevron-style triangle so it doesn't look like the OS arrow).
+  const ghost = document.createElement("div");
+  ghost.id = "__sensei_mirror_ghost__";
+  ghost.style.cssText = "position:fixed;top:-32px;left:-32px;width:24px;height:24px;pointer-events:none;opacity:0;transition:top 220ms ease,left 220ms ease,opacity 120ms ease;";
+  ghost.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#c7761a" stroke="#fff" stroke-width="0.8"><path d="M2 2 L2 12 L5 9 L7.5 14 L9.5 13 L7 8 L11 8 Z"/></svg>';
+  root.appendChild(ghost);
+  // Step-text strip pinned to the top-right (out of the way of typical
+  // application forms which sit center-left).
+  const strip = document.createElement("div");
+  strip.id = "__sensei_mirror_step__";
+  strip.style.cssText = "position:fixed;top:8px;right:8px;max-width:380px;padding:6px 10px;background:rgba(15,18,22,0.92);color:#e9d6b5;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.35;border:1px solid #c7761a;border-radius:4px;pointer-events:none;opacity:0;transition:opacity 180ms ease;white-space:pre-wrap;word-break:break-word;";
+  root.appendChild(strip);
+  document.documentElement.appendChild(root);
+  return root;
+}
+
+let _mirrorIdleTimer = null;
+
+function _mirrorShowStep(text) {
+  try {
+    _ensureMirrorRoot();
+    const frame = document.getElementById("__sensei_mirror_frame__");
+    const strip = document.getElementById("__sensei_mirror_step__");
+    if (frame) frame.style.opacity = "1";
+    if (strip) { strip.textContent = String(text || "").slice(0, 280); strip.style.opacity = "1"; }
+    // Auto-idle 8s after the last action. New actions reset the timer.
+    if (_mirrorIdleTimer) clearTimeout(_mirrorIdleTimer);
+    _mirrorIdleTimer = setTimeout(() => { _mirrorIdle(); }, 8000);
+  } catch (_e) {}
+}
+
+function _mirrorMoveGhost(targetEl) {
+  try {
+    _ensureMirrorRoot();
+    const ghost = document.getElementById("__sensei_mirror_ghost__");
+    if (!ghost) return;
+    if (!targetEl || !(targetEl.getBoundingClientRect)) {
+      ghost.style.opacity = "0";
+      return;
+    }
+    const rect = targetEl.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) { ghost.style.opacity = "0"; return; }
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    ghost.style.left = (cx - 12) + "px";
+    ghost.style.top = (cy - 12) + "px";
+    ghost.style.opacity = "1";
+  } catch (_e) {}
+}
+
+function _mirrorIdle() {
+  try {
+    const frame = document.getElementById("__sensei_mirror_frame__");
+    const strip = document.getElementById("__sensei_mirror_step__");
+    const ghost = document.getElementById("__sensei_mirror_ghost__");
+    if (frame) frame.style.opacity = "0";
+    if (strip) strip.style.opacity = "0";
+    if (ghost) ghost.style.opacity = "0";
+  } catch (_e) {}
+}
+
+function _mirrorDescribeAction(action) {
+  const kind = String(action?.kind || "").toUpperCase();
+  const target = String(action?.target || "").slice(0, 160);
+  if (!kind) return "";
+  if (!target) return `▶ ${kind}`;
+  return `▶ ${kind}\n${target}`;
+}
+
 async function executeBrowserAction(action) {
   const kind = String(action?.kind || "").toUpperCase();
+  // Mirror: show step + frame before the dispatch starts.
+  try { _mirrorShowStep(_mirrorDescribeAction(action)); } catch (_e) {}
+  if (kind.startsWith("BROWSER_") && kind !== "BROWSER_NAV" && kind !== "BROWSER_WAIT") {
+    try { await dismissSimplifyOverlays(action); } catch (_e) {}
+  }
   if (kind === "BROWSER_WAIT") {
     const ms = parseWaitMs(action?.target, 1000, 15000);
     await sleep(ms);
@@ -1096,6 +2381,19 @@ async function executeBrowserAction(action) {
     };
   }
 
+  if (kind === "BROWSER_READ_PAGE_FULL") {
+    const full = buildReadPageFullPayload();
+    const dispatch_result = await postDispatchEvent("page_read", full, action);
+    const confirmation_post = await maybePostConfirmationDetected(action);
+    return {
+      ok: true,
+      ...full,
+      dispatch_result,
+      confirmation_post,
+      text: full.title || full.url || "page observed",
+    };
+  }
+
   if (kind === "BROWSER_READ") {
     const target = String(action?.target || "").trim();
     const el = target ? findElement(target) : null;
@@ -1107,18 +2405,71 @@ async function executeBrowserAction(action) {
   }
 
   if (kind === "BROWSER_CLICK") {
+    if (_isAbortCommand(action)) {
+      const pauseState = _pauseState();
+      pauseState.first_app_pause_armed = false;
+      pauseState.pending_submit = null;
+      return { ok: false, aborted: true, reason: "abort_command" };
+    }
     const el = findElement(action.target);
     if (!el) return { ok: false, error: "target not found" };
+    const submitSignals = submitSignalsForElement(el);
+    const submitPage = detectSubmitPage();
+    const submittedCount = submittedCountFromAction(action);
+    const pauseState = _pauseState();
+    if (submittedCount > 0) {
+      pauseState.first_app_pause_armed = false;
+    }
+    const isSubmitCandidate = submitPage.is_submit_page && submitSignals.length >= 2;
+    if (isSubmitCandidate && pauseState.first_app_pause_armed && submittedCount === 0 && !_shouldResumeSubmit(action)) {
+      const resumeToken = `resume_${Date.now()}`;
+      pauseState.pending_submit = {
+        selector: safeSelectorFor(el),
+        name: _readPageName(el),
+        resume_token: resumeToken,
+      };
+      await postDispatchEvent("submit_deferred", {
+        url: safePageText(location.href || "", 2000),
+        title: safePageText(document.title || "", 300),
+        target: safeSelectorFor(el),
+        submit_signals: submitSignals,
+        resume_token: resumeToken,
+      }, action);
+      return {
+        ok: true,
+        deferred: true,
+        reason: "first_submit_pause",
+        is_submit_page: true,
+        submit_signals: submitSignals,
+        applications_submitted_this_session: submittedCount,
+        resume_token: resumeToken,
+      };
+    }
+    if (isSubmitCandidate && _shouldResumeSubmit(action)) {
+      pauseState.first_app_pause_armed = false;
+      pauseState.pending_submit = null;
+    }
     el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    // Mirror: position the ghost cursor over the resolved target before
+    // dispatching the click event. The animation is purely for the operator's
+    // benefit; the actual click fires immediately via el.click().
+    try { _mirrorMoveGhost(el); } catch (_e) {}
     el.click();
     await waitForPageStable(350, 1400);
-    return { ok: true, clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+    const confirmation_post = await maybePostConfirmationDetected(action);
+    return {
+      ok: true,
+      clicked: action.target,
+      confirmation_post,
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+    };
   }
 
   if (kind === "BROWSER_DOUBLE_CLICK") {
     const el = findElement(action.target);
     if (!el) return { ok: false, error: "target not found" };
     el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
     el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, view: window }));
     await waitForPageStable(350, 1400);
     return { ok: true, double_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
@@ -1130,6 +2481,29 @@ async function executeBrowserAction(action) {
     const wantsFileUpload = isFileUploadAction(action, parsed);
     const el = findFillElement(parsed, wantsFileUpload);
     if (!el) return { ok: false, error: "target not found" };
+    // Sensitive-field gate (post-emit, pre-dispatch) — refuses to fill
+    // password / SSN / cc_number / cvv / routing / account fields even when
+    // the model emits an explicit BROWSER_FILL with a value. The deterministic
+    // floor under the probabilistic Modelfile teaching. 2026-05-16 probe
+    // confirmed the local 7B emits hallucinated passwords without this gate.
+    if (!wantsFileUpload && !fileUpload) {
+      let urlPath = ""; try { urlPath = window.location.pathname || ""; } catch (_e) {}
+      const sensitive = _detectSensitiveField(el, urlPath);
+      if (sensitive) {
+        let labelText = "";
+        try { labelText = renderedLabelFor(el); } catch (_e) {}
+        return {
+          ok: false,
+          skipped_sensitive: true,
+          category: sensitive.category,
+          tier: sensitive.tier,
+          signals: sensitive.signals,
+          target: parsed.selector,
+          label: labelText || el.placeholder || "",
+          error: `sensitive-field gate refused fill on ${sensitive.category} (${sensitive.tier}, signals: ${sensitive.signals.join(",")}). Emit NEEDS_INPUT: ${sensitive.category} :: ${labelText || parsed.selector} instead — do not invent a value.`,
+        };
+      }
+    }
     if (wantsFileUpload || fileUpload) {
       const upload = setFileInputValue(el, fileUpload);
       if (!upload.ok) return upload;
@@ -1168,11 +2542,152 @@ async function executeBrowserAction(action) {
     return { ok: true, filled: parsed.selector, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
+  if (kind === "BROWSER_FILL_FORM") {
+    let profile = action?.profile;
+    if (!profile || typeof profile !== "object") {
+      profile = await fetchProfileFromRouter(action);
+    }
+    if (!profile || typeof profile !== "object") {
+      return {
+        ok: false,
+        error: "no profile available — server returned empty profile payload. Save/apply profile via Sensei then retry."
+      };
+    }
+    let scope = document;
+    const selectorHint = String(action?.target || "").trim();
+    if (selectorHint) {
+      try {
+        const candidate = document.querySelector(selectorHint);
+        if (candidate) scope = candidate;
+      } catch (_e) { /* fall back to document scope */ }
+    }
+    const result = fillFormByProfileMatch(scope, profile);
+    await waitForPageStable(350, 1500);
+    // Surface the post-emit gate's findings so the next-turn model can act:
+    // - captcha_present → emit NEEDS_INPUT: captcha
+    // - skipped_sensitive non-empty → emit NEEDS_INPUT: <category> per entry
+    // - filled=0 and nothing skipped → no profile-matched fields on this page
+    const sensitiveCount = (result.skipped_sensitive || []).length;
+    const unmatchedCount = (result.unmatched_required || []).length;
+    const filledCount = Number(result.filled_count || 0);
+    const captcha = result.captcha_present;
+    let advisoryError;
+    if (captcha) {
+      advisoryError = `captcha detected (${captcha.captcha_type}${result.captcha_phase ? `, ${result.captcha_phase}` : ""}). Emit NEEDS_INPUT: captcha :: ${captcha.captcha_type} on this page — operator must solve before continuing.`;
+    } else if (filledCount === 0 && sensitiveCount > 0) {
+      const cats = [...new Set(result.skipped_sensitive.map(s => s.category))].join(", ");
+      advisoryError = `every visible field on this form is sensitive (${cats}). Emit NEEDS_INPUT for each entry in skipped_sensitive instead of filling.`;
+    } else if (filledCount === 0) {
+      advisoryError = "no profile-matched fields found on this page";
+    }
+    return {
+      ok: filledCount > 0 && !captcha,
+      filled_count: filledCount,
+      filled: result.filled || [],
+      skipped_no_match: result.skipped_no_match,
+      skipped_sensitive: result.skipped_sensitive || [],
+      unmatched_required: result.unmatched_required || [],
+      unmatched_required_count: unmatchedCount,
+      captcha_present: captcha,
+      fields: result.fields,
+      scope: selectorHint || "document",
+      error: advisoryError,
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: true, waitForStableMs: 200 })
+    };
+  }
+
+  if (kind === "BROWSER_SUBMIT") {
+    if (_isAbortCommand(action)) {
+      const pauseState = _pauseState();
+      pauseState.first_app_pause_armed = false;
+      pauseState.pending_submit = null;
+      return { ok: false, aborted: true, reason: "abort_command" };
+    }
+    const target = String(action?.target || "").trim();
+    let submitEl = target ? findElement(target) : null;
+    if (!submitEl) {
+      submitEl = document.querySelector("button[type='submit'],input[type='submit'],button,[role='button']");
+    }
+    const form = submitEl?.closest?.("form") || document.querySelector("form");
+    const submitSignals = submitEl ? submitSignalsForElement(submitEl) : [];
+    const submitPage = detectSubmitPage();
+    const submittedCount = submittedCountFromAction(action);
+    const pauseState = _pauseState();
+    if (submittedCount > 0) {
+      pauseState.first_app_pause_armed = false;
+    }
+    const isSubmitCandidate = submitPage.is_submit_page && submitSignals.length >= 2;
+    if (isSubmitCandidate && pauseState.first_app_pause_armed && submittedCount === 0 && !_shouldResumeSubmit(action)) {
+      const resumeToken = `resume_${Date.now()}`;
+      pauseState.pending_submit = {
+        selector: submitEl ? safeSelectorFor(submitEl) : target || "form",
+        name: submitEl ? _readPageName(submitEl) : "submit",
+        resume_token: resumeToken,
+      };
+      await postDispatchEvent("submit_deferred", {
+        url: safePageText(location.href || "", 2000),
+        title: safePageText(document.title || "", 300),
+        target: target || pauseState.pending_submit.selector,
+        submit_signals: submitSignals,
+        resume_token: resumeToken,
+      }, action);
+      return {
+        ok: true,
+        deferred: true,
+        reason: "first_submit_pause",
+        is_submit_page: true,
+        submit_signals: submitSignals,
+        applications_submitted_this_session: submittedCount,
+        resume_token: resumeToken,
+      };
+    }
+    if (isSubmitCandidate && _shouldResumeSubmit(action)) {
+      pauseState.first_app_pause_armed = false;
+      pauseState.pending_submit = null;
+    }
+    if (form) {
+      if (typeof form.requestSubmit === "function") form.requestSubmit(submitEl && submitEl.form === form ? submitEl : undefined);
+      else form.submit();
+      await waitForPageStable(450, 2000);
+      const confirmation_post = await maybePostConfirmationDetected(action);
+      return {
+        ok: true,
+        submitted: true,
+        target: target || "form",
+        confirmation_post,
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+      };
+    }
+    if (submitEl) {
+      submitEl.click();
+      await waitForPageStable(450, 2000);
+      const confirmation_post = await maybePostConfirmationDetected(action);
+      return {
+        ok: true,
+        submitted: true,
+        target: target || "submit_element",
+        confirmation_post,
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+      };
+    }
+    return { ok: false, error: "submit target not found" };
+  }
+
   if (kind === "BROWSER_NAV") {
     const url = String(action?.target || "").trim();
     if (!url) return { ok: false, error: "missing url" };
     location.assign(url);
     return { ok: true, navigated: url };
+  }
+
+  if (kind === "BROWSER_CLOSE_TAB") {
+    try {
+      const ack = await chrome.runtime.sendMessage({ type: "SENSEI_CLOSE_CURRENT_TAB" });
+      if (ack && ack.ok) return { ok: true, closed_tab: true };
+      return { ok: false, error: ack?.error || "close_tab failed" };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
   }
 
   if (kind === "BROWSER_FIND") {
@@ -1203,51 +2718,85 @@ async function executeBrowserAction(action) {
   return { ok: false, error: `unsupported browser action: ${kind}` };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === "SENSEI_PING") {
-    sendResponse({ ok: true });
+if (globalThis.__SENSEI_ENABLE_TEST_API__) {
+  globalThis.__SENSEI_TEST_API__ = {
+    buildReadPageFullPayload,
+    fillFormByProfileMatch,
+    submitSignalsForElement,
+    detectSubmitPage,
+    detectConfirmationPage,
+    extractReferenceNumber,
+    dismissSimplifyOverlays,
+    executeBrowserAction,
+  };
+}
+
+if (globalThis.chrome?.runtime?.onMessage?.addListener) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "SENSEI_PING") {
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message?.type === "SENSEI_PAGE_CONTEXT") {
+      pageContextAsync(message.options || {})
+        .then((ctx) => sendResponse({ ok: true, page_context: ctx }))
+        .catch((err) => sendResponse({ ok: false, error: String(err?.message || err), page_context: pageContext({ includeVisibleText: false }) }));
+      return true;
+    }
+
+    if (message?.type === "SENSEI_EXECUTE_ACTION") {
+      executeBrowserAction(message.action)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+      return true;
+    }
+
+    if (message?.type === "SENSEI_ROUTER_COMMAND") {
+      const command = String(message.command || "").toLowerCase();
+      if (command === "resume_click") {
+        _resumePendingSubmit(message.resume_token || "")
+          .then((result) => sendResponse(result))
+          .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
+        return true;
+      }
+      if (command === "abort") {
+        const pauseState = _pauseState();
+        pauseState.first_app_pause_armed = false;
+        pauseState.pending_submit = null;
+        sendResponse({ ok: true, aborted: true });
+        return false;
+      }
+      sendResponse({ ok: false, error: "unsupported router command" });
+      return false;
+    }
+
+    // Phase 5.2 — return the console-event ring buffer the page has been
+    // accumulating since load. The buffer caps itself at CONSOLE_LIMIT so the
+    // response stays bounded.
+    if (message?.type === "SENSEI_READ_CONSOLE_EVENTS") {
+      const filter = String(message.filter || "all").toLowerCase();
+      const all = Array.isArray(globalThis.__SENSEI_CONSOLE_EVENTS__)
+        ? globalThis.__SENSEI_CONSOLE_EVENTS__.slice(-CONSOLE_LIMIT)
+        : [];
+      const filtered = (filter === "all" || !filter)
+        ? all
+        : all.filter((e) => String(e?.level || "").toLowerCase() === filter);
+      sendResponse(filtered);
+      return false;
+    }
+
+    if (message?.type === "SENSEI_RECORD_START") {
+      sendResponse(startWorkflowRecording());
+      return false;
+    }
+
+    if (message?.type === "SENSEI_RECORD_STOP") {
+      sendResponse(stopWorkflowRecording());
+      return false;
+    }
+
     return false;
-  }
-
-  if (message?.type === "SENSEI_PAGE_CONTEXT") {
-    pageContextAsync(message.options || {})
-      .then((ctx) => sendResponse({ ok: true, page_context: ctx }))
-      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err), page_context: pageContext({ includeVisibleText: false }) }));
-    return true;
-  }
-
-  if (message?.type === "SENSEI_EXECUTE_ACTION") {
-    executeBrowserAction(message.action)
-      .then((result) => sendResponse(result))
-      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }));
-    return true;
-  }
-
-  // Phase 5.2 — return the console-event ring buffer the page has been
-  // accumulating since load. The buffer caps itself at CONSOLE_LIMIT so the
-  // response stays bounded.
-  if (message?.type === "SENSEI_READ_CONSOLE_EVENTS") {
-    const filter = String(message.filter || "all").toLowerCase();
-    const all = Array.isArray(globalThis.__SENSEI_CONSOLE_EVENTS__)
-      ? globalThis.__SENSEI_CONSOLE_EVENTS__.slice(-CONSOLE_LIMIT)
-      : [];
-    const filtered = (filter === "all" || !filter)
-      ? all
-      : all.filter((e) => String(e?.level || "").toLowerCase() === filter);
-    sendResponse(filtered);
-    return false;
-  }
-
-  if (message?.type === "SENSEI_RECORD_START") {
-    sendResponse(startWorkflowRecording());
-    return false;
-  }
-
-  if (message?.type === "SENSEI_RECORD_STOP") {
-    sendResponse(stopWorkflowRecording());
-    return false;
-  }
-
-  return false;
-});
+  });
+}
 })();
