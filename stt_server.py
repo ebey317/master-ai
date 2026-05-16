@@ -812,7 +812,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
         "Branch B: you have BOTH lanes — browser (via the extension) AND local terminal + filesystem (server-dispatched). Pick whichever lane is most natural for each step; don't claim anything has been executed until the dispatch path returns results.",
         "Local terminal + filesystem lane — for file ops, downloads, PDF text extraction, opening desktop apps, or anything cleaner in a shell, emit RUN, RUNTERM, READ, CREATE, or EDIT directives. The backend runs them server-side and the stdout/output appears appended to the reply context for your next round. Sudo, dangerous patterns, and the self-mod denylist are still gated.",
         "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, find, submit), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_FIND, BROWSER_EXTRACT_LIST, or BROWSER_DRIVE_INSPECT_FOLDER directives. The extension confirms and dispatches them in-tab.",
-        "Lane choice heuristic: if the step is 'open a webpage, click something, read what's on screen, fill a field' → browser lane. If it's 'open a PDF, extract text from a file, download something, launch a desktop app, move/edit/delete files, run a CLI tool' → terminal lane. Interleave freely within one multi-step plan.",
+        "Lane choice — code-first: PREFER the terminal lane when both lanes work. A 5-line bash or python script that finishes the step is faster, deterministic, and auditable. Only drive the browser when there is no terminal path — login-walled UI, form with no exposed API, JS-rendered submit, in-tab visual confirmation. Only use the terminal when there is no browser path — system services, package install, file permissions, anything below the URL bar. Never duplicate work across both — pick one per step. Interleave freely (terminal step → browser step → terminal step) within a multi-step plan when each step genuinely needs the lane chosen.",
         "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
         "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
         "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
@@ -1452,7 +1452,7 @@ def _reply_has_done_directive(reply):
     return False
 
 
-def _api_terminal_state(reply, captured_actions, round_remaining):
+def _api_terminal_state(reply, captured_actions, round_remaining, server_progressed=False):
     """Return (done, terminal_reason) for an API turn."""
     if captured_actions and round_remaining > 0:
         return False, ""
@@ -1460,6 +1460,15 @@ def _api_terminal_state(reply, captured_actions, round_remaining):
         return True, "budget"
     if _reply_has_done_directive(reply):
         return True, "done_directive"
+    if server_progressed and round_remaining > 0:
+        # Server-side dispatch fired (RUN/RUNTERM/READ/CREATE/EDIT) but the
+        # model didn't emit DONE and didn't emit BROWSER_* actions for the
+        # extension. Keep the turn open so the extension fires
+        # /chat/continue with empty action_results, giving the model another
+        # round to react to the server output and emit the next planned
+        # step. Required for multi-lane workflows where a terminal step
+        # precedes a browser step.
+        return False, "server_progressed"
     return True, "no_actions"
 
 
@@ -1741,6 +1750,7 @@ def api_handle(payload):
             # local output gets appended to the reply text.
             # effective_mode is computed early at line 866 — shared with
             # _api_parse_actions so the status taxonomy stays in sync.
+            _server_progressed = False
             if source == "chrome_extension" and effective_mode == "auto":
                 _real = {n: o for n, o in patches}
                 for _name in ("confirm_run", "confirm_runterm", "confirm_create", "confirm_edit"):
@@ -1873,6 +1883,7 @@ def api_handle(payload):
                         _server_out.append(f"[{_kind} {_target}] dispatch error: {_e}")
                 if _server_out:
                     reply = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
+                    _server_progressed = True
                 captured_actions = _browser_only
 
             try:
@@ -1900,7 +1911,10 @@ def api_handle(payload):
     # M9 termination signal. Browser actions keep the turn open until the
     # extension reports real results; DONE is terminal only with no actions.
     round_remaining = max(0, round_budget - round_num)
-    done, terminal_reason = _api_terminal_state(reply, captured_actions, round_remaining)
+    done, terminal_reason = _api_terminal_state(
+        reply, captured_actions, round_remaining,
+        server_progressed=locals().get("_server_progressed", False),
+    )
 
     # Register this turn so a continuation request can find it.
     now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
