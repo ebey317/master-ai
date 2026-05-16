@@ -1959,6 +1959,42 @@ def api_handle(payload):
                             _server_out.append(f"[RUNTERM] dispatched: {_target}")
                         elif _kind == "READ":
                             _expanded = os.path.expanduser(_target)
+                            # URL guard (sensei_read_dispatcher_guard.sh, 2026-05-16):
+                            # cloud planners have been emitting READ with URLs (browser
+                            # content) and unexpanded globs (~/Downloads/*.pdf) that
+                            # open() rejects with Errno 2. Surface explicit corrective
+                            # guidance through _server_out so the next-turn cloud lane
+                            # has something to act on besides a bare "no such file".
+                            if _expanded.startswith(("http://", "https://")):
+                                _server_out.append(
+                                    f"[READ {_target}] blocked: target is a URL. "
+                                    f"For browser content, emit:\n"
+                                    f"  BROWSER_NAV: {_target}\n"
+                                    f"then BROWSER_READ_PAGE or BROWSER_OBSERVE to read it. "
+                                    f"READ is only for local filesystem paths."
+                                )
+                                continue
+                            if any(_g in _expanded for _g in ("*", "?", "[")):
+                                import glob as _glob_mod
+                                _matches = sorted(_glob_mod.glob(_expanded))
+                                if not _matches:
+                                    _dir = _expanded.rsplit('/', 1)[0] if '/' in _expanded else '.'
+                                    _server_out.append(
+                                        f"[READ {_target}] blocked: glob matched zero files. "
+                                        f"Use a specific path or first run:\n"
+                                        f"  RUN: ls {_dir}\n"
+                                        f"to see what exists, then READ the exact file path."
+                                    )
+                                    continue
+                                _expanded = _matches[0]
+                                if len(_matches) > 1:
+                                    _others = "\n  ".join(_matches[1:5])
+                                    _suffix = f" (+ {len(_matches) - 5} more)" if len(_matches) > 5 else ""
+                                    _server_out.append(
+                                        f"[READ {_target}] glob matched {len(_matches)} files; "
+                                        f"reading first: {_expanded}\n"
+                                        f"Other matches:\n  {_others}{_suffix}"
+                                    )
                             if hasattr(_m, "_read_path_ok"):
                                 try:
                                     _read_ok, _reason = _m._read_path_ok(_expanded)
