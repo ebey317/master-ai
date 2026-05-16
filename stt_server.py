@@ -248,6 +248,94 @@ def _scripts_on_path():
     return here
 
 
+def _vision_locate_coords(b64_png, description, *, max_dim=1024):
+    """Ask llava where a described UI element is on a screenshot.
+
+    Returns (x, y) in TRUE (pre-downscale) pixel coordinates if llava
+    confidently locates the target, or None on 'NONE', malformed output,
+    or any error. Caller emits BROWSER_CDP_MOUSE: x,y with these coords.
+
+    The PNG is downscaled to max_dim on its longest side before being
+    handed to llava because CPU-llava chokes on full-resolution browser
+    captures. Coordinates from the downscaled image are scaled back up
+    using the original dimensions before return.
+    """
+    if not b64_png or not isinstance(description, str) or not description.strip():
+        return None
+    tmp_path = None
+    scale = 1.0
+    try:
+        import base64 as _b64
+        import io as _io
+        import tempfile as _tf
+        from PIL import Image as _Image
+        raw = _b64.b64decode(b64_png)
+        img = _Image.open(_io.BytesIO(raw))
+        true_w, true_h = img.size
+        if true_w <= 0 or true_h <= 0:
+            return None
+        longest = max(true_w, true_h)
+        if longest > max_dim:
+            scale = max_dim / longest
+            new_size = (max(1, int(true_w * scale)), max(1, int(true_h * scale)))
+            img = img.resize(new_size, _Image.LANCZOS)
+        ds_w, ds_h = img.size
+        with _tf.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            img.save(tmp, format="PNG")
+            tmp_path = tmp.name
+    except Exception:
+        return None
+
+    try:
+        _scripts_on_path()
+        import master_ai as _m
+    except Exception:
+        try:
+            if tmp_path:
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+        return None
+
+    prompt = (
+        f"Look at this {ds_w}x{ds_h} screenshot. Output ONLY the pixel "
+        f"coordinates of the center of the {description.strip()} as 'x,y' "
+        "(two integers, comma-separated, 0,0 is top-left). If you cannot "
+        "see it on the page, output exactly 'NONE'. No other text, no "
+        "quotes, no explanation."
+    )
+    reply = ""
+    try:
+        vision_model = _m.MODELS.get("vision") if hasattr(_m, "MODELS") else "llava"
+        reply = _m.ask_local(
+            [{"role": "user", "content": prompt}],
+            model=vision_model,
+            image_path=tmp_path,
+        ) or ""
+    except Exception:
+        reply = ""
+    finally:
+        try:
+            if tmp_path:
+                os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    text = str(reply).strip()
+    if not text or text.upper().startswith("NONE"):
+        return None
+    first_line = text.splitlines()[0]
+    m = re.match(r"\s*(-?\d+)\s*,\s*(-?\d+)\s*$", first_line)
+    if not m:
+        return None
+    dx, dy = int(m.group(1)), int(m.group(2))
+    if not (0 <= dx <= ds_w and 0 <= dy <= ds_h):
+        return None
+    if scale < 1.0 and scale > 0:
+        return (int(round(dx / scale)), int(round(dy / scale)))
+    return (dx, dy)
+
+
 def _api_session_key(source, session_id):
     session_id = (session_id or "").strip()
     if not session_id:
