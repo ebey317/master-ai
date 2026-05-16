@@ -177,6 +177,16 @@ LAST_ACTION_FILE  = _pfile("last_action.json")
 HINTS_FILE    = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
 OLLAMA_URL    = "http://localhost:11434"
+# Per-request Ollama urlopen budget. Defaults to 600s for TUI Plan-mode runs.
+# stt_server.api_handle clamps this to ~110s (under _API_HANDLE_LOCK_TIMEOUT_S)
+# via the patch() mechanism so a wedged /chat inference cannot outlast the
+# dispatch lock — keeps cloud lanes and follow-up requests from sitting
+# behind an 8-minute runaway. See stt_server.py:_API_HANDLE_LOCK_TIMEOUT_S.
+LOCAL_REQUEST_TIMEOUT_OVERRIDE = None
+
+def _local_request_timeout(default=600):
+    v = LOCAL_REQUEST_TIMEOUT_OVERRIDE
+    return v if isinstance(v, (int, float)) and v > 0 else default
 PIPER_MODEL   = Path.home() / "scripts/voices/en_US-lessac-medium.onnx"
 LOG_FILE      = Path.home() / "scripts/master.log"
 WHISPER_MODEL = "base"
@@ -3831,7 +3841,9 @@ def ask_local(messages, model=None, image_path=None):
         # 10 minutes gives master-ai breathing room on busy CPU.
         # Elijah's principle: better a slow local answer than a fast
         # cloud punt. Revisit when 32 GB RAM + GPU upgrade lands.
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        # api_handle clamps to ~110s via LOCAL_REQUEST_TIMEOUT_OVERRIDE
+        # so /chat wedges can't outlast _API_HANDLE_LOCK_TIMEOUT_S.
+        with urllib.request.urlopen(req, timeout=_local_request_timeout(600)) as resp:
             result = json.loads(resp.read())
             response_text = result["message"]["content"]
             # Harvest this call so future identical questions don't re-run it
@@ -4100,7 +4112,9 @@ def ask_local_stream(messages, model=None, image_path=None):
         # cloud punt. Bumped 300→600 (2026-04-24) after grounded Plan
         # prompts triggered OLLAMA_ERROR repeatedly. Match the non-
         # streaming sibling. Revisit when 32 GB RAM + GPU upgrade lands.
-        with urllib.request.urlopen(req, timeout=600) as resp:
+        # api_handle clamps to ~110s via LOCAL_REQUEST_TIMEOUT_OVERRIDE
+        # so /chat wedges can't outlast _API_HANDLE_LOCK_TIMEOUT_S.
+        with urllib.request.urlopen(req, timeout=_local_request_timeout(600)) as resp:
             for line in resp:
                 if not line.strip():
                     continue

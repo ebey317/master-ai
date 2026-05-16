@@ -1757,6 +1757,14 @@ def api_handle(payload):
                 patches.append((name, getattr(_m, name)))
                 setattr(_m, name, value)
 
+        # Wedge protection: cap local Ollama urlopen below the lock timeout.
+        # The 600s default in master_ai.ask_local / ask_local_stream is for
+        # TUI Plan-mode breathing room; /chat dispatch must die BEFORE the
+        # lock-acquire timeout fires, otherwise the same wedge greets every
+        # follow-up request and burns another 120s. Slack of 10s ensures the
+        # urlopen raises first and the lock releases cleanly.
+        patch("LOCAL_REQUEST_TIMEOUT_OVERRIDE", max(10, int(_API_HANDLE_LOCK_TIMEOUT_S) - 10))
+
         def collect_only(reply, history_ref, streamed=False, continue_after_tools=False):
             nonlocal captured_actions
             model = getattr(_m, "LAST_MODEL", "") or requested_model or "master-ai"
