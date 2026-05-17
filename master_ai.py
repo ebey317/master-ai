@@ -62,6 +62,7 @@ import os, sys, json, subprocess, tempfile, urllib.request, urllib.error, socket
 import base64, re, time, shutil, hashlib, platform, atexit, signal, threading, queue
 from datetime import datetime
 from pathlib import Path
+from url_grounding import resolve_open_target_url
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
@@ -2129,6 +2130,218 @@ def _read_run_mode():
         pass
     return "apocalypse"
 
+
+_LOCAL_FIND_HINTS = {
+    "file", "folder", "directory", "dir", "repo", "project", "script", "manual",
+    "pdf", "doc", "docx", "txt", "md", "json", "yaml", "yml", "csv", "resume",
+    "résumé", "cv", "certificate", "transcript", "notes",
+}
+
+
+def _clean_intent_object(text):
+    cleaned = re.sub(r"[?!.]+$", "", str(text or "").strip())
+    cleaned = re.sub(r"^(?:my|the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(?:file|folder|directory|dir)\s+(?:named|called)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+(?:on|in)\s+(?:my\s+)?(?:computer|machine|pc|system|box)$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" '\"")
+
+
+def _looks_like_local_find_target(target):
+    low = str(target or "").lower()
+    words = {w for w in re.split(r"[^a-z0-9]+", low) if w}
+    return (
+        bool(words & _LOCAL_FIND_HINTS)
+        or any(ch in target for ch in ("/", ".", "_", "-"))
+        or low.startswith(("~", "$home"))
+    )
+
+
+def _quote_home_path(path_text):
+    raw = str(path_text or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    return shlex.quote(expanded)
+
+
+def _deterministic_intent_to_directive(user_text):
+    """Return a RUN:/READ: directive for common local/system intents."""
+    text = str(user_text or "").strip()
+    if not text:
+        return None
+    low = text.lower()
+
+    m = re.search(r"\b(?:what(?:'s| is)\s+on\s+port|port)\s+(\d{1,5})\b", low)
+    if m:
+        port = int(m.group(1))
+        if 0 < port <= 65535:
+            return f"RUN: ss -tlnp | grep -E ':{port}\\b' || true"
+
+    m = re.match(r"^(?:where\s+is|where's)\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        target = _clean_intent_object(m.group(1))
+        if target:
+            pattern = shlex.quote(f"*{target}*")
+            return f"RUN: find \"$HOME\" -iname {pattern} 2>/dev/null | head -50"
+
+    m = re.match(r"^find\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        target = _clean_intent_object(m.group(1))
+        if target and _looks_like_local_find_target(target):
+            pattern = shlex.quote(f"*{target}*")
+            return f"RUN: find \"$HOME\" -iname {pattern} 2>/dev/null | head -50"
+
+    m = re.match(r"^(?:list\s+files\s+in|list\s+directory|ls)\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        path = _quote_home_path(m.group(1))
+        if path:
+            return f"RUN: ls -la {path}"
+
+    m = re.match(r"^open\s+file\s+(.+)$", text, re.IGNORECASE)
+    if m:
+        raw = str(m.group(1) or "").strip().strip("'\"")
+        if raw:
+            expanded = os.path.expandvars(os.path.expanduser(raw))
+            return f"READ: {expanded}"
+
+    m = re.match(r"^is\s+(.+?)\s+running\??$", text, re.IGNORECASE)
+    if m:
+        proc = _clean_intent_object(m.group(1))
+        if proc:
+            return f"RUN: pgrep -af {shlex.quote(proc)} || true"
+
+    m = re.match(r"^(?:is|do\s+i\s+have)\s+(.+?)\s+installed\??$", text, re.IGNORECASE)
+    if m:
+        pkg = _clean_intent_object(m.group(1))
+        if pkg:
+            cmd = re.sub(r"[^A-Za-z0-9._+-]+", "-", pkg).strip("-")
+            grep_q = shlex.quote(pkg)
+            if cmd:
+                return f"RUN: command -v {shlex.quote(cmd)} 2>/dev/null || dpkg -l 2>/dev/null | grep -i {grep_q} | head -20 || true"
+            return f"RUN: dpkg -l 2>/dev/null | grep -i {grep_q} | head -20 || true"
+
+    return None
+
+
+def _json_object_from_text(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if not match:
+        return None
+    try:
+        obj = json.loads(match.group(0))
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def _fast_classifier_enabled():
+    flag = os.environ.get("SENSEI_FAST_CLASSIFIER", "1").strip().lower()
+    return flag not in {"0", "false", "off", "no"}
+
+
+def _classify_intent_fast(user_text, *, model=None, timeout_s=None):
+    """Use the installed 3B model as a cheap first-pass intent classifier."""
+    text = str(user_text or "").strip()
+    if not text or len(text) > 800 or not _fast_classifier_enabled():
+        return None
+    model = model or MODELS["fast"]
+    timeout_s = float(timeout_s or os.environ.get("SENSEI_FAST_CLASSIFIER_TIMEOUT", "4"))
+    system = (
+        "Classify one user message for a local computer-control agent. "
+        "Return ONLY compact JSON with keys: intent, confidence, normalized_prompt, reply. "
+        "intent is one of: ack, directive, conversation. "
+        "Use ack only for short acknowledgments like ok/thanks/roger/got it. "
+        "Use directive only for requests about the local machine, files, ports, processes, "
+        "or installed software. If directive, normalized_prompt MUST be one of these shapes: "
+        "\"what's on port N\", \"where is NAME\", \"find NAME\", \"list files in PATH\", "
+        "\"open file PATH\", \"is NAME running\", \"is NAME installed\". "
+        "Never output shell commands."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
+        ],
+        "stream": False,
+        "keep_alive": "5m",
+        "options": {"temperature": 0, "num_ctx": 512},
+    }
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            result = json.loads(resp.read())
+    except Exception as e:
+        log(f"FAST_CLASSIFIER_ERROR: {e}")
+        _router_metric("fast_classifier", model=model, ok=False, error=str(e)[:160])
+        return None
+    content = (((result or {}).get("message") or {}).get("content") or "").strip()
+    obj = _json_object_from_text(content)
+    if not obj:
+        _router_metric("fast_classifier", model=model, ok=False, error="bad_json",
+                       latency_s=round(time.time() - t0, 3))
+        return None
+    intent = str(obj.get("intent") or "").strip().lower()
+    try:
+        confidence = float(obj.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    out = {
+        "intent": intent,
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "normalized_prompt": str(obj.get("normalized_prompt") or "").strip(),
+        "reply": str(obj.get("reply") or "").strip(),
+        "model": model,
+    }
+    _router_metric("fast_classifier", model=model, ok=True, intent=out["intent"],
+                   confidence=out["confidence"], latency_s=round(time.time() - t0, 3))
+    return out
+
+
+def _route_from_fast_classifier(user_text):
+    cls = _classify_intent_fast(user_text)
+    if not isinstance(cls, dict):
+        return None
+    intent = str(cls.get("intent") or "").lower()
+    try:
+        confidence = float(cls.get("confidence") or 0.0)
+    except Exception:
+        return None
+    if confidence < 0.78:
+        return None
+    if intent == "ack":
+        reply = cls.get("reply") or _acknowledgment_short_circuit(user_text) or "Okay."
+        return {"route": "acknowledgment",
+                "response": reply,
+                "model": cls.get("model") or MODELS["fast"],
+                "reason": f"tier-one classifier ack confidence={confidence:.2f}"}
+    if intent == "directive":
+        normalized = cls.get("normalized_prompt") or user_text
+        directive = (
+            _deterministic_intent_to_directive(normalized)
+            or _deterministic_intent_to_directive(user_text)
+        )
+        if directive:
+            return {"route": "deterministic_intent",
+                    "synth_reply": directive,
+                    "model": cls.get("model") or MODELS["fast"],
+                    "reason": f"tier-one classifier directive confidence={confidence:.2f}"}
+    return None
+
+
 def orchestrate(history, user_text, image_path=None):
     """Pick a route. Returns decision dict with 'route'/'model'/'reason'.
 
@@ -2180,6 +2393,13 @@ def orchestrate(history, user_text, image_path=None):
         low = user_section_low
         words = user_section_words
         word_set = user_section_word_set
+
+    _envelope_head = stripped[:_user_mark_idx] if _user_mark_idx >= 0 else ""
+    _is_chrome_ext_automation = bool(
+        _envelope_head
+        and re.search(r'(?im)^\s*source\s*:\s*chrome_extension\b', _envelope_head)
+        and "[BROWSER PAGE CONTEXT]" in _envelope_head
+    )
 
     def _strip_prefix(prefix_len):
         """Return user_text with the leading routing prefix removed from
@@ -2262,6 +2482,17 @@ def orchestrate(history, user_text, image_path=None):
                 "response": ack_reply,
                 "reason": "pure acknowledgment → deterministic one-line reply"}
 
+    deterministic_directive = _deterministic_intent_to_directive(user_section)
+    if deterministic_directive:
+        return {"route": "deterministic_intent",
+                "synth_reply": deterministic_directive,
+                "reason": "pre-parser local/system intent → synthesized directive"}
+
+    if not _is_chrome_ext_automation:
+        fast_route = _route_from_fast_classifier(user_section)
+        if fast_route:
+            return fast_route
+
     # 2b. Self-determining route for chrome_extension automation turns.
     #
     # Anthropic-spec Phase 5 ("Ask before acting" plan-and-approve) requires
@@ -2284,12 +2515,6 @@ def orchestrate(history, user_text, image_path=None):
     # Fallback if no Groq key: stay local. Fireworks/Cerebras have the
     # same CLOUD_SYSTEM teaching but Groq is fastest for interactive
     # browser work.
-    _envelope_head = stripped[:_user_mark_idx] if _user_mark_idx >= 0 else ""
-    _is_chrome_ext_automation = bool(
-        _envelope_head
-        and re.search(r'(?im)^\s*source\s*:\s*chrome_extension\b', _envelope_head)
-        and "[BROWSER PAGE CONTEXT]" in _envelope_head
-    )
     if _is_chrome_ext_automation and have_groq:
         return {"route": "cloud_fast", "model": "groq",
                 "reason": "chrome_extension automation → cloud_fast (Anthropic-spec PLAN-as-block emits reliably)"}
@@ -8689,6 +8914,179 @@ def confirm_remember(fact):
         return False
 
 
+_SKILL_SESSION_MARKER = "[SENSEI_SKILL_SESSION]"
+
+
+def _normalize_skill_name(name):
+    slug = re.sub(r"[^a-z0-9_-]+", "-", str(name or "").strip().lower().replace("_", "-")).strip("-")
+    return slug if re.match(r"^[a-z0-9][a-z0-9_-]{0,80}$", slug or "") else ""
+
+
+def _parse_run_skill_payload(payload):
+    raw = str(payload or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("{"):
+        obj = json.loads(raw)
+        if not isinstance(obj, dict):
+            return None
+        name = _normalize_skill_name(obj.get("name") or obj.get("skill"))
+        params = obj.get("params") if isinstance(obj.get("params"), dict) else {}
+        session_id = str(obj.get("session_id") or "").strip() or None
+        resume = bool(obj.get("resume"))
+        return {"name": name, "params": params, "session_id": session_id, "resume": resume} if name else None
+    parts = raw.split(None, 1)
+    name = _normalize_skill_name(parts[0])
+    if not name:
+        return None
+    params = {}
+    session_id = None
+    resume = False
+    if len(parts) > 1:
+        tail = parts[1].strip()
+        if tail.startswith("{"):
+            obj = json.loads(tail)
+            if isinstance(obj, dict):
+                if isinstance(obj.get("params"), dict):
+                    params = obj.get("params") or {}
+                    session_id = str(obj.get("session_id") or "").strip() or None
+                    resume = bool(obj.get("resume"))
+                else:
+                    params = obj
+        elif tail:
+            session_id = tail
+            resume = True
+    return {"name": name, "params": params, "session_id": session_id, "resume": resume}
+
+
+def _run_skill_specs_from_reply(reply):
+    specs = []
+    for line in str(reply or "").splitlines():
+        if not _real_directive_line(line, "RUN_SKILL"):
+            continue
+        payload = re.split(r"\bRUN_SKILL:", line, maxsplit=1, flags=re.IGNORECASE)[1]
+        try:
+            spec = _parse_run_skill_payload(payload)
+        except Exception as e:
+            spec = {"error": f"invalid RUN_SKILL payload: {e}"}
+        if spec:
+            specs.append(spec)
+    return specs
+
+
+def _real_directive_line(line, name):
+    for m in re.finditer(rf"\b{name}:", str(line or ""), re.IGNORECASE):
+        if str(line or "")[:m.start()].count("`") % 2 == 0:
+            return True
+    return False
+
+
+def _skill_pending_directives(state):
+    pending = (getattr(state, "data", {}) or {}).get("_pending_directives")
+    if not isinstance(pending, list):
+        return []
+    out = []
+    for item in pending:
+        line = str(item or "").strip()
+        if not line or _real_directive_line(line, "RUN_SKILL"):
+            continue
+        if re.match(r"^(?:RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_[A-Z_]+):", line, re.IGNORECASE):
+            out.append(line)
+    return out
+
+
+def _append_skill_session_marker(history, state):
+    meta = {
+        "name": getattr(state, "skill_name", ""),
+        "session_id": getattr(state, "session_id", ""),
+        "pending_step": (getattr(state, "data", {}) or {}).get("_pending_step") or getattr(state, "current_step", ""),
+        "done": bool(getattr(state, "done", False)),
+        "aborted": bool(getattr(state, "aborted", False)),
+    }
+    history.append({"role": "user", "content": _SKILL_SESSION_MARKER + "\n" + json.dumps(meta, sort_keys=True)})
+
+
+def _latest_skill_session_marker(history):
+    for msg in reversed(history or []):
+        content = msg.get("content", "") if isinstance(msg, dict) else ""
+        if _SKILL_SESSION_MARKER not in str(content):
+            continue
+        tail = str(content).split(_SKILL_SESSION_MARKER, 1)[1].strip()
+        try:
+            meta = json.loads(tail.splitlines()[0])
+        except Exception:
+            continue
+        if meta.get("name") and meta.get("session_id") and not meta.get("done") and not meta.get("aborted"):
+            return meta
+    return None
+
+
+def _skill_state_reply(state, history):
+    pending = _skill_pending_directives(state)
+    if pending:
+        _append_skill_session_marker(history, state)
+        return "\n".join(pending)
+    if getattr(state, "done", False):
+        return f"DONE: skill {getattr(state, 'skill_name', 'unknown')} completed"
+    if getattr(state, "aborted", False):
+        reason = (getattr(state, "data", {}) or {}).get("_reason") or getattr(state, "interrupt_reason", "") or "aborted"
+        return f"Skill {getattr(state, 'skill_name', 'unknown')} aborted: {reason}"
+    reason = getattr(state, "interrupt_reason", "") or (getattr(state, "data", {}) or {}).get("_pending_action") or "operator input required"
+    _append_skill_session_marker(history, state)
+    return f"Skill {getattr(state, 'skill_name', 'unknown')} paused: {reason}"
+
+
+def _run_skill_reply_from_reply(reply, history):
+    specs = _run_skill_specs_from_reply(reply)
+    if not specs:
+        return None
+    spec = specs[0]
+    if spec.get("error"):
+        return f"Skill dispatch failed: {spec['error']}"
+    try:
+        import skill_runtime as _sr
+        state = _sr.run_skill(
+            spec["name"],
+            spec.get("params") or {},
+            session_id=spec.get("session_id"),
+            resume=bool(spec.get("resume") and spec.get("session_id")),
+        )
+        log(f"RUN_SKILL: {state.skill_name} session={state.session_id} step={state.current_step} pending={len(_skill_pending_directives(state))}")
+        return _skill_state_reply(state, history)
+    except Exception as e:
+        log(f"RUN_SKILL_ERROR: {type(e).__name__}: {e}")
+        return f"Skill dispatch failed: {type(e).__name__}: {e}"
+
+
+def _resume_skill_reply_from_turn(user_text, history):
+    if "[PREVIOUS ROUND RESULTS]" not in str(user_text or ""):
+        return None
+    meta = _latest_skill_session_marker(history)
+    if not meta:
+        return None
+    try:
+        import skill_runtime as _sr
+        state = _sr.load_state(meta["name"], meta["session_id"])
+        if state.done or state.aborted:
+            return None
+        pending_step = (state.data or {}).get("_pending_step") or meta.get("pending_step")
+        state.data.setdefault("_last_directive_results_by_step", {})[pending_step or state.current_step] = str(user_text or "")
+        state.data["_last_directive_results"] = str(user_text or "")
+        state.data["_last_directive_results_at"] = time.time()
+        state.data.pop("_pending_directives", None)
+        state.data.pop("_pending_step", None)
+        if state.current_step == _sr.INTERRUPT and pending_step:
+            state.current_step = pending_step
+        state.interrupt_reason = None
+        _sr.save_state(state)
+        state = _sr.run_skill(state.skill_name, state.params, session_id=state.session_id, resume=True, step_budget=10)
+        log(f"RUN_SKILL_RESUME: {state.skill_name} session={state.session_id} step={state.current_step} pending={len(_skill_pending_directives(state))}")
+        return _skill_state_reply(state, history)
+    except Exception as e:
+        log(f"RUN_SKILL_RESUME_ERROR: {type(e).__name__}: {e}")
+        return f"Skill resume failed: {type(e).__name__}: {e}"
+
+
 # ── REPLY PROCESSOR ──────────────────────────────────────────
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
@@ -8728,6 +9126,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         return out
 
     lines = _join_shell_continuations(raw_lines)
+
+    skill_reply = _run_skill_reply_from_reply("\n".join(lines), history)
+    if skill_reply is not None:
+        return process_reply(skill_reply, history, streamed=streamed, continue_after_tools=continue_after_tools)
 
     # Typed-tool-boundary migration, phase 1: shadow parse only.
     # Keep legacy dispatch unchanged while exposing the parsed TypedAction
@@ -10032,44 +10434,11 @@ def _extract_prefixed_payload(text, prefixes):
     return None
 
 
-_OPEN_ALIASES = {
-    'github': 'https://github.com',
-    'gmail': 'https://mail.google.com',
-    'mail': 'https://mail.google.com',
-    'google': 'https://google.com',
-    'youtube': 'https://youtube.com',
-    'reddit': 'https://reddit.com',
-    'hn': 'https://news.ycombinator.com',
-    'hacker news': 'https://news.ycombinator.com',
-}
-_WEB_TLDS = {
-    'com','org','net','io','dev','app','co','gov','edu','ai','us','uk',
-    'info','me','tv','ly','xyz','so','sh','to','fm','news','cloud','online',
-    'site','tech','store','page','blog','cc','de','fr','jp','ca','au',
-}
-
 def _try_open_url_intent(user_text):
     """If user_text is 'open <url|domain|shortcut>', return URL. Else None.
     Deterministic pre-route catch so 'open <X>' never reaches a model that
     might hallucinate a URL."""
-    if not user_text:
-        return None
-    m = re.match(r'^open\s+(.+?)[\s.!?]*$', user_text.strip(), re.IGNORECASE)
-    if not m:
-        return None
-    target = re.sub(r'^(my|the)\s+', '', m.group(1).strip(), flags=re.IGNORECASE)
-    if re.match(r'^https?://', target, re.I):
-        return target
-    if target.lower().startswith('www.'):
-        return 'https://' + target
-    host = target.split('/', 1)[0].lower()
-    if '.' in host:
-        tld = host.rsplit('.', 1)[-1]
-        if tld in _WEB_TLDS:
-            return 'https://' + target
-    if target.lower() in _OPEN_ALIASES:
-        return _OPEN_ALIASES[target.lower()]
-    return None
+    return resolve_open_target_url(user_text)
 
 def _neutralize_directive_lines(text):
     """Display-only safety for pure reasoning answers."""
@@ -10325,6 +10694,26 @@ def handle(user_text, history, image_path=None, context_policy=None):
             history.append({"role": "user", "content": user_text})
             history.append({"role": "assistant", "content": msg})
             return msg
+    # Skill continuation bridge: after the Chrome extension reports results
+    # for directives emitted by a RUN_SKILL step, resume the same persisted
+    # skill session before asking a model. The step receives the previous
+    # round data in state.data["_last_directive_results_by_step"].
+    _skill_resume_reply = _resume_skill_reply_from_turn(user_text, history)
+    if _skill_resume_reply is not None:
+        print(f"\n  {BC}[thinking: skill continuation]{X}")
+        print(f"  {M}Sensei:{X} {_skill_resume_reply}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        process_reply(_skill_resume_reply, history, streamed=False, continue_after_tools=True)
+        history.append({"role": "assistant", "content": _skill_resume_reply})
+        return _skill_resume_reply
+    _direct_skill_reply = _run_skill_reply_from_reply(user_text, history)
+    if _direct_skill_reply is not None:
+        print(f"\n  {BC}[thinking: skill dispatch]{X}")
+        print(f"  {M}Sensei:{X} {_direct_skill_reply}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        process_reply(_direct_skill_reply, history, streamed=False, continue_after_tools=True)
+        history.append({"role": "assistant", "content": _direct_skill_reply})
+        return _direct_skill_reply
     # ── Deterministic "open <desktop app/file>" catch — no terminal wrapper ─
     _desktop_open = _try_desktop_open_intent(user_text)
     if _desktop_open:
@@ -10448,14 +10837,14 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "assistant", "content": resp})
         return resp
 
-    if decision["route"] == "desktop_launch":
+    if decision["route"] in ("desktop_launch", "deterministic_intent"):
         # Deterministic terminal task — synth_reply contains a
         # RUN:/RUNTERM: directive that process_reply parses and executes through the
         # same path an LLM-emitted RUN: would use (mode-aware confirmation,
         # action-failed chain abort, router metrics). No model call, no
         # tokens, no waiting for the 7B brain to remember to use its tools.
         synth = decision.get("synth_reply", "")
-        label = "desktop launch"
+        label = "desktop launch" if decision["route"] == "desktop_launch" else "deterministic intent"
         print(f"\n  {BC}[thinking: {label} — running it directly]{X}")
         print(f"  {M}Sensei:{X} {synth}\n", flush=True)
         process_reply(synth, history, streamed=False)
@@ -10646,7 +11035,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # and skips the scratchpad line entirely.
         f"{SCRATCHPAD_SYSTEM_ADDITION}\n"
         "[BEHAVIOR RULES — scratchpad above takes precedence when conflicting]\n"
-        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, remember). "
+        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, run_skill, remember). "
         "Each directive lives on its OWN line at column 0; never describe directives inline using "
         "their colon-suffixed forms — the parser would match them. "
         "Do the task directly without long explanations (but ALWAYS emit the scratchpad line). "
@@ -10771,6 +11160,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "EDIT: <filepath>\n<<<FIND\n<text>\n>>>FIND\n<<<REPLACE\n<text>\n>>>REPLACE\n"
         "BROWSER_CLICK: <css-selector>            — click an element on the active browser tab\n"
         "BROWSER_FILL: <css-selector> :: <value>  — type text into a form field (separator :: or => or :=)\n"
+        "BROWSER_UPLOAD_FILE: <css-selector or ref> :: <absolute path> — upload a local file into a file input\n"
         "BROWSER_READ_PAGE: <page|current>          — observe the current page with the semantic/a11y tree, iframe summaries, visible text, and selectors\n"
         "BROWSER_READ: <css-selector or \"main\">   — read text content back from one page region\n"
         "BROWSER_NAV: <url>                       — navigate the active tab to a URL\n"
@@ -10789,6 +11179,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items\n"
         "BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — extract the current Google Drive view only (items, empty flag, selectors); it does not search or open folders\n"
         "SEND_EMAIL: to=<addr> subject=\"<...>\" body=\"<...>\" attach=<optional path> from=<optional sender addr> — send via Gmail/AOL/Outlook SMTP; provider routed from `from=` domain (gmail.com → Gmail, aol.com → AOL, outlook.com/hotmail.com → Outlook); default sender = Gmail; irreversible action, dispatcher always prompts; see EMAIL COMPOSITION DISCIPLINE below\n"
+        "RUN_SKILL: <skill-name> <optional params-json> — start or resume a persisted skill state machine; the dispatcher expands its pending directives\n"
         "REMOTE_MCP: {\"server\":\"name-or-url\",\"method\":\"tools/list\"|\"tools/call\",\"params\":{...}} — call a configured remote MCP server after extension-side REMOTE_MCP approval\n"
         "REMEMBER: <fact>                         — save a durable note to memory\n"
         "DONE: <one-line summary>                 — explicit completion signal; ends the agent loop\n\n"
@@ -10855,8 +11246,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "hoping it lands.\n\n"
         "REASON BEFORE EMITTING: reason in ONE short sentence, then the directive on its\n"
         "OWN line at column 0. The reasoning sentence must NEVER contain the literal strings\n"
-        "'RUN:', 'RUNTERM:', 'CREATE:', 'EDIT:', 'READ:', 'ASK:', 'DONE:', 'REMEMBER:', "
-        "'BROWSER_CLICK:', 'BROWSER_FILL:', 'BROWSER_READ_PAGE:', 'BROWSER_READ:', 'BROWSER_NAV:', 'BROWSER_SCREENSHOT:', "
+        "'RUN:', 'RUNTERM:', 'CREATE:', 'EDIT:', 'READ:', 'ASK:', 'DONE:', 'REMEMBER:', 'RUN_SKILL:', "
+        "'BROWSER_CLICK:', 'BROWSER_FILL:', 'BROWSER_UPLOAD_FILE:', 'BROWSER_READ_PAGE:', 'BROWSER_READ:', 'BROWSER_NAV:', 'BROWSER_SCREENSHOT:', "
         "'BROWSER_WAIT:', 'BROWSER_SCROLL:', 'BROWSER_DOUBLE_CLICK:', 'BROWSER_CDP_MOUSE:', 'BROWSER_CDP_KEY:', 'BROWSER_TAB_CREATE:', 'BROWSER_JS:', 'BROWSER_CONSOLE:', 'BROWSER_NETWORK:', 'BROWSER_RESIZE_WINDOW:', 'BROWSER_FIND:', "
         "'BROWSER_EXTRACT_LIST:', 'BROWSER_DRIVE_INSPECT_FOLDER:', 'SEND_EMAIL:', or 'REMOTE_MCP:' — the parser\n"
         "matches those verbatim and would fire a bogus directive.\n\n"
@@ -11029,10 +11420,12 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "derive search terms from the user's words and the page's labels. Use "
         "BROWSER_READ_PAGE/BROWSER_READ/BROWSER_SCREENSHOT only for the live website state, visual "
         "confirmation, or when a web UI hides content from DOM extraction. For "
-        "file-upload controls, fill the actual input with a local path using "
-        "`BROWSER_FILL: <file-input-selector> :: file:///absolute/path` (or an "
-        "absolute local path); the extension reads the allowed local file and "
-        "lands it in the page. Never click final Submit on a job application "
+        "file-upload controls, use `BROWSER_UPLOAD_FILE: <file-input-selector> "
+        ":: /absolute/path` as the preferred form. Legacy "
+        "`BROWSER_FILL: <file-input-selector> :: file:///absolute/path` still "
+        "works; the backend normalizes the upload path and the extension reads "
+        "the allowed local file into the page. Never click final Submit on a "
+        "job application "
         "without showing the filled summary and waiting for user confirmation.\n\n"
         "GOOGLE DRIVE SPECIFICS — Drive is an SPA whose accessibility tree often "
         "lags behind its rendered UI, so use BROWSER_READ_PAGE/Drive extractors before relying on a "
@@ -11368,6 +11761,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     if not reply:
         reply = "No response from AI."
+
+    skill_reply = _run_skill_reply_from_reply(reply, history)
+    if skill_reply is not None:
+        reply = skill_reply
+        streamed = False
 
     low_user = user_text.lower()
     low_reply = (reply or "").lower()
