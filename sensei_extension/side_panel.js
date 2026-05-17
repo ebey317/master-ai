@@ -2824,6 +2824,8 @@ function startLoop(data) {
   state.loop.results = [];
   state.loop.stopped = false;
   state.loop.active = willContinue;
+  state.loop.last_done = !!(data && data.done === true);
+  state.loop.last_terminal_reason = (data && data.terminal_reason) || "";
 
   const bar = $("#loopBar");
   if (bar) bar.hidden = !willContinue;
@@ -2856,6 +2858,16 @@ function recordLoopResult(action, verdict, result, finalState) {
 async function continueLoop() {
   if (state.loop.stopped || !state.loop.active || !state.loop.turn_id) {
     resetLoop();
+    return;
+  }
+  // LOOP TERMINATION gate — if the prior turn closed (server emitted done=true
+  // or any terminal_reason like "no_actions"/"done_directive"), do NOT fire a
+  // fresh /chat/continue. Last night's 17-turn runaway was the absence of
+  // this gate: per-turn round cap was 6, but new turns kept getting spawned
+  // because nothing checked the prior turn's closure signal.
+  if (state.loop.last_done === true || state.loop.last_terminal_reason) {
+    resetLoop();
+    setConnection("Backend ready");
     return;
   }
   // If the user rejected anything in this round, treat as a stop signal.
