@@ -348,7 +348,7 @@ _SAVE_LOCK          = threading.Lock()
 _AUTOSAVE_LOCK      = threading.Lock()
 
 # ── ORCHESTRATOR STATE ────────────────────────────────────────
-CONTEXT_WATERMARK   = 120000                     # total history chars → save-and-refresh (doubled 2026-04-19 — was auto-restarting every few min with 60k)
+CONTEXT_WATERMARK   = 240000                     # total history chars → save-and-refresh (doubled 2026-05-15 — page_context from multi-step browser tasks blew through 120k after one turn)
 BEHAVIOR_FILE       = Path.home() / ".sensei_behavior.md"
 RESUME_FLAG         = Path.home() / ".master_ai_resume"
 RESUME_FLAG_MAX_AGE = 600  # seconds; stale resume flags must not revive old sessions
@@ -581,69 +581,6 @@ def load_keys():
 
 KEYS = load_keys()
 
-# ── SEND_EMAIL — model emits SEND_EMAIL: directive, dispatcher calls
-# send_email_via_smtp. Polish/template happens at the model layer via
-# Modelfile teaching, NOT in Python. Helper is intentionally minimum-
-# viable: Gmail-only sender, optional single-file attach, stdlib smtplib.
-# Per feedback_improve_before_add (2026-05-17) — addition justified because
-# the existing surface genuinely lacks send capability and this is
-# connector tissue between voice-in (Whisper), model writing, and SMTP.
-def _send_email_log(record):
-    """Append one JSON line to ~/.master_ai_email_log.jsonl. Best-effort."""
-    try:
-        from datetime import datetime as _dt
-        rec = dict(record)
-        rec.setdefault("ts", _dt.now().isoformat())
-        with open(os.path.expanduser("~/.master_ai_email_log.jsonl"), "a") as f:
-            f.write(json.dumps(rec) + "\n")
-    except Exception as e:
-        try: log(f"SEND_EMAIL log write failed: {e}")
-        except Exception: pass
-
-
-def send_email_via_smtp(to, subject, body, *, attach=None, sender="ebey317@gmail.com"):
-    """Send one email via Gmail SMTP_SSL using gmail_app_password from
-    ~/.master_ai_keys. Returns {ok, error, recipient}.
-    """
-    import smtplib
-    from email.message import EmailMessage
-    keys = load_keys()
-    pw = keys.get("gmail_app_password") or keys.get("gmail_password")
-    if not pw:
-        err = "no gmail_app_password in ~/.master_ai_keys"
-        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-        return {"ok": False, "error": err, "recipient": to}
-    msg = EmailMessage()
-    msg["From"] = sender
-    msg["To"] = to
-    msg["Subject"] = subject
-    msg.set_content(body or "")
-    if attach:
-        attach_path = os.path.expanduser(str(attach))
-        if not os.path.isfile(attach_path):
-            err = f"attach path not a file: {attach_path}"
-            _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-            return {"ok": False, "error": err, "recipient": to}
-        import mimetypes
-        ctype, _enc = mimetypes.guess_type(attach_path)
-        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
-        with open(attach_path, "rb") as af:
-            data = af.read()
-        msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream",
-                           filename=os.path.basename(attach_path))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-            s.login(sender, pw)
-            s.send_message(msg)
-        _send_email_log({"event": "send_email", "ok": True, "to": to, "subject": subject,
-                         "attach": attach if attach else None})
-        return {"ok": True, "error": None, "recipient": to}
-    except Exception as e:
-        err = f"{type(e).__name__}: {e}"
-        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-        return {"ok": False, "error": err, "recipient": to}
-
-
 # ── COLORS — matches brand.sh (visible on light + dark terminals) ──
 G    = '\033[92m'    # bright green
 C    = '\033[96m'    # bright cyan
@@ -668,6 +605,20 @@ BTN_G = '\033[42m\033[30m'   # green  bg + black text
 BTN_Y = '\033[43m\033[30m'   # yellow bg + black text
 BTN_R = '\033[41m\033[30m'   # red    bg + black text
 BTN_C = '\033[46m\033[30m'   # cyan   bg + black text
+
+# When running non-interactively (systemd/journald, pipes, etc.), ANSI escapes
+# produce unreadable "blob data" in logs. Respect NO_COLOR and default to plain
+# text when stdout isn't a TTY.
+_NO_COLOR = (
+    os.environ.get("NO_COLOR") is not None
+    or os.environ.get("SENSEI_NO_COLOR", "").strip() in ("1", "true", "yes", "on")
+    or os.environ.get("MASTER_AI_NONINTERACTIVE", "").strip() in ("1", "true", "yes", "on")
+    or (not sys.stdout.isatty())
+)
+if _NO_COLOR:
+    G = C = Y = R = M = W = D = X = BOLD = ""
+    BC = BG = BW = BY = BO = AMBER = DIMB = BM = ""
+    BTN_G = BTN_Y = BTN_R = BTN_C = ""
 
 # ── LOGGING ──────────────────────────────────────────────────
 def _fmt_ampm(dt=None, seconds=False):
@@ -715,6 +666,36 @@ def _tmux_current_session_name():
         return (r.stdout or "").strip()
     except Exception:
         return ""
+
+
+def _current_api_session_id():
+    return (
+        _tmux_current_session_name()
+        or os.environ.get("TMUX_PANE", "").strip()
+        or os.environ.get("STY", "").strip()
+        or "sensei-repl"
+    )
+
+
+def _extract_url(text):
+    m = re.search(r"https?://\S+", text or "")
+    if not m:
+        return ""
+    return m.group(0).rstrip(").,!?]}>\"'")
+
+
+def _post_local_json(url, payload, timeout=30):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode()
+    try:
+        return json.loads(raw or "{}")
+    except Exception:
+        return {"ok": False, "error": raw or "invalid JSON response"}
 
 
 def _tmux_latest_client_dims():
@@ -1140,6 +1121,33 @@ def _cloud_trip(provider, reason, seconds=30):
     _CLOUD_CIRCUITS[provider] = time.time() + seconds
     log(f"CLOUD_CIRCUIT [{provider}]: {reason} for {seconds}s")
 
+def _http_retry_after_seconds(err):
+    """Best-effort parse of Retry-After header for urllib.error.HTTPError."""
+    try:
+        if not isinstance(err, urllib.error.HTTPError):
+            return 0
+        raw = err.headers.get("Retry-After") if getattr(err, "headers", None) else None
+        if not raw:
+            return 0
+        raw = str(raw).strip()
+        if raw.isdigit():
+            sec = int(raw)
+            return max(0, min(sec, 3600))
+    except Exception:
+        pass
+    return 0
+
+def _cloud_trip_backoff(provider, reason, *, base_seconds=30, max_seconds=300, err=None):
+    """Trip a provider circuit with simple backoff and optional Retry-After."""
+    now = time.time()
+    prev_until = float(_CLOUD_CIRCUITS.get(provider, 0) or 0.0)
+    prev_remaining = max(0.0, prev_until - now)
+    retry_after = _http_retry_after_seconds(err)
+    # If the provider is already tripped, double the remaining time up to cap.
+    seconds = int(max(base_seconds, retry_after, prev_remaining * 2.0))
+    seconds = max(1, min(int(max_seconds), seconds))
+    _cloud_trip(provider, reason, seconds)
+
 def _cloud_trip_network(reason, seconds=60):
     global _NETWORK_DOWN_UNTIL
     _NETWORK_DOWN_UNTIL = time.time() + seconds
@@ -1340,6 +1348,25 @@ def _router_metric(kind, **fields):
     except Exception:
         pass
 
+APPLICATION_LOG_FILE = Path.home() / ".master_ai_application_log.jsonl"
+
+def log_application(*, url, status, company="", title="", ref_number=None, reason=None):
+    """Append one job-application result. Status: submitted | filtered | failed | needs_user."""
+    try:
+        entry = {
+            "ts": int(time.time()),
+            "url": url,
+            "company": company,
+            "title": title,
+            "status": status,
+            "ref_number": ref_number,
+            "reason": reason,
+        }
+        with APPLICATION_LOG_FILE.open("a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 def _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN):
     try:
         if not ROUTER_METRICS_FILE.exists():
@@ -1517,7 +1544,7 @@ def detect_route(text, has_image=False):
 
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
 # Returns a decision dict instead of dispatching a model directly.
-# Possible routes: local | cloud_fast | cloud_vision | acknowledgment | ask_user | recall_memory | save_refresh
+# Possible routes: local | cloud_fast | cloud_vision | ask_user | recall_memory | save_refresh
 # First match wins.
 
 _RECALL_TRIGGERS = (
@@ -1534,28 +1561,6 @@ _GREETINGS = {"hi", "hello", "hey", "yo", "sup", "howdy", "hola",
               "ok", "okay", "k", "cool", "nice", "great", "good",
               "yes", "yep", "yeah", "y", "no", "nope", "nah", "n",
               "bye", "goodbye", "cya", "later"}
-
-_ACKNOWLEDGMENT_RESPONSES = {
-    "nice": "Okay.",
-    "ok": "Okay.",
-    "okay": "Okay.",
-    "cool": "Okay.",
-    "thanks": "You're welcome.",
-    "thank you": "You're welcome.",
-    "thx": "You're welcome.",
-    "ty": "You're welcome.",
-    "got it": "Okay.",
-}
-
-
-def _acknowledgment_short_circuit(text):
-    low = (text or "").strip().lower()
-    if not low or "\n" in low or ":" in low or "/" in low:
-        return ""
-    normalized = " ".join(re.findall(r"[a-z0-9']+", low))
-    if not normalized or len(normalized.split()) > 2:
-        return ""
-    return _ACKNOWLEDGMENT_RESPONSES.get(normalized, "")
 
 def _is_tool_required(stripped_low):
     if _looks_terminal_visual_request(stripped_low):
@@ -2153,9 +2158,21 @@ def orchestrate(history, user_text, image_path=None):
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
     if total_chars >= CONTEXT_WATERMARK:
+        # Under systemd / API handlers stdin is often not a real TTY. Never
+        # block on input() in that case — it wedges /chat behind the global
+        # _API_HANDLE_LOCK. Default to save+refresh.
+        noninteractive = (
+            (os.environ.get("MASTER_AI_NONINTERACTIVE", "").strip() == "1")
+            or (os.environ.get("SENSEI_TUI", "1") == "0" and not sys.stdin.isatty())
+            or (not sys.stdin.isatty())
+        )
         print(f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {CONTEXT_WATERMARK:,}).{X}")
         print(f"  {BO}  Sensei will save the conversation, restart, and reload it compacted.{X}")
         print(f"  {BO}  Your last message is preserved — you'll see it on the other side.{X}")
+        if noninteractive:
+            print(f"  {BY}  Non-interactive stdin — auto: save + refresh now.{X}")
+            return {"route": "save_refresh",
+                    "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK} (noninteractive)"}
         print(f"  {BY}    1  save + refresh now  (recommended){X}")
         print(f"  {BY}    2  keep going — adds 20,000 chars of headroom for this session{X}")
         try:
@@ -2200,12 +2217,6 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "local", "model": MODELS["master"],
                 "stripped_text": _strip_prefix(prefix_len),
                 "reason": "explicit local/private → local 7b"}
-
-    ack_reply = _acknowledgment_short_circuit(user_section_low)
-    if ack_reply:
-        return {"route": "acknowledgment",
-                "response": ack_reply,
-                "reason": "pure acknowledgment → deterministic one-line reply"}
 
     # 2b. Self-determining route for chrome_extension automation turns.
     #
@@ -3517,7 +3528,10 @@ def _env_int(name, default):
 
 SENSEI_REPLY_LINE_DELAY = _env_float(
     "SENSEI_REPLY_LINE_DELAY",
-    os.environ.get("SENSEI_STREAM_DELAY", "0.05"),
+    # Default to a gentle "typewriter" pace only when talking to a human in
+    # a real terminal; under systemd/journald it just creates noisy partial
+    # lines and massive logs.
+    os.environ.get("SENSEI_STREAM_DELAY", "0.0" if (not sys.stdout.isatty()) else "0.05"),
 )
 SENSEI_REPLY_WRAP = max(30, _env_int("SENSEI_REPLY_WRAP", "70"))
 SENSEI_STREAM_DELAY = SENSEI_REPLY_LINE_DELAY
@@ -3825,14 +3839,15 @@ def _inject_identity(messages):
         return [{"role": "system", "content": merged}] + list(messages[1:])
     return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
 
-# Groq free-tier payload trim (2026-05-16). Every groq call was returning
-# HTTP 413 because the request body exceeded the per-request budget. The
-# char-based heuristic over-counts vs the model tokenizer (~3-4 chars/token),
-# safe in the undertrim direction. Drops oldest non-system messages until
-# the serialized payload is below _GROQ_MAX_INPUT_CHARS. Empirically tunable.
-# NOTE: this trim helps history-laden sessions; on fresh sessions the system
-# message alone can exceed Groq's threshold (sys_chars=81467 observed) and
-# the trim is a no-op there — see Task #8 (slim cloud_fast system prompt).
+CLOUD_API_USER_AGENT = "python-requests/2.31.0"
+
+# Groq free-tier payload trim (sensei_groq_trim.sh, 2026-05-16).
+# Every groq call was returning HTTP 413 today because the request body
+# exceeded the free-tier budget. The char-based heuristic over-counts
+# vs the model tokenizer (~3-4 chars/token), which keeps us safe in the
+# undertrim direction — drop oldest non-system messages until the
+# serialized payload is below _GROQ_MAX_INPUT_CHARS. Empirically tunable
+# constant; halve on next 413, raise after sustained clean 200s.
 _GROQ_MAX_INPUT_CHARS = 22000
 
 def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
@@ -3872,6 +3887,19 @@ def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
             pass
     return out
 
+
+def _cloud_json_headers(auth_value=None, auth_header="Authorization", extra=None):
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": CLOUD_API_USER_AGENT,
+    }
+    if auth_value:
+        headers[auth_header] = auth_value
+    if extra:
+        headers.update(extra)
+    return headers
+
 def ask_cloud_groq(messages):
     if not _cloud_allowed("groq"):
         return None
@@ -3884,9 +3912,10 @@ def ask_cloud_groq(messages):
     payload = {"model": "llama-3.3-70b-versatile", "messages": messages,
                "max_tokens": 1024, "stream": False}
     data = json.dumps(payload).encode()
-    # GROQ_PAYLOAD diagnostic (2026-05-16). Captures real bytes + msg count +
-    # system-message size before urlopen so _GROQ_MAX_INPUT_CHARS can be tuned
-    # against actual 413 boundaries instead of guessed token-equivalents.
+    # GROQ_PAYLOAD diagnostic (trim tuning, 2026-05-16). Captures real bytes +
+    # msg count + system-message size before urlopen so _GROQ_MAX_INPUT_CHARS
+    # can be tuned against actual 413 boundaries. Remove in trim commit if not
+    # kept as a permanent tuning aid.
     try:
         _sys_chars = len(messages[0].get("content", "")) if messages and messages[0].get("role") == "system" else 0
         log(f"GROQ_PAYLOAD: bytes={len(data)} msgs={len(messages)} sys_chars={_sys_chars}")
@@ -3894,8 +3923,7 @@ def ask_cloud_groq(messages):
         pass
     req = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
-                 "User-Agent": "python-requests/2.31.0"}
+        headers=_cloud_json_headers(f"Bearer {key}")
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -3906,7 +3934,7 @@ def ask_cloud_groq(messages):
                  429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
         log(f"GROQ_ERROR: {label}")
         if code == 429:
-            _cloud_trip("groq", "rate limit", 30)
+            _cloud_trip_backoff("groq", "rate limit", base_seconds=30, max_seconds=300, err=e)
         return None
     except Exception as e:
         log(f"GROQ_ERROR: {e}")
@@ -3945,10 +3973,18 @@ def ask_cloud_gemini(messages):
     payload = {"contents": [{"parts": [{"text": text}]}]}
     data = json.dumps(payload).encode()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=data, headers=_cloud_json_headers())
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())["candidates"][0]["content"]["parts"][0]["text"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        label = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
+                 429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"GEMINI_ERROR: {label}")
+        if code in (429, 503, 500, 502, 504):
+            _cloud_trip_backoff("gemini", "rate limit", base_seconds=30, max_seconds=300, err=e)
+        return None
     except Exception as e:
         log(f"GEMINI_ERROR: {e}")
         if _network_error(e):
@@ -3969,7 +4005,7 @@ def ask_cloud_anthropic(messages):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages", data=data,
-        headers={"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"}
+        headers=_cloud_json_headers(key, "x-api-key", {"anthropic-version": "2023-06-01"})
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -3995,7 +4031,7 @@ def ask_cloud_deepseek(messages):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.deepseek.com/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+        headers=_cloud_json_headers(f"Bearer {key}")
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -4019,42 +4055,57 @@ def ask_cloud_fireworks_dsv3(messages):
     if not key:
         return None
     messages = _inject_identity(messages)
-    log("CLOUD [fireworks/deepseek-v3p1]")
-    payload = {
-        "model": "accounts/fireworks/models/deepseek-v3p1",
-        "messages": messages,
-        "max_tokens": 4096,
-        "top_p": 1, "top_k": 40,
-        "presence_penalty": 0, "frequency_penalty": 0,
-        "temperature": 0.6,
-        "stream": False,
-    }
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://api.fireworks.ai/inference/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json",
-                 "Accept": "application/json",
-                 "Authorization": f"Bearer {key}",
-                 "User-Agent": "python-requests/2.31.0"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
-    except urllib.error.HTTPError as e:
-        code = e.code
-        label = {401: "AUTH FAIL — check API key",
-                 403: "AUTH FAIL — check API key",
-                 429: "RATE LIMIT hit",
-                 402: "OUT OF CREDITS"}.get(code, f"HTTP {code}")
-        log(f"FIREWORKS_ERROR: {label}")
-        if code == 429:
-            _cloud_trip("fireworks", "rate limit", 30)
-        return None
-    except Exception as e:
-        log(f"FIREWORKS_ERROR: {e}")
-        if _network_error(e):
-            _cloud_trip_network(e, 60)
-        return None
+
+    # Fireworks' model availability can vary between serverless and
+    # deploy-on-demand. Try the documented serverless V3.1 slug first,
+    # then fall back to the 0324 checkpoint. Keep per-model circuits so
+    # one 404 doesn't poison the whole provider.
+    candidates = [
+        ("deepseek-v3p1", "accounts/fireworks/models/deepseek-v3p1"),
+        ("deepseek-v3-0324", "accounts/fireworks/models/deepseek-v3-0324"),
+    ]
+    for label, model_id in candidates:
+        provider_key = f"fireworks/{label}"
+        if not _cloud_allowed(provider_key):
+            continue
+        log(f"CLOUD [fireworks/{label}]")
+        payload = {
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": 4096,
+            "top_p": 1, "top_k": 40,
+            "presence_penalty": 0, "frequency_penalty": 0,
+            "temperature": 0.6,
+            "stream": False,
+        }
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            "https://api.fireworks.ai/inference/v1/chat/completions", data=data,
+            headers=_cloud_json_headers(f"Bearer {key}"),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read())["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            code = e.code
+            diag = {401: "AUTH FAIL — check API key",
+                    403: "AUTH FAIL — check API key",
+                    429: "RATE LIMIT hit",
+                    402: "OUT OF CREDITS"}.get(code, f"HTTP {code}")
+            log(f"FIREWORKS_ERROR [{label}]: {diag}")
+            if code == 429:
+                _cloud_trip_backoff(provider_key, "rate limit", base_seconds=30, max_seconds=300, err=e)
+                return None
+            if code == 404:
+                _cloud_trip(provider_key, "model unavailable", 300)
+                continue
+            return None
+        except Exception as e:
+            log(f"FIREWORKS_ERROR [{label}]: {e}")
+            if _network_error(e):
+                _cloud_trip_network(e, 60)
+            return None
+    return None
 
 def _ask_openrouter(messages, model, label, timeout=60):
     """Generic OpenRouter caller with token tracking."""
@@ -4070,8 +4121,10 @@ def _ask_openrouter(messages, model, label, timeout=60):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
-                 "HTTP-Referer": "http://localhost", "X-Title": "master-ai"}
+        headers=_cloud_json_headers(
+            f"Bearer {key}",
+            extra={"HTTP-Referer": "http://localhost", "X-Title": "master-ai"},
+        )
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -4100,9 +4153,70 @@ def _ask_openrouter(messages, model, label, timeout=60):
                 429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
         log(f"OPENROUTER_ERROR [{label}]: {diag}")
         if code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
+            _cloud_trip_backoff(provider_key, "rate limit", base_seconds=30, max_seconds=300, err=e)
         elif code == 404:
             _cloud_trip(provider_key, "model unavailable", 300)
+        elif code == 402:
+            _cloud_trip(provider_key, "out of credits", 3600)
+        return None
+    except Exception as e:
+        log(f"OPENROUTER_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+def _ask_openrouter_keyed(messages, model, *, provider_key, label, timeout=60):
+    """OpenRouter caller where the circuit key can differ from the UI label."""
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("openrouter")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [openrouter/{label}]")
+    payload = {"model": model, "messages": messages}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions", data=data,
+        headers=_cloud_json_headers(
+            f"Bearer {key}",
+            extra={"HTTP-Referer": "http://localhost", "X-Title": "master-ai"},
+        )
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            tokens = result.get("usage", {}).get("total_tokens", 0)
+            if tokens:
+                try:
+                    kf = str(Path.home() / ".master_ai_keys")
+                    with open(kf) as _rf:
+                        kd = json.load(_rf)
+                    from datetime import date as _d
+                    today = _d.today().isoformat()
+                    if kd.get("openrouter_tokens_date") != today:
+                        kd["openrouter_tokens_today"] = 0
+                        kd["openrouter_tokens_date"] = today
+                    kd["openrouter_tokens_today"] = kd.get("openrouter_tokens_today", 0) + tokens
+                    with open(kf, "w") as _wf:
+                        json.dump(kd, _wf, indent=2)
+                    os.chmod(kf, 0o600)
+                except Exception:
+                    pass
+            return result["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
+                429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"OPENROUTER_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip_backoff(provider_key, "rate limit", base_seconds=30, max_seconds=300, err=e)
+        elif code == 404:
+            _cloud_trip(provider_key, "model unavailable", 300)
+        elif code == 402:
+            # Stable until the user tops up; avoid burning the whole fallback
+            # chain repeatedly on every request.
+            _cloud_trip(provider_key, "out of credits", 3600)
         return None
     except Exception as e:
         log(f"OPENROUTER_ERROR [{label}]: {e}")
@@ -4124,8 +4238,7 @@ def _ask_cerebras(messages, model, label, timeout=60):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.cerebras.ai/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
-                 "User-Agent": "python-requests/2.31.0"}
+        headers=_cloud_json_headers(f"Bearer {key}")
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -4154,7 +4267,7 @@ def _ask_cerebras(messages, model, label, timeout=60):
                 429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
         log(f"CEREBRAS_ERROR [{label}]: {diag}")
         if code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
+            _cloud_trip_backoff(provider_key, "rate limit", base_seconds=30, max_seconds=300, err=e)
         elif code == 404:
             _cloud_trip(provider_key, "model unavailable", 300)
         return None
@@ -4184,26 +4297,49 @@ def ask_cloud_openrouter_qwen3coder(messages):
 
 def ask_cloud_openrouter_r1(messages):
     # OpenRouter slug audit 2026-05-16:
-    #   - "deepseek/deepseek-r1:free" was removed from the catalog (verified
-    #     via /api/v1/models). It now 404s on every call; we no longer try it.
-    #   - "deepseek/deepseek-r1" (paid) is still listed but credit-gated. On
-    #     a zero-balance OpenRouter account it returns 402 OUT OF CREDITS; on
-    #     a topped-up account it serves normally. Kept first as cheap insurance.
+    #   - "deepseek/deepseek-r1:free" was removed from the catalog
+    #     (verified via /api/v1/models). It now 404s on every call and
+    #     trips its own circuit; we no longer try it.
+    #   - "deepseek/deepseek-r1" (paid) is still listed and dispatchable
+    #     but is credit-gated. On a zero-balance OpenRouter account it
+    #     returns 402 OUT OF CREDITS and trips for 3600s; on a topped-up
+    #     account it serves normally. Kept first as cheap insurance — when
+    #     the circuit is open _cloud_allowed() short-circuits before any
+    #     HTTP call, so the cost is one 402 per hour, not per-call.
     #   - "deepseek/deepseek-v4-flash:free" is OpenRouter's current free
-    #     reasoning slug per the same audit; rate-limit handling at
-    #     _cloud_trip covers its free-tier daily quota.
-    # Distinct labels (deepseek-r1-paid / deepseek-v4-flash-free /
-    # openrouter-free) keep master.log + metrics rows tellable apart per
-    # call site. The previous single "deepseek-r1" label collapsed two
-    # attempts into one apparent error and nearly cost an unnecessary
-    # keying-fix patch — see feedback_grep_log_before_cloud_patch.md.
-    r = _ask_openrouter(messages, "deepseek/deepseek-r1", "deepseek-r1-paid", timeout=90)
+    #     reasoning slug per the same audit. The rate-limit handling at
+    #     _cloud_trip_backoff covers its free-tier daily quota.
+    # Labels are deliberately distinct (deepseek-r1-paid vs
+    # deepseek-v4-flash-free vs openrouter-free) so master.log entries
+    # and the model_call JSONL rows are tellable apart per call site.
+    # The previous single "deepseek-r1" label collapsed two attempts
+    # into one apparent error and nearly cost an unnecessary keying-fix
+    # patch on 2026-05-16. Don't re-collapse.
+    r = _ask_openrouter_keyed(
+        messages,
+        "deepseek/deepseek-r1",
+        provider_key="openrouter/deepseek-r1",
+        label="deepseek-r1-paid",
+        timeout=90,
+    )
     if r:
         return r
-    r = _ask_openrouter(messages, "deepseek/deepseek-v4-flash:free", "deepseek-v4-flash-free", timeout=60)
+    r = _ask_openrouter_keyed(
+        messages,
+        "deepseek/deepseek-v4-flash:free",
+        provider_key="openrouter/deepseek-v4-flash:free",
+        label="deepseek-v4-flash-free",
+        timeout=60,
+    )
     if r:
         return r
-    return _ask_openrouter(messages, "openrouter/free", "openrouter-free", timeout=60)
+    return _ask_openrouter_keyed(
+        messages,
+        "openrouter/free",
+        provider_key="openrouter/free",
+        label="openrouter-free",
+        timeout=60,
+    )
 
 def ask_cloud_openrouter(messages):
     return _ask_openrouter(messages, "meta-llama/llama-3.3-70b-instruct:free", "llama-3.3-70b", timeout=30)
@@ -4293,6 +4429,22 @@ def ask_cloud(messages, provider="groq"):
         if r:
             _record(r, used_model)
             return r
+    # Local-fallback (sensei_local_fallback.sh, 2026-05-16):
+    # every reasoning call exhausts all available resources before failing.
+    # Cloud-first preserved for speed; local catches when cloud is degraded
+    # so the agent loop does not stall on 'all cloud dead, no local attempt.'
+    try:
+        _local_r = ask_local(messages)
+        if _local_r:
+            _router_metric("model_call", model="master-ai", route="local",
+                           task_type="fallback", ok=True,
+                           latency_s=0.0, chars=len(_local_r))
+            return _local_r
+    except Exception as _local_e:
+        _router_metric("model_call", model="master-ai", route="local",
+                       task_type="fallback", ok=False,
+                       latency_s=0.0, chars=0,
+                       error=str(_local_e)[:160])
     return None
 
 # ── STT: WHISPER ──────────────────────────────────────────────
@@ -4725,6 +4877,15 @@ def auto_inject_context(user_text, enabled=True):
 
     search_dirs = [Path.home() / "scripts", Path(os.getcwd())]
     user_text_low = user_text.lower()
+    # Slicer only supports text/code files. Users frequently mention binary
+    # artifacts (PDF resumes, screenshots) or Drive-native doc stubs; don't
+    # try to read/slice those and don't trigger the big-file ask_user guard.
+    _SLICER_SKIP_SUFFIXES = {
+        ".pdf", ".doc", ".docx", ".odt", ".rtf",
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg",
+        ".zip", ".7z", ".tar", ".gz",
+        ".gdoc", ".gsheet", ".gslides",
+    }
     whole_file = _is_whole_file_request(user_text_low)
     meta['whole_file_requested'] = whole_file
 
@@ -4747,11 +4908,22 @@ def auto_inject_context(user_text, enabled=True):
             continue
         seen.add(expanded)
 
+        try:
+            if Path(expanded).suffix.lower() in _SLICER_SKIP_SUFFIXES:
+                continue
+        except Exception:
+            pass
+
         path = None
         if os.path.isfile(expanded):
             path = Path(expanded)
         else:
             fname = Path(c).name
+            try:
+                if Path(fname).suffix.lower() in _SLICER_SKIP_SUFFIXES:
+                    continue
+            except Exception:
+                pass
             path = _find_auto_context_file(fname, search_dirs)
         if not path:
             continue
@@ -7086,6 +7258,12 @@ def _build_self_mod_denylist():
         home / "scripts" / "sensei_selftest.sh",
         home / ".sensei_behavior.md",
         home / ".master_ai_allowed_commands.json",
+        # Added 2026-05-16 after the resume-extraction regression: the model
+        # repeatedly clobbered ~/.master_ai_profile.json to 0 bytes via CREATE
+        # directives when its inline-regex parser failed. Profile rebuilds
+        # must go through PROFILE-REBUILD DISCIPLINE (pdftotext → parse →
+        # validate non-empty → write), not arbitrary CREATE emissions.
+        home / ".master_ai_profile.json",
         APPROVED_FILE,
     ]
     out = set()
@@ -8451,56 +8629,6 @@ def confirm_create(filepath, content):
         _remember_last_action("create_denied", path=filepath)
         return False
 
-# ── SEND_EMAIL CONFIRM ───────────────────────────────────────
-# Irreversible action — sent = sent. Always prompts in auto mode (no
-# bypass) per the same irreversible-action policy Claude-for-Chrome uses
-# for purchases/sensitive_fill. Plan mode refuses. Review mode prompts.
-@_awaiting_confirm
-def confirm_send_email(spec):
-    to = spec.get("to", "")
-    subject = spec.get("subject", "")
-    body = spec.get("body", "")
-    attach = spec.get("attach")
-    mode = globals().get("MODE", "plan")
-    if mode == "plan":
-        print(_pill("BLOCKED", f"{D}plan mode refuses SEND_EMAIL{X}"))
-        _audit("SEND_EMAIL-PLAN-REFUSE", f"to={to}")
-        return {"ok": False, "error": "refused in plan mode", "recipient": to}
-    body_preview = (body[:300] + " …") if len(body) > 300 else body
-    print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
-    print(f"{D}║  📧 {BOLD}AI wants to send email:{X}")
-    print(f"{D}║  To:      {Y}{to}{X}")
-    print(f"{D}║  Subject: {Y}{subject}{X}")
-    if attach:
-        print(f"{D}║  Attach:  {Y}{attach}{X}")
-    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    for ln in body_preview.splitlines()[:20]:
-        print(f"{D}║  {ln}{X}")
-    if len(body_preview.splitlines()) > 20:
-        print(f"{D}║  {D}  … more …{X}")
-    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    print(f"{D}║  1) Send  2) Cancel  3) Edit body{X}")
-    print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    ans = (_tui_input("> ") or "").strip().lower()
-    if ans in ("1", "y", "yes", "send"):
-        result = send_email_via_smtp(to, subject, body, attach=attach)
-        if result.get("ok"):
-            print(_pill("SENT", f"{D}to {to}{X}"))
-            _audit("SEND_EMAIL-OK", f"to={to} subject={subject}")
-        else:
-            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
-            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error','')}")
-        return result
-    elif ans in ("3", "e", "edit"):
-        print(_pill("SKIPPED", f"{D}edit-body not wired yet — re-emit directive with revised body{X}"))
-        _audit("SEND_EMAIL-EDIT-REQUEST", f"to={to}")
-        return {"ok": False, "error": "user requested edit", "recipient": to}
-    else:
-        print(_pill("CANCELLED"))
-        _audit("SEND_EMAIL-CANCELLED", f"to={to}")
-        return {"ok": False, "error": "user cancelled", "recipient": to}
-
-
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
 def confirm_edit(filepath, find_text, replace_text):
@@ -8743,28 +8871,6 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
-
-    # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
-    # Parses to a dict spec; dispatcher calls confirm_send_email which gates
-    # by mode (plan refuses, review/auto always prompt — irreversible).
-    def _parse_send_email_spec(line):
-        payload = _extract_directive(line, "SEND_EMAIL")
-        if not payload:
-            return None
-        spec = {}
-        pat = re.compile(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""")
-        for m in pat.finditer(payload):
-            k = m.group(1).lower()
-            v = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
-            spec[k] = v
-        if not spec.get("to") or not spec.get("subject"):
-            return None
-        spec.setdefault("body", "")
-        spec.setdefault("attach", None)
-        return spec
-    send_email_specs = [s for s in (_parse_send_email_spec(l)
-                        for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
-
     # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
     # extraction shape as RUN/READ, BUT block-aware: REMEMBER lines that
     # appear INSIDE a <<<CONTENT>>>CONTENT / <<<FIND>>>FIND /
@@ -9003,6 +9109,20 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         for rpath in read_paths:
             parsed_path, start_line, end_line = _parse_read_target(rpath)
             exp = os.path.expanduser(parsed_path)
+            # Allow simple globbing for "newest download" workflows, especially
+            # for Drive → Download → READ: ~/Downloads/*.pdf. We pick the newest
+            # matching file and then apply the normal read fence to the concrete
+            # path, so glob patterns can't escape allowlisted roots.
+            if any(ch in exp for ch in ("*", "?", "[")):
+                try:
+                    import glob
+                    matches = [p for p in glob.glob(exp) if os.path.isfile(p)]
+                    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                    picked = matches[0] if matches else ""
+                except Exception:
+                    picked = ""
+                if picked:
+                    exp = picked
             # P2.3: enforce read path fence. Symlink escapes, secret
             # paths (.ssh, .aws/credentials, /etc/shadow, etc.), and
             # anything outside allowed roots get blocked + audited.
@@ -9014,7 +9134,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 _record_blocked_action("read", exp, _why, "READ-FENCE-BLOCK")
                 continue
             if os.path.isfile(exp):
-                full_text = Path(exp).read_text(errors='replace')
+                # PDFs are binary; extract text deterministically via pdftotext.
+                if exp.lower().endswith(".pdf"):
+                    try:
+                        proc = subprocess.run(
+                            ["pdftotext", "-layout", exp, "-"],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        full_text = (proc.stdout or "").strip()
+                        if not full_text:
+                            full_text = (proc.stderr or "").strip() or "(pdftotext produced no output)"
+                    except FileNotFoundError:
+                        full_text = "(pdftotext not installed; cannot extract PDF text)"
+                    except Exception as _e:
+                        full_text = f"(pdftotext failed: {_e})"
+                else:
+                    full_text = Path(exp).read_text(errors='replace')
                 _priv_reason = _privacy_check_path_or_content(exp, full_text[:4000])
                 if _priv_reason:
                     _mark_turn_private(f"{_priv_reason}: {exp}")
@@ -9456,23 +9593,6 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return reply
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result("RUNTERM", cmd, result))
-
-    # SEND_EMAIL: runs after RUN/RUNTERM — e.g. RUN: a report-gen command,
-    # then SEND_EMAIL: ship the report. Each spec confirmed individually
-    # via confirm_send_email; irreversible, no auto-mode bypass.
-    for spec in send_email_specs:
-        result = confirm_send_email(spec)
-        if not (isinstance(result, dict) and result.get("ok")):
-            err = (result or {}).get("error", "send_email refused or failed")
-            if _append_tool_blocked_feedback("SEND_EMAIL", f"to={spec.get('to','')} subject={spec.get('subject','')}"):
-                return None
-            print(_pill("BLOCKED", f"{D}SEND_EMAIL failed or was refused — {err}{X}"))
-            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to','')} err={err}")
-            return reply
-        if continue_after_tools:
-            tool_result_feedback.append(
-                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
-            )
 
     if tool_result_feedback:
         history.append({
@@ -10371,15 +10491,6 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "assistant", "content": q})
         return q
 
-    if decision["route"] == "acknowledgment":
-        resp = decision["response"]
-        print(f"\n  {BC}[thinking: acknowledgment — no directive]{X}")
-        print(f"  {M}Sensei:{X} {resp}\n", flush=True)
-        history.append({"role": "user", "content": user_text})
-        history.append({"role": "assistant", "content": resp})
-        _router_metric("acknowledgment_short_circuit", prompt=user_text[:200])
-        return resp
-
     if decision["route"] == "cached":
         # Harvest cache hit — a near-duplicate prompt was answered before.
         # Serve that response. No model call. No network. No tokens.
@@ -10647,7 +10758,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "reads). Martial-arts framing: in karate the weapon is an EXTENSION of the body — "
         "the sword doesn't have its own mind, it moves WITH the body. The Chrome extension "
         "is Sensei's weapon in the browser, NOT a separate tool calling a service. When you "
-        "emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / BROWSER_READ_PAGE / BROWSER_READ / BROWSER_SCREENSHOT / "
+        "emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / BROWSER_FILL_FORM / BROWSER_SUBMIT / BROWSER_READ_PAGE / BROWSER_READ / BROWSER_SCREENSHOT / "
         "BROWSER_WAIT / BROWSER_SCROLL / BROWSER_DOUBLE_CLICK / BROWSER_FIND / BROWSER_EXTRACT_LIST / "
         "BROWSER_DRIVE_INSPECT_FOLDER / REMOTE_MCP, you are moving your "
         "own arm on the page — not 'asking the extension to do something.' Pupil (the older "
@@ -10656,7 +10767,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "'as a language model', 'as an AI language model', 'I'm just an LLM', 'I don't have "
         "access to', 'I can't execute commands', or 'I'm not connected to anything'. You DO "
         "have access. You CAN run commands (emit RUN:). You CAN read files (emit READ:). You "
-        "CAN drive the active browser tab (emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / "
+        "CAN drive the active browser tab (emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / BROWSER_FILL_FORM / BROWSER_SUBMIT / "
         "BROWSER_READ_PAGE / BROWSER_READ / BROWSER_SCREENSHOT / BROWSER_WAIT / BROWSER_SCROLL / BROWSER_DOUBLE_CLICK / "
         "BROWSER_FIND / BROWSER_EXTRACT_LIST / BROWSER_DRIVE_INSPECT_FOLDER). When the user says 'you' / 'your app' / 'this app' / 'this project' / "
         "'this thing you built' — those refer to YOU YOURSELF, the whole Master AI stack you "
@@ -10716,9 +10827,12 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "EDIT: <filepath>\n<<<FIND\n<text>\n>>>FIND\n<<<REPLACE\n<text>\n>>>REPLACE\n"
         "BROWSER_CLICK: <css-selector>            — click an element on the active browser tab\n"
         "BROWSER_FILL: <css-selector> :: <value>  — type text into a form field (separator :: or => or :=)\n"
+        "BROWSER_FILL_FORM: <optional form selector> — auto-fill the visible form on the active page using the user's saved profile (~/.master_ai_profile.json via /apply_profile). Matches inputs by name/placeholder/<label> text against profile keys (full_name, email, phone, city, recent_job). Use when the user asks to 'fill this form / fill the application' WITHOUT naming individual fields. One emit per form; do NOT chain individual BROWSER_FILL directives after it.\n"
+        "BROWSER_SUBMIT: <form-or-submit-selector> — submit the enclosing form using the page's real submit path (validation + handlers when available)\n"
         "BROWSER_READ_PAGE: <page|current>          — observe the current page with the semantic/a11y tree, iframe summaries, visible text, and selectors\n"
         "BROWSER_READ: <css-selector or \"main\">   — read text content back from one page region\n"
         "BROWSER_NAV: <url>                       — navigate the active tab to a URL\n"
+        "BROWSER_CLOSE_TAB: current               — close the active Chrome tab (use after a multi-step task completes; required for batch flows that loop across many postings)\n"
         "BROWSER_TAB_CREATE: <url>                — open a NEW tab (not the active one) into this session's Chrome tab group. Use when the task spans multiple pages and you want to keep the user's main tab as-is.\n"
         "BROWSER_JS: <script source>              — run a short JS expression in the page via CDP Runtime.evaluate. Returns the value. Use for reading computed style, calling page-exposed helpers, or extracting structured data the page renders dynamically. 256KB source cap. Do NOT use for what BROWSER_CLICK/BROWSER_FILL already does.\n"
         "BROWSER_CONSOLE: <error|warn|log|all>    — read the page's recent console events (error, warning, log; up to ~40 entries). Use to diagnose silent failures or read page-emitted diagnostics. Empty filter or 'all' returns everything.\n"
@@ -10733,7 +10847,6 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "BROWSER_FIND: <text>                     — find visible elements containing text and return selectors; semantic fallback uses the a11y tree when regex finds nothing\n"
         "BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items\n"
         "BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — extract the current Google Drive view only (items, empty flag, selectors); it does not search or open folders\n"
-        "SEND_EMAIL: to=<addr> subject=\"<...>\" body=\"<...>\" attach=<optional path> — send an email via Gmail SMTP; irreversible action, dispatcher always prompts; see EMAIL COMPOSITION DISCIPLINE below\n"
         "REMOTE_MCP: {\"server\":\"name-or-url\",\"method\":\"tools/list\"|\"tools/call\",\"params\":{...}} — call a configured remote MCP server after extension-side REMOTE_MCP approval\n"
         "REMEMBER: <fact>                         — save a durable note to memory\n"
         "DONE: <one-line summary>                 — explicit completion signal; ends the agent loop\n\n"
@@ -10801,24 +10914,10 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "REASON BEFORE EMITTING: reason in ONE short sentence, then the directive on its\n"
         "OWN line at column 0. The reasoning sentence must NEVER contain the literal strings\n"
         "'RUN:', 'RUNTERM:', 'CREATE:', 'EDIT:', 'READ:', 'ASK:', 'DONE:', 'REMEMBER:', "
-        "'BROWSER_CLICK:', 'BROWSER_FILL:', 'BROWSER_READ_PAGE:', 'BROWSER_READ:', 'BROWSER_NAV:', 'BROWSER_SCREENSHOT:', "
+        "'BROWSER_CLICK:', 'BROWSER_FILL:', 'BROWSER_SUBMIT:', 'BROWSER_READ_PAGE:', 'BROWSER_READ:', 'BROWSER_NAV:', 'BROWSER_CLOSE_TAB:', 'BROWSER_SCREENSHOT:', "
         "'BROWSER_WAIT:', 'BROWSER_SCROLL:', 'BROWSER_DOUBLE_CLICK:', 'BROWSER_CDP_MOUSE:', 'BROWSER_CDP_KEY:', 'BROWSER_TAB_CREATE:', 'BROWSER_JS:', 'BROWSER_CONSOLE:', 'BROWSER_NETWORK:', 'BROWSER_RESIZE_WINDOW:', 'BROWSER_FIND:', "
-        "'BROWSER_EXTRACT_LIST:', 'BROWSER_DRIVE_INSPECT_FOLDER:', 'SEND_EMAIL:', or 'REMOTE_MCP:' — the parser\n"
+        "'BROWSER_EXTRACT_LIST:', 'BROWSER_DRIVE_INSPECT_FOLDER:', or 'REMOTE_MCP:' — the parser\n"
         "matches those verbatim and would fire a bogus directive.\n\n"
-        "EMAIL COMPOSITION DISCIPLINE — when the user asks to send an email (\"send an email to X\", \"email this to X\", \"shoot it to X\", \"send a bug report to X\"), follow this workflow:\n"
-        " 1. INFER the right template from ~/.master_ai_email_templates/ based on intent: bug_report.md for errors / 404s / something broke; feedback.md for feature asks; error_report.md for incident summaries with logs; business.md for formal/professional; personal.md for casual; default.md when no clearer fit. If the directory doesn't exist or no template matches, compose without a template (still polished prose).\n"
-        " 2. READ the template (READ: ~/.master_ai_email_templates/<name>.md) if you want to honor its structure / signature. Templates have {{placeholder}} slots — fill them from the user's request, current page, recent chat context, or sensible defaults.\n"
-        " 3. POLISH the body. Voice-to-text is messy — turn the gist into structured professional prose: spell-check, fix grammar, organize into paragraphs / bullets / fields, supply context the user is in the middle of and didn't repeat (URL, timestamp, browser version, screenshot path if relevant).\n"
-        " 4. PICK ATTACHMENTS only when the user explicitly mentions a file OR the email type strongly implies one (bug_report → most recent screenshot from ~/.master_ai_screenshots/ if it exists). Single attachment per send in v1. NEVER attach a file the user didn't approve.\n"
-        " 5. EMIT the directive on its own line at column 0:\n"
-        "    SEND_EMAIL: to=<addr> subject=\"<concise subject>\" body=\"<polished body>\" attach=<path-or-omit>\n"
-        "    Quoted values support spaces; backslash-escape internal quotes if needed. Newlines in body must be \\n escapes — the parser is single-line.\n"
-        " 6. The dispatcher prompts the user (To / Subject / body preview / Attach) and waits for 1=send / 2=cancel / 3=edit. You do NOT click send; the user does.\n"
-        "EXAMPLE — User: \"I got a 404 on the password reset page, send a bug report to support@whatever, attach a screenshot.\"\n"
-        "Reply:\n"
-        "Composing a bug report with the most recent screenshot.\n"
-        "SEND_EMAIL: to=support@whatever subject=\"Bug — 404 on password reset\" body=\"Hi team,\\n\\nI encountered a 404 on the password reset page just now. URL: <fill from context>. Timestamp: <now>. Browser: Chrome on Linux.\\n\\nA screenshot is attached.\\n\\nBest,\\nElijah\" attach=~/.master_ai_screenshots/latest.png\n"
-        "If the user just says \"send\" without a recipient, ASK: send to which address? Don't guess.\n\n"
         "BROWSER DIRECTIVE RULES — when working through the Chrome extension:\n"
         " - PAGE-CONTEXT GROUNDING: when a [BROWSER PAGE CONTEXT] block is present in the\n"
         "   conversation, it is GROUND TRUTH for what's on the active tab. Selectors you emit\n"
@@ -10854,6 +10953,356 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "   is reasoning, not description: it should explain why THIS action rather\n"
         "   than a different one.\n"
         " - WHEN FINISHED: emit DONE: <one-line summary>. The loop ends; no further turn.\n\n"
+        "STEP-CITE CADENCE — when [PREVIOUS ROUND RESULTS] is present AND "
+        "your round 1 reply opened with a <PLAN> block, the FIRST line of "
+        "each continuation reply must name which plan step just completed "
+        "and which one is next: \"Step <K> done — <one-clause evidence "
+        "from results>; proceeding to step <K+1>.\" After that line, emit "
+        "the directives for step K+1. This is how the loop knows you are "
+        "working the plan deliberately, not flailing. Skip the cite only "
+        "if the results show the prior step FAILED — in that case open "
+        "with the STUCK-RECOVERY pivot instead: \"Step <K> selector "
+        "missed; switching to <alternate approach>.\" When the LAST plan "
+        "step's evidence is in the results, emit DONE: with the one-line "
+        "summary per DONE DISCIPLINE — no further step-cite needed "
+        "because there is no next step.\n\n"
+        "CONTINUATION-EMISSION DISCIPLINE — when [PREVIOUS ROUND "
+        "RESULTS] is present and the user's task is not yet complete, "
+        "EVERY reply MUST emit at least one directive line at column 0 "
+        "(BROWSER_*, RUN, READ, CREATE, EDIT, REMEMBER) OR `DONE:` "
+        "with the one-line summary. Narration-only replies — \"I'm "
+        "waiting for the extension to return results\", \"I'll "
+        "continue once the page loads\", \"let me know when you want "
+        "me to proceed\", \"I'll wait for your input\" — silently "
+        "terminate the agent loop because the dispatcher reads "
+        "actions_count=0 and stops. The model is the one driving the "
+        "loop; the extension does not push asynchronous results that "
+        "wake you up later. If you need the previous action's result "
+        "before you can decide, that result IS the [PREVIOUS ROUND "
+        "RESULTS] block you just received — proceed from it. If "
+        "you're stuck, follow STUCK-RECOVERY DISCIPLINE and emit a "
+        "different directive. If the task is done, emit `DONE:`. "
+        "Never emit a reply with zero directives unless `DONE:` is "
+        "one of those lines. This rule applies to local and cloud "
+        "lanes alike; \"I'll wait\" is never a valid continuation "
+        "reply.\n\n"
+        "Concrete examples — what NEVER to emit on a continuation "
+        "round (each silently terminates the loop):\n"
+        "  - \"I'll wait for the extension to return results before "
+        "deciding.\"\n"
+        "  - \"Let me check the page and then continue.\"\n"
+        "  - \"Looking at the page, I can see [description].\" "
+        "(narration with no directive)\n"
+        "  - \"[scratchpad: planning next step]\" with no directive "
+        "line\n"
+        "  - Any reply that ends without a column-0 directive line OR "
+        "a `DONE:` line\n"
+        "What to emit instead (each is a valid continuation reply):\n"
+        "  - \"Step 2 done — Drive search loaded 14 results; "
+        "proceeding to step 3.\\nBROWSER_DOUBLE_CLICK "
+        "div[aria-label='résumé']\"\n"
+        "  - \"STUCK-RECOVERY pivot — selector missed; switching to "
+        "Family D.\\nBROWSER_FIND: Apply\"\n"
+        "  - \"DONE: 5 applications submitted (refs: ABC, DEF, GHI, "
+        "JKL, MNO).\"\n"
+        "Self-check before sending any continuation reply: does the "
+        "LAST nonblank line of the reply start at column 0 with one "
+        "of `RUN:` / `RUNTERM:` / `READ:` / `CREATE:` / `EDIT:` / "
+        "`REMEMBER:` / `DONE:` / `BROWSER_*:`? If NO, the loop "
+        "terminates and the user sees Sensei stalled. ALWAYS yes for "
+        "continuation rounds.\n\n"
+        "APPLICATION DISCIPLINE — for job-application tasks (any task "
+        "that ends in submitting a real application form to a real "
+        "employer), the per-application loop follows this contract: "
+        "(1) the FIRST directive is `READ: ~/.master_ai_profile.json` "
+        "— the reply's continuation block treats the file's JSON "
+        "content as [PROFILE]. (2) Every form field value comes from "
+        "[PROFILE] VERBATIM. Never invent name, email, phone, address, "
+        "work history, education, eligibility answers. (3) The "
+        "Simplify.jobs Chrome extension may auto-fill the form before "
+        "you do — after BROWSER_NAV + BROWSER_WAIT, emit "
+        "BROWSER_READ_PAGE first. If form fields are already populated "
+        "with values matching [PROFILE], SKIP your own BROWSER_FILL "
+        "emissions and proceed to review + submit. (3b) If the user says "
+        "\"pause before submit\", \"let me eyeball it\", \"review the first "
+        "one\", or equivalent, then on APPLICATION #1 you MUST stop at the "
+        "final review/submit screen WITHOUT emitting DONE. Emit "
+        "BROWSER_READ_PAGE to confirm the review screen, then emit the exact "
+        "final submit action as a pending approval card (BROWSER_CLICK on the "
+        "submit button or BROWSER_SUBMIT on the form). Your assistant text may "
+        "say \"Application 1 ready for eyeball review\" but the reply must end "
+        "with the pending submit directive, not DONE. Do not close the tab "
+        "until that first submit is approved and the confirmation page yields "
+        "a reference number. Only applications #2+ may auto-submit per the "
+        "user's batch instruction. (4) For any field "
+        "not in [PROFILE], emit one line at column 0: "
+        "`NEEDS_PROFILE_FIELD: <fieldname>` then STOP the application "
+        "— mark the result as needs_user in the log, do NOT guess and "
+        "do NOT submit. (5) On the confirmation page, capture the "
+        "reference number or \"Application submitted\" text VERBATIM "
+        "per VERIFICATION DISCIPLINE before emitting DONE. (6) Skip "
+        "postings whose page text contains \"background check "
+        "required\", \"must pass criminal background check\", or names "
+        "a burned employer (\"All Trades Staffing\") — log as "
+        "filtered, do not apply. (7) After DONE, if a batch follow-on "
+        "context indicates more applications remain, the LAST action "
+        "of the per-application loop is `BROWSER_CLOSE_TAB: current` "
+        "so the next application starts on a clean tab.\n\n"
+        "EARLY-STOP DISCIPLINE — when the user asks for a specific count "
+        "of items (\"find five HVAC jobs\", \"extract three PRs\", "
+        "\"list ten templates\"), check the prior round's [PREVIOUS "
+        "ROUND RESULTS] before adding more sources. If a single source "
+        "already returned >=N qualifying items, emit DONE: with those "
+        "items in the reply — do NOT diversify to additional sites or "
+        "queries. Diversifying after the count is met wastes rounds, "
+        "hits login walls (ZipRecruiter/LinkedIn redirect to "
+        "/jobseeker/home), and risks polluting the result set with "
+        "footer/legal scraps from non-result pages. Only diversify when "
+        "the prior source returned FEWER than N qualifying items AND "
+        "the user explicitly named multiple sources OR didn't specify a "
+        "source. The first qualifying source's result is the answer "
+        "when the count is met.\n\n"
+        "EXTENSION-SURFACE DISCIPLINE — when the conversation's "
+        "source is `chrome_extension`, that names the UI entrypoint, "
+        "NOT a reduced tool palette. Browser actions still run "
+        "through BROWSER_* directives, and backend/local-machine "
+        "work still runs through RUN, RUNTERM, READ, CREATE, EDIT, "
+        "and REMEMBER on Madam-Mary. Do NOT claim the extension is "
+        "\"browser only\", do NOT refuse mixed browser + backend "
+        "plans, and do NOT ask the user for manual URLs or file IDs "
+        "when the current page already exposes the needed rows or "
+        "selectors. Choose tools by problem shape: Drive/web state "
+        "→ BROWSER_*; local files/services/commands → classical "
+        "directives. When Drive search results are visible, the next "
+        "step is inspect → choose row → BROWSER_DOUBLE_CLICK, not "
+        "a request for direct links.\n\n"
+        "DESTINATION-VALIDITY DISCIPLINE — after BROWSER_NAV to a "
+        "search/listing/results URL, the FIRST follow-up directive is "
+        "BROWSER_READ_PAGE (or wait then read). Before emitting "
+        "BROWSER_EXTRACT_LIST, check the landed URL in the result's "
+        "`observed_tab_url` field. If the landed URL contains "
+        "\"/login\", \"/signin\", \"/jobseeker/home\", \"/authwall\", "
+        "\"/auth/\", or \"accounts.google.com/signin\", the destination "
+        "redirected to a login wall — ABORT this site, do NOT extract "
+        "(extraction would scrape footer/legal items), do NOT NAV again "
+        "to retry the same URL (it'll redirect again). Either continue "
+        "with results from a prior site, ASK the user to log in "
+        "manually, or emit DONE: with whatever you already have. Treat "
+        "the redirect as a signal that this site requires session "
+        "credentials you don't have, not as a transient failure.\n\n"
+        "FILTER COMPLIANCE DISCIPLINE — when the user names ANY "
+        "constraint in the request — location (\"in Indianapolis\"), "
+        "eligibility (\"fair-chance\", \"no felony bar\", \"no drug "
+        "test\"), employer exclusion (\"skip All Trades Staffing\"), "
+        "salary, job type, schedule — apply it during the SEARCH/EXTRACT "
+        "phase too, not just at apply-time. Loose keyword search URLs "
+        "(Indeed `q=fair+chance`, Google `q=fair-chance HVAC`) return "
+        "rows that merely MENTION the words anywhere — including "
+        "postings that say \"background check REQUIRED\" once and would "
+        "FAIL the constraint. After BROWSER_EXTRACT_LIST returns rows, "
+        "BEFORE emitting DONE or moving to the next step, FILTER each "
+        "row against the user's constraint set: (a) Location — row's "
+        "location field must match the user-specified city/state/area. "
+        "\"Indianapolis, IN\" matches Indianapolis proper, zip 462xx, "
+        "and the donut suburbs (Anderson, Greenwood, Carmel, Fishers, "
+        "Plainfield, Avon, Noblesville). Reject Iowa/Wisconsin/Colorado/"
+        "etc. (b) Eligibility — fair-chance is a STRONG signal the "
+        "EMPLOYER advertises second-chance hiring. Look for explicit "
+        "\"fair chance employer\", \"second chance\", \"felony-"
+        "friendly\", \"open to candidates with criminal records\", "
+        "\"no background check required\" in the row snippet. Rows "
+        "that don't explicitly mention fair-chance are AMBIGUOUS — "
+        "keep them as fallback candidates but PRIORITIZE explicit "
+        "fair-chance postings first. Drop rows whose snippet says "
+        "\"background check required\" or \"must pass background "
+        "check\". (c) Employer exclusion — drop any row whose company "
+        "field matches a named exclusion verbatim or fuzzy (\"All "
+        "Trades Staffing\" → drop). (d) Salary/type/schedule — drop "
+        "rows that don't match. If post-filter count < N (the user-"
+        "requested count), DO NOT report unfiltered results and claim "
+        "DONE. Either BROWSER_SCROLL the same page for more rows below "
+        "the fold, modify the query with a more specific term, or ASK "
+        "the user once: \"Found K explicit fair-chance Indianapolis "
+        "HVAC postings — want me to also include K' ambiguous-but-"
+        "otherwise-matching postings?\". Never silently return "
+        "constraint-violating results.\n\n"
+        "DRIVE-AWARENESS DISCIPLINE — when the user's prompt explicitly "
+        "names Google Drive (\"my Google Drive\", \"Drive\", \"my "
+        "résumé folder\", \"the AI query doc in Drive\", \"open my "
+        "Drive\", \"shared with me\") or any resource located inside "
+        "Drive (a Google Doc / Sheet / Slide URL, a drive.google.com "
+        "path), Sensei MUST access it through the BROWSER_* palette "
+        "via drive.google.com — NEVER local RUN or READ on a guessed "
+        "file path. The CANONICAL DRIVE FIND-AND-READ PATTERN is the "
+        "contract: (1) BROWSER_NAV: https://drive.google.com/drive/"
+        "search?q=<term>; (2) BROWSER_WAIT 2000; (3) "
+        "BROWSER_DRIVE_INSPECT_FOLDER {\"query\":\"<term>\"}; "
+        "(4) BROWSER_DOUBLE_CLICK on the matching row; (5) "
+        "BROWSER_READ_PAGE extracts Google Doc/Sheet text; for PDFs, "
+        "download via Drive UI button then READ the newest downloaded "
+        "PDF from ~/Downloads using `READ: ~/Downloads/*.pdf` (Sensei "
+        "will pick the newest match and extract PDF text via pdftotext "
+        "internally). "
+        "Do NOT emit READ on local paths like `~/portfolio/`, "
+        "`~/resume/`, `~/Documents/`, `~/.master_ai_profile.json`, or "
+        "any guessed structure when the user named Drive — those "
+        "paths are HALLUCINATIONS in a Drive workflow. Trigger "
+        "keywords that force Drive routing: \"Google Drive\", \"my "
+        "Drive\", \"résumé folder\" (in Drive context), \"AI query "
+        "doc\", \"Drive folder\", \"shared with me\", explicit "
+        "`drive.google.com/...` URLs. When the prompt is ambiguous "
+        "about local vs Drive, ASK ONCE: \"Do you mean Google Drive "
+        "or a local file?\" — do not silently default to local. The "
+        "fallback `/home/elijah/Desktop/resume/Elijah Wilkins Resume "
+        "Detailed.pdf` is the ONE explicit local-disk path Sensei may "
+        "use, and ONLY when Drive is unreachable AND the user "
+        "previously approved a local-fallback path in this "
+        "session.\n\n"
+        "PDF-EXTRACT BRIDGE DISCIPLINE — once a Drive PDF has been "
+        "downloaded (via BROWSER_CLICK on Drive's Download button or "
+        "via direct PDF NAV → \"Open with Google Docs\" path), the "
+        "next directive in the per-task loop is: `READ: "
+        "~/Downloads/*.pdf` to extract text from the most recent "
+        "downloaded PDF. Treat the injected [File contents] block as "
+        "the in-memory PDF body. For multi-page résumés, layout is "
+        "preserved. After extraction, parse the text inline (don't "
+        "write a separate parser script) — extract: full_name (first "
+        "non-blank line, usually), email (regex \\S+@\\S+), phone "
+        "(regex \\(?\\d{3}\\)?\\s*\\d{3}\\s*\\d{4}), address (look "
+        "for state abbrev + zip), work_history bullets (lines "
+        "following dates), education (after \"Education\" or "
+        "\"Degree\" heading), eligibility/job-pref answers if "
+        "present. Hold the parsed dict in your reply context as "
+        "[PROFILE] — use it for subsequent BROWSER_FILL emissions per "
+        "APPLICATION DISCIPLINE. Same pattern for AI query "
+        "Google Doc: it's NOT a PDF — BROWSER_NAV to its URL (or "
+        "open from Drive double-click), then BROWSER_READ_PAGE "
+        "extracts the rendered Doc text directly (no download needed "
+        "for Google Docs).\n\n"
+        "PROFILE-CACHE DISCIPLINE — after a successful pdftotext "
+        "extraction + inline parsing per PDF-EXTRACT BRIDGE, "
+        "IMMEDIATELY persist the parsed dict to "
+        "`~/.master_ai_profile.json` via a CREATE directive on the "
+        "next round, BEFORE proceeding to the apply phase. Shape: "
+        "`CREATE: ~/.master_ai_profile.json` followed by a fenced "
+        "JSON block containing the parsed profile (full_name, email, "
+        "phone, address, work_history, education, links, eligibility, "
+        "job_preferences, plus `_built_at` ISO timestamp and "
+        "`_source_pdf` filename). On EVERY new task that requires "
+        "profile data, the FIRST directive of round 1 is "
+        "`READ: ~/.master_ai_profile.json`. If the read succeeds "
+        "(cache hit), skip the entire Drive navigation + PDF "
+        "download + pdftotext cycle — go directly to the apply phase "
+        "using the cached [PROFILE]. If the read fails (cache miss, "
+        "file doesn't exist), THEN run the full DRIVE-AWARENESS → "
+        "PDF-EXTRACT BRIDGE flow once to build the cache. The cache "
+        "survives across sessions — only rebuild when the user "
+        "explicitly says \"refresh profile\" / \"rebuild profile\" "
+        "or when the file is older than 30 days. This is the "
+        "difference between a 50-round full Drive workflow and a "
+        "25-round cache-hit apply-only workflow.\n\n"
+        "PROFILE-ASK-FALLBACK DISCIPLINE — when running from "
+        "`chrome_extension` surface AND the user task needs profile "
+        "data AND [PROFILE] is NOT yet in your reply context, the "
+        "ESCAPE HATCH after repeated non-progress is to ASK the user "
+        "inline rather than keep looping in Drive. Concrete trigger "
+        "conditions (any one fires the "
+        "fallback IMMEDIATELY): (A) Round 3 of a profile-needing "
+        "task and [PROFILE] still empty. (B) Last 2 actions both "
+        "navigated to a `drive.google.com/drive/search` URL without "
+        "an intervening successful BROWSER_DOUBLE_CLICK that opened "
+        "a non-search Drive page (search-loop signal). (C) "
+        "`~/Downloads/*.pdf` is empty AND user did not specifically "
+        "say `use Drive`. (D) Any 2 consecutive `tr=no_actions` "
+        "terminals on the same task. When ANY trigger fires, "
+        "abandon the Drive workflow and emit this exact reply (no "
+        "directive lines on this round): `PROFILE NEEDED — paste "
+        "these 5 fields, one per line, then I'll start applying: "
+        "1. Full name 2. Email address 3. Phone number 4. Street "
+        "address (city, state, zip) 5. Most recent job title + "
+        "employer + dates`. Then STOP. The user's next message "
+        "becomes [PREVIOUS USER MESSAGE] containing the values; "
+        "parse them inline as [PROFILE] dict and hold in reply "
+        "context for all subsequent BROWSER_FILL emissions per "
+        "APPLICATION DISCIPLINE. Why this matters: Drive search "
+        "loops were the #1 budget-eater observed in 2026-05-15 "
+        "cycles 7-12. When the workflow has already stalled, stop "
+        "burning rounds on the same search results; ask once, hold "
+        "the pasted fields in [PROFILE], and continue.\n\n"
+        "SMART-CYCLES DISCIPLINE — for any user request that requires "
+        "REPEATING a sub-workflow N times (apply to 5 jobs, extract "
+        "10 records, fill 3 forms), structure the round-1 PLAN block "
+        "as PHASED with explicit step ranges, an INNER_LOOP marker on "
+        "the repeated phase, and an EVALUATE phase at the end. Reply "
+        "shape: <PLAN> Sites: <list> Phases: Phase A — Setup (steps "
+        "1-K): <each setup directive>; Phase B — Apply×N (steps K+1 "
+        "to K+M, INNER_LOOP until count=N): <per-iteration "
+        "directives>; Phase C — Evaluate (steps K+M+1 to end): count "
+        "log entries, confirm full count met, DONE: with refs OR loop "
+        "back to Phase B with offset=count+1; Irreversible: <list>; "
+        "</PLAN>. STEP-CITE CADENCE name the current phase + step "
+        "within phase (\"Phase B step 23.3 done — Application 3 "
+        "submitted (ref ABC); proceeding to step 23.4 close tab. "
+        "Counter: 3/5.\"). The dispatcher writes to "
+        "`~/.master_ai_application_log.jsonl` automatically when a "
+        "confirmation page is read; your job is to drive each "
+        "iteration of Phase B's inner loop until the log shows N "
+        "submitted entries. Phase C is non-optional. Its FIRST "
+        "directive: `RUN: grep -c '\"status\": \"submitted\"' "
+        "~/.master_ai_application_log.jsonl`. If count >= N, emit "
+        "`DONE: <N> applications submitted` with ref numbers. If "
+        "count < N, emit `Phase B replan: only K/N completed; "
+        "resuming inner loop with offset=K+1.` then re-enter Phase B. "
+        "This is the smart cycle — Phase C is the evaluator that "
+        "decides done vs loop back, NOT the round counter. Plan size: "
+        "Phase A ~5-10, Phase B ~5-7 per iteration × N, Phase C ~2-3. "
+        "For N=5 apply: ~40-50 rounds total fits the 50-round "
+        "budget.\n\n"
+        "DONE-EVIDENCE STRICT — for any count-based task (apply to N, "
+        "extract N, fill N, submit N), DONE: is FORBIDDEN unless the "
+        "immediately PRIOR round's RUN result returned a count >= N. "
+        "Specifically: the round before any DONE: emission MUST "
+        "contain `RUN: grep -c '\"status\": \"submitted\"' "
+        "~/.master_ai_application_log.jsonl` (or equivalent count "
+        "directive for non-application tasks) AND its result in "
+        "[PREVIOUS ROUND RESULTS] must show a number >= N. \"I found "
+        "5 jobs\", \"I located 5 candidates\", \"5 postings match\" "
+        "— these are SEARCH results, NOT submitted applications. "
+        "Finding != submitting. The evaluator phase reads the LOG, "
+        "not the search results page. WRONG patterns that silently "
+        "fail: \"I found 5 fair-chance HVAC jobs.\\nDONE: located 5 "
+        "jobs.\" (search hit, no apply, no log entries); \"Listed 5 "
+        "postings.\\nDONE: 5 jobs identified.\" (listing != "
+        "applying); \"Phase B applied to 5 jobs.\\nDONE: 5 applied.\" "
+        "(claim without grep verification). RIGHT pattern (the only "
+        "valid DONE for count-tasks): Round K: `RUN: grep -c "
+        "'\"status\": \"submitted\"' ~/.master_ai_application_log."
+        "jsonl`. Round K+1 [PREVIOUS ROUND RESULTS shows \"5\"]: "
+        "\"Phase C done — log shows 5 submitted entries.\\nDONE: 5 "
+        "applications submitted (refs: ABC, DEF, GHI, JKL, MNO from "
+        "Phase B evidence).\". If the grep returns < N, DO NOT emit "
+        "DONE: — emit `Phase B replan: only K/N completed; resuming "
+        "inner loop with offset=K+1.` and pick the next candidate. "
+        "The grep result is the SOLE source of truth for count-task "
+        "completion. No exceptions.\n\n"
+        "QUARANTINE-AWARENESS DISCIPLINE — never emit RUN or RUNTERM "
+        "directives for paths inside `~/jobseeker/`, `~/desktop_agent/`, "
+        "or `~/Desktop/_codex_quarantine_*/`. Those directories are "
+        "archived/deprecated as of 2026-05-15; the executor returns "
+        "exit 127 because the files were moved out. If a task seems to "
+        "need an external script in one of those paths (either from "
+        "harvest cache of a prior session or from training-data "
+        "knowledge that those files used to exist), DO NOT emit the "
+        "RUN — fall through to BROWSER_* primitives (BROWSER_NAV, "
+        "BROWSER_FILL, BROWSER_EXTRACT_LIST, BROWSER_CLICK, "
+        "BROWSER_READ_PAGE) which accomplish the same job without "
+        "spawning a deprecated subprocess. The right tool for "
+        "job-search, job-apply, and form-autofill work is the BROWSER_* "
+        "palette — never `bash ~/jobseeker/*`, never "
+        "`bash ~/desktop_agent/*`, never `python3 ~/jobseeker/tools/*`. "
+        "Generalize this to any directory under "
+        "`~/Desktop/_codex_quarantine_*/` regardless of date — those "
+        "are all archived.\n\n"
         "DONE DISCIPLINE — emit DONE: only when the user's actual goal is "
         "satisfied with EVIDENCE you collected from the page, not when you've "
         "run out of ideas or want to ask permission. If the user asked to read a "
@@ -10864,7 +11313,9 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "me to…\" — that is asking permission masquerading as completion. If "
         "you genuinely cannot proceed (selector misses, action returned "
         "status: failure), say so plainly without DONE: and propose ONE "
-        "concrete next action. The user's Stop button is the hard interrupt; "
+        "concrete next action. A user-requested eyeball/review pause before "
+        "the first submit is ALSO not DONE — keep the submit action pending "
+        "for approval and leave the tab on the review screen. The user's Stop button is the hard interrupt; "
         "DONE: is not an escape hatch.\n\n"
         "VERIFICATION DISCIPLINE — before emitting DONE, prove the user's "
         "task actually completed by reading the page back. NOT a permission "
@@ -10904,6 +11355,52 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "you only reach after 3+ reformulation rounds have all failed, "
         "and even then say \"I tried X, Y, Z and each returned [observed "
         "reason]\" — never just \"I can't.\"\n\n"
+        "SELECTOR-ADAPT DISCIPLINE — refinement of STUCK-RECOVERY "
+        "specifically for target_not_found loops. When BROWSER_CLICK / "
+        "BROWSER_FILL / BROWSER_DOUBLE_CLICK returns `target not "
+        "found`, the NEXT emission MUST use a COMPLETELY DIFFERENT "
+        "selector SHAPE from a different FAMILY, not the same shape "
+        "with a different attribute value. Rotating attribute values "
+        "within one family (e.g., `{\"ref\":\"r-77\"}` → "
+        "`{\"ref\":\"r-98\"}` → `{\"ref\":\"r-104\"}`) is a "
+        "budget-eater — every miss wastes a round. The selector "
+        "families: (A — XPath) `//tag[text()='X']`, "
+        "`//tag[contains(text(),'X')]`, `//tag[@attr='X']`; "
+        "(B — CSS by attribute) `tag[name=\"X\"]`, "
+        "`tag[data-attr=\"X\"]`, `tag.class`; (C — ARIA/role) "
+        "`[aria-label=\"X\"]`, role+name; (D — visible text) "
+        "`BROWSER_FIND: <text>` then click returned selector; "
+        "(E — ATS ref-id) `{\"ref\":\"r-N\"}` from prior page_context. "
+        "After 1 target_not_found on a selector in family X, jump to "
+        "a selector in a DIFFERENT family Y, never stay in X. After 3 "
+        "different families have all returned target_not_found on the "
+        "SAME target element, emit `BROWSER_SCREENSHOT: viewport` "
+        "first to ground the next selector in actual rendered text, "
+        "OR pivot to FAMILY D (`BROWSER_FIND` with the button's "
+        "visible label like \"Apply\" / \"Submit\") which queries the "
+        "visible DOM directly. After 5 target_not_found rounds across "
+        "families on the same task, do NOT keep retrying — emit "
+        "`DONE: blocked — selector failed for <element> after <N> "
+        "shape variants. <DEV-LANE: short ask>` per DEV-LANE HANDOFF, "
+        "or ask the user to click that element manually and tell you "
+        "when to continue. Never burn the round budget on "
+        "attribute-value rotation within one family.\n\n"
+        "Concrete WRONG patterns (each wastes 4-7 rounds and should "
+        "NEVER be emitted in sequence):\n"
+        "  - Round N: `BROWSER_CLICK {\"ref\":\"r-77\"}` → not found. "
+        "Round N+1: `BROWSER_CLICK {\"ref\":\"r-78\"}` (same family E)\n"
+        "  - Round N: `BROWSER_CLICK [aria-label=\"Apply\"]` → not "
+        "found. Round N+1: `BROWSER_CLICK [aria-label=\"Apply Now\"]` "
+        "(same family C, variant text)\n"
+        "Concrete RIGHT patterns (each round jumps families):\n"
+        "  - Round N: `BROWSER_CLICK [aria-label=\"Apply\"]` (Family C) "
+        "→ not found. Round N+1: `BROWSER_FIND: Apply` (Family D — "
+        "visible text) → returns selector. Round N+2: `BROWSER_CLICK "
+        "<returned-selector>`.\n"
+        "Self-check before re-emitting any selector after a "
+        "target_not_found: am I changing FAMILY (A→B→C→D→E) or just "
+        "rotating values inside the same family? If just rotating, "
+        "REWRITE to a different family before emit.\n\n"
         "DEV-LANE HANDOFF — when 3+ reformulations all fail in ways that "
         "point at a MISSING PRIMITIVE (your tools can't do this kind of "
         "thing AT ALL on this page — not a missing fact, not a wrong "
@@ -10988,6 +11485,10 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "(items, empty flag, summary). It does NOT navigate, does NOT search, "
         "does NOT open folders. You orchestrate the multi-step flow yourself "
         "using the URL patterns below + BROWSER_WAIT + BROWSER_DOUBLE_CLICK.\n"
+        "When drive_state.items or file_folder_rows returns a selector/ref, "
+        "use THAT exact selector/ref for the open step. Do NOT invent your "
+        "own Playwright-style selectors like `tr:has-text(...)` or guessed "
+        "folder-row CSS when Drive already handed you the row.\n"
         "\n"
         "Drive URL patterns:\n"
         " - Search: BROWSER_NAV: https://drive.google.com/drive/search?q=<term>\n"
@@ -11008,6 +11509,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "    BROWSER_DOUBLE_CLICK: <selector from drive_state.items[k].selector>\n"
         "    BROWSER_WAIT: 1500\n"
         "    BROWSER_DRIVE_INSPECT_FOLDER: {}\n"
+        "\n"
+        "  NO-URL-ASK RULE — if Drive search/folder results already show the "
+        "named file, doc, or folder in drive_state.items (or the page read "
+        "shows the row), do NOT ask the user for a direct Drive URL, file "
+        "ID, share link, or \"better selector\". The selectors you need come "
+        "from the current Drive view. Choose the matching row's returned "
+        "`selector`/`ref` and open it with BROWSER_DOUBLE_CLICK.\n"
         "\n"
         "  Round 3 — drive_state.items is now folder contents; report them, "
         "OR if drive_state.empty == true, report \"the folder is empty\" per "
@@ -11253,16 +11761,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
         reply = ask_cloud(augmented, provider="gemini") or ask_cloud(augmented, provider="groq")
         local_thinking_stop(_spin)
         if not reply:
-            reply = ("Cloud search providers are unavailable right now. "
-                     "I skipped the slow local fallback to avoid another freeze.")
+            reply = ("Cloud search providers exhausted; using local fallback. "
+                     "I fell back to local model after cloud chain exhausted to avoid another freeze.")
 
     elif route == "cloud":
         _spin = local_thinking_start()
         reply = ask_cloud(history, provider=model)
         local_thinking_stop(_spin)
         if not reply:
-            reply = ("Cloud providers are unavailable right now. "
-                     "I skipped the slow local fallback to avoid another freeze.")
+            reply = ("Cloud providers exhausted; falling back to local. "
+                     "I fell back to local model after cloud chain exhausted to avoid another freeze.")
 
     elif route == "vision":
         print(f"{D}  [kimi-k2.5:cloud — vision]{X}")
@@ -11312,7 +11820,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
             streamed = True
 
     if not reply:
-        reply = "No response from AI."
+        reply = "No response from AI (cloud + local both failed)."
 
     low_user = user_text.lower()
     low_reply = (reply or "").lower()
@@ -13270,6 +13778,33 @@ def main():
         if _ut_lower in ("image latest", "image last", "latest image", "last image"):
             handle_image_status(user_text, "latest", history)
             _request_auto_save(history)
+            continue
+
+        # ── apply: prefix — hand a real listing URL to the browser pipeline ──
+        if _ut_lower.startswith("apply ") or _ut_lower.startswith("/apply "):
+            url = _extract_url(user_text)
+            if not url:
+                print(f"  {Y}usage: apply <job-listing-url>{X}")
+                continue
+            if not (Path.home() / ".master_ai_profile.json").exists():
+                print(f"  {R}No profile saved — run menu option 11 (profile build) first.{X}")
+                continue
+            try:
+                resp = _post_local_json(
+                    "http://127.0.0.1:8080/apply_start",
+                    {"url": url, "session_id": _current_api_session_id()},
+                    timeout=30,
+                )
+            except Exception as e:
+                print(f"  {R}apply_start failed: {e}{X}")
+                continue
+            msg = (
+                resp.get("reply")
+                or resp.get("error")
+                or ("Apply flow started." if resp.get("ok") else "Apply flow failed.")
+            )
+            color = BG if resp.get("ok") else R
+            print(f"  {color}{msg}{X}")
             continue
 
         # ── image: prefix — local image generation via sd-server ──
