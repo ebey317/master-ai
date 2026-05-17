@@ -151,7 +151,7 @@ _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
 _ACTION_LINE_RE = re.compile(
-    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|BROWSER_JS|BROWSER_CONSOLE|BROWSER_NETWORK|BROWSER_RESIZE_WINDOW|REMOTE_MCP):\s*(.*?)\s*$",
+    r"^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|BROWSER_JS|BROWSER_CONSOLE|BROWSER_NETWORK|BROWSER_RESIZE_WINDOW|REMOTE_MCP):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -1396,6 +1396,12 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         # Treat any file:// fill as sensitive — uploads cross a trust boundary.
         if "file://" in target.lower() or "file://" in str(action.get("extras", {})).lower():
             return {"tier": "sensitive", "gated_by": "file_upload", "error_code": None}
+
+    if kind == "BROWSER_UPLOAD_FILE":
+        return {"tier": "sensitive", "gated_by": "file_upload", "error_code": None}
+
+    if kind == "BROWSER_SUBMIT":
+        return {"tier": "sensitive", "gated_by": "form_submit", "error_code": None}
 
     if kind == "BROWSER_NAV":
         # Navigating into a payment/auth host is sensitive even if the URL

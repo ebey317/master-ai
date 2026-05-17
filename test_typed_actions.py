@@ -27,10 +27,11 @@ class KindAndRiskConstants(unittest.TestCase):
             ta.DIRECTIVE_KINDS,
             frozenset({
                 "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
-                "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+                "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
+                "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
                 "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
                 "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-                "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE",
+                "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE", "BROWSER_READ_PAGE_FULL",
                 "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
                 "BROWSER_TAB_CREATE", "REMOTE_MCP",
             }),
@@ -39,10 +40,11 @@ class KindAndRiskConstants(unittest.TestCase):
     def test_kind_class_aliases_match(self):
         for name in (
             "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
-            "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_READ", "BROWSER_NAV",
+            "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
+            "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
             "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
             "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-            "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE",
+            "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE", "BROWSER_READ_PAGE_FULL",
             "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
             "BROWSER_TAB_CREATE", "REMOTE_MCP",
         ):
@@ -219,7 +221,32 @@ class DirectiveParser(unittest.TestCase):
         a = ta.parse_directive("BROWSER_SCREENSHOT: viewport")
         self.assertIsNotNone(a)
         self.assertEqual(a.kind, "BROWSER_SCREENSHOT")
-        self.assertEqual(a.target, "viewport")
+
+    def test_parse_browser_upload_file_line(self):
+        a = ta.parse_directive("BROWSER_UPLOAD_FILE: input[type=file] :: /tmp/resume.pdf")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_UPLOAD_FILE")
+
+    def test_parse_browser_fill_form_line(self):
+        a = ta.parse_directive("BROWSER_FILL_FORM: form")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_FILL_FORM")
+
+    def test_parse_browser_submit_line(self):
+        a = ta.parse_directive("BROWSER_SUBMIT: form")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_SUBMIT")
+
+    def test_parse_browser_close_tab_line(self):
+        a = ta.parse_directive("BROWSER_CLOSE_TAB: current")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_CLOSE_TAB")
+
+    def test_parse_browser_read_page_full_line(self):
+        a = ta.parse_directive("BROWSER_READ_PAGE_FULL: current")
+        self.assertIsNotNone(a)
+        self.assertEqual(a.kind, "BROWSER_READ_PAGE_FULL")
+        self.assertEqual(a.target, "current")
         self.assertTrue(a.requires_confirm)
 
     def test_parse_drive_inspect_line(self):
