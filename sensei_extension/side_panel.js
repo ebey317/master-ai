@@ -126,11 +126,13 @@ async function loadConfig() {
   }
   state.config.backendUrl = String(state.config.backendUrl || DEFAULT_CONFIG.backendUrl).replace(/\/+$/, "");
   $("#modeSelect").value = state.config.mode || "review";
+  document.body.className = `mode-${state.config.mode || "review"}`;
 }
 
 async function saveMode(mode) {
   state.config.mode = mode;
   await chromeSet({ mode });
+  document.body.className = `mode-${mode}`;
   // Phase 4.1 — the tab group color follows the mode stoplight so users
   // can spot which mode created a tab without opening the panel.
   await syncTabGroupColorToMode();

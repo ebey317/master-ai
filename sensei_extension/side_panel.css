@@ -39,14 +39,43 @@ textarea {
   height: 100vh;
 }
 
+/* Mode stoplight per feedback_mode_stoplight_colors.md +
+   feedback_chrome_follows_mode_text_stays_semantic.md: frame/header
+   follow the mode color (Plan=red, Review=amber, Auto=green, Quick=teal).
+   Chat message text stays semantic (separate concern). */
+body.mode-plan {
+  --accent: #cc0000;
+  --accent-strong: #a00000;
+  --topbar-bg: #fff5f5;
+  --topbar-border: #f5c1c1;
+}
+body.mode-review {
+  --accent: #c7761a;
+  --accent-strong: #a55b0d;
+  --topbar-bg: #fff8ed;
+  --topbar-border: #f1d5a3;
+}
+body.mode-auto {
+  --accent: #1a7a3a;
+  --accent-strong: #146532;
+  --topbar-bg: #f0fbf5;
+  --topbar-border: #b8e5c8;
+}
+body.mode-quick {
+  --accent: #0f766e;
+  --accent-strong: #0b5f59;
+  --topbar-bg: #f0fdfa;
+  --topbar-border: #b8e1dc;
+}
+
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 14px 14px 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  border-bottom: 1px solid var(--topbar-border, var(--line));
+  background: var(--topbar-bg, var(--panel));
 }
 
 h1,
