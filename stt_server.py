@@ -71,8 +71,8 @@ _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
 # was really a fundamentally multi-step exploration. Browser turns get
 # 8 by default; Pupil chat stays at 3. The max ceiling lifts to 16 so
 # legitimate long flows don't false-terminate.
-_API_BROWSER_DEFAULT_ROUND_BUDGET = 8
-_API_BROWSER_MAX_ROUND_BUDGET = 16
+_API_BROWSER_DEFAULT_ROUND_BUDGET = 3
+_API_BROWSER_MAX_ROUND_BUDGET = 6   # hard cap; tighter to stop runaway loops
 _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
