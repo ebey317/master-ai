@@ -39,6 +39,8 @@ TOOLS: dict[str, list[str]] = {
                "journalctl", "watch", "parallel"],
     "crypto": ["openssl", "gpg", "sha256sum", "base64"],
     "extras": ["tree", "bat", "hyperfine", "ncdu"],
+    "email_clients": ["thunderbird", "evolution", "mutt", "neomutt",
+                      "alpine", "sylpheed", "claws-mail", "geary"],
 }
 
 # Tools whose --version writes to stderr or needs a different flag.

@@ -1486,12 +1486,9 @@ def _is_tool_required(stripped_low):
     return False
 
 
-# Deterministic system-query short-circuit. The local 7B model writes prose
-# for "where is X / find X / what's on port N / is X running" even though the
-# Modelfile says to emit RUN:/READ:. Architecture beats prompting — these
-# helpers synthesize a RUN: directive directly so the dispatcher executes it
-# without ever asking the model. _is_system_state_question is the broader
-# classifier used by retry-on-prose downstream.
+# _is_system_state_question identifies "where is X / what's on port N /
+# is X running" requests so the retry-on-prose nudge in handle() can prompt
+# the model to emit a RUN:/READ: directive when it answered in prose.
 _FILE_INTENT_PATTERNS = [
     re.compile(r"^where(?:\s+is|\s+are|\s+was|\s+were|'s|s)\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"),
     re.compile(r"^find(?:\s+me)?\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"),
@@ -1499,14 +1496,6 @@ _FILE_INTENT_PATTERNS = [
     re.compile(r"^do\s+i\s+have\s+(?:a\s+|an\s+|any\s+)?(.+)$"),
     re.compile(r"^show\s+me\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+?)(?:\s+please)?$"),
 ]
-
-_FILE_TARGET_STOP = {"it", "that", "this", "them", "those", "these", "one", "any"}
-_FILE_TARGET_ABSTRACT_FIRST = {
-    "how", "why", "when", "what", "who", "which",
-    "way", "fix", "answer", "solution", "problem",
-    "idea", "plan", "thought", "reason", "purpose",
-    "out", "around",
-}
 
 _FILE_LOCAL_CONTEXT_PHRASES = (
     "on my computer", "on this computer", "on my machine", "on this machine",
@@ -1523,15 +1512,6 @@ _FILEISH_WORD_HINTS = {
     "log", "logs", "script", "scripts", "desktop", "downloads",
     "documents", "templates",
 }
-
-def _build_filename_glob(target):
-    parts = re.findall(r"[a-zA-Z0-9_-]+", target)
-    drop = {"file", "files", "folder", "folders", "directory", "dir", "the", "my", "a", "an", "some"}
-    parts = [p for p in parts if p.lower() not in drop]
-    if not parts:
-        return None
-    return "*" + "*".join(p.lower() for p in parts) + "*"
-
 
 _AUTO_CONTEXT_FILE_ALIASES = {
     # Users ask for the "Codex md" handoff, but the repo's real handoff file
@@ -1662,312 +1642,6 @@ def _looks_path_or_filename(target):
 
 def _file_query_is_local_machine_intent(low_text, target):
     return _has_local_file_context(low_text) or _looks_path_or_filename(target)
-
-_TARGET_GLUE_WORDS = {
-    "to", "for", "that", "with", "from", "about", "before", "after", "while",
-    "i", "you", "we", "they", "he", "she",
-    "downloaded", "created", "saved", "made", "wrote", "built", "edited",
-    "is", "was", "be", "are", "were", "do", "does", "did",
-}
-
-def _system_query_short_circuit(text, low, words):
-    """Match common system-state intents and return a synthesized AI reply.
-
-    Returns a string suitable for process_reply() (with embedded RUN:/READ:),
-    or None when no pattern matches and the request should fall through to
-    the LLM. False positives are worse than false negatives — be conservative.
-    """
-    if not text:
-        return None
-    t = (low or "").strip().rstrip("?.!")
-    tt = text.strip().rstrip("?.!")  # case-preserved (paths must keep case)
-    if not t or len(t) > 200:
-        return None
-
-    # 1. Port lookup: "what's on port 8080", "what is using port 8080", "port 8080 status"
-    m_port = re.search(r"\bport\s+(\d{2,5})\b", t)
-    if m_port:
-        triggers = (
-            "what", "check", "on port", "listening", "open on", "using port",
-            "bound", "free", "status", "who", "process",
-        )
-        if t.startswith("port ") or any(k in t for k in triggers):
-            port = m_port.group(1)
-            return (
-                f"Checking what's on port {port}.\n"
-                f'RUN: ss -tlnp 2>/dev/null | grep -E "[:.]\\b{port}\\b" || '
-                f'lsof -i :{port} 2>/dev/null || echo "nothing listening on port {port}"'
-            )
-
-    # 2. Installed-package / executable check (must come BEFORE "is X running")
-    m_inst = re.match(
-        r"^(?:is\s+|do\s+i\s+have\s+|check\s+(?:if\s+)?)([a-z][a-z0-9_.+-]{1,40})\s+installed\b", t,
-    )
-    if m_inst:
-        pkg = m_inst.group(1)
-        return (
-            f"Checking for {pkg}.\n"
-            f'RUN: (command -v {pkg} 2>/dev/null; '
-            f'dpkg -l 2>/dev/null | grep -i "^ii.*{pkg}" | head -5; '
-            f'snap list 2>/dev/null | grep -i {pkg} | head -3; '
-            f'flatpak list 2>/dev/null | grep -i {pkg} | head -3) '
-            f'| head -20 || echo "{pkg}: not found"'
-        )
-
-    # 3. Service/process running: "is ollama running", "is sensei up"
-    m_svc = re.match(r"^is\s+([a-z][a-z0-9_.-]{1,40})\s+(running|on|up|alive|active|started)\b", t)
-    if m_svc:
-        name = m_svc.group(1)
-        if name not in {"it", "that", "this", "the", "a", "an"}:
-            return (
-                f"Checking if {name} is running.\n"
-                f'RUN: (systemctl --user is-active {name} 2>/dev/null; '
-                f'systemctl is-active {name} 2>/dev/null; '
-                f'pgrep -af "{name}" 2>/dev/null) | head -10 || echo "{name}: not running"'
-            )
-
-    # 4. Check service: "check service ollama", "check ollama service",
-    #                   "ollama service status", "service status ollama"
-    m_svc2 = re.match(
-        r"^(?:check\s+(?:the\s+)?service\s+|check\s+|service\s+status\s+(?:of\s+)?)"
-        r"([a-z][a-z0-9_.-]{1,40})(?:\s+(?:service|status))?$", t,
-    )
-    if m_svc2:
-        name = m_svc2.group(1)
-        if name not in {"it", "that", "this", "the", "a", "an", "if", "in", "on", "out"}:
-            return (
-                f"Checking {name} service.\n"
-                f'RUN: (systemctl --user status {name} 2>/dev/null | head -10; '
-                f'systemctl status {name} 2>/dev/null | head -10; '
-                f'pgrep -af "{name}" 2>/dev/null | head -5) || echo "{name}: no service or process found"'
-            )
-    m_svc3 = re.match(r"^([a-z][a-z0-9_.-]{1,40})\s+service(?:\s+status)?$", t)
-    if m_svc3:
-        name = m_svc3.group(1)
-        return (
-            f"Checking {name} service.\n"
-            f'RUN: (systemctl --user status {name} 2>/dev/null | head -10; '
-            f'systemctl status {name} 2>/dev/null | head -10) || echo "{name}: no such service"'
-        )
-
-    # 5. List files in a directory: "list files in ~/X", "ls ~/X",
-    #                                "show files in ~/X", "what's in ~/X"
-    # Match against case-preserved tt — paths must keep their case (~/Templates
-    # is not the same as ~/templates).
-    m_ls = re.match(
-        r"^(?:list|ls|show)\s+(?:the\s+)?files?\s+(?:in\s+)?(.+)$", tt, re.IGNORECASE,
-    )
-    if not m_ls:
-        m_ls = re.match(r"^ls\s+(.+)$", tt, re.IGNORECASE)
-    if not m_ls:
-        m_ls = re.match(r"^what(?:'s|\s+is)\s+in\s+(.+)$", tt, re.IGNORECASE)
-    if m_ls:
-        target = m_ls.group(1).strip().rstrip("?.!,")
-        if target.startswith(("~", "/", ".")) or re.match(r"^[A-Za-z][A-Za-z0-9_./-]*$", target):
-            safe_target = re.sub(r"[^A-Za-z0-9_./~-]", "", target)
-            if safe_target:
-                return (
-                    f"Listing {safe_target}.\n"
-                    f'RUN: ls -la {safe_target} 2>/dev/null | head -50 || echo "{safe_target}: not a directory"'
-                )
-
-    # 6. Open file: "open file ~/X", "open the file /path/X"
-    # Case-preserved match — file paths are case-sensitive on Linux.
-    m_open = re.match(r"^open\s+(?:the\s+)?file\s+(.+)$", tt, re.IGNORECASE)
-    if m_open:
-        target = m_open.group(1).strip().rstrip("?.!,")
-        if target.startswith(("~", "/", ".")):
-            safe_target = re.sub(r"[^A-Za-z0-9_./~-]", "", target)
-            if safe_target:
-                return (
-                    f"Opening {safe_target}.\n"
-                    f'RUN: xdg-open {safe_target} 2>/dev/null && echo "opened {safe_target}" '
-                    f'|| echo "cannot open {safe_target}"'
-                )
-
-    # 7. File search — "where is X", "find X", "locate X", "do I have X", "show me X"
-    for pat in _FILE_INTENT_PATTERNS:
-        m = pat.match(t)
-        if not m:
-            continue
-        target = _normalize_file_target(m.group(1))
-        if not target or len(target) < 3 or "," in target:
-            return None
-        # Ambiguous nouns like "atlantis" should NOT auto-run local `find`.
-        # Only short-circuit when user wording clearly signals local files.
-        if not _file_query_is_local_machine_intent(t, target):
-            return None
-        first = target.split()[0].lower()
-        if first in _FILE_TARGET_STOP or first in _FILE_TARGET_ABSTRACT_FIRST:
-            return None
-        # Skip "show me how/what/why" style — those are explanation requests.
-        if re.match(r"^(?:how|why|what|when|who|which)\b", target, re.IGNORECASE):
-            return None
-        # Glue/verb words signal a sentence shape, not a filename.
-        # "find a way to fix" → has "to" → skip. "find biovega field manual" → keep.
-        target_words_lower = [w.lower() for w in re.findall(r"[a-zA-Z0-9_.-]+", target)]
-        if any(w in _TARGET_GLUE_WORDS for w in target_words_lower):
-            return None
-        if len(target_words_lower) > 6:
-            return None
-        glob = _build_filename_glob(target)
-        if not glob or len(glob) < 5:
-            return None
-        return (
-            f"Looking for `{target}` on disk.\n"
-            f'RUN: find ~ -maxdepth 6 -iname "{glob}" 2>/dev/null | head -20 || '
-            f'echo "no matches for {glob}"'
-        )
-
-    return None
-
-
-_WEATHER_WORD_RE = r"(?:weather|weathr|wether)"
-_FORECAST_WORD_RE = r"(?:forecast|forcast)"
-_WEATHER_TERM_RE = rf"(?:{_WEATHER_WORD_RE}|{_FORECAST_WORD_RE})"
-_WEATHER_LEADING_RE = (
-    r"(?:(?:first|please|pls|can\s+you|could\s+you|would\s+you|"
-    r"show\s+me|give\s+me|pull\s+up(?:\s+the)?|pull|show|give|get|"
-    r"check|checking|cheack|cheacking|tell\s+me)\s+)*"
-)
-_WEATHER_LOCATION_RE = re.compile(
-    rf"\b{_WEATHER_TERM_RE}\s+(?:in|for|at)\s+(.+)$",
-    re.IGNORECASE,
-)
-_WEATHER_DAYS_RE = re.compile(
-    rf"\b(?P<days>\d+|one|two|three|four|five|six|seven)(?:-|\s+)?days?\s+{_WEATHER_TERM_RE}\b",
-    re.IGNORECASE,
-)
-_WEATHER_FORMAT_RE = re.compile(
-    r"^(?:try\s+|use\s+|show\s+)?format\s+\?(?P<format>[0-9a-z]+)\s*$",
-    re.IGNORECASE,
-)
-_CLEAR_CACHE_RE = re.compile(r"\bclear\s+(?:the\s+)?cache\b", re.IGNORECASE)
-
-def _looks_weather_request(low, word_set):
-    """True when the user is asking for terminal weather, not web results."""
-    if not low:
-        return False
-    if any(p in low for p in (
-        "weather underground", "weather.com", "weather channel",
-        "weather app", "weather service",
-    )):
-        return False
-    if _WEATHER_FORMAT_RE.match(low):
-        return True
-    if _WEATHER_DAYS_RE.search(low):
-        return True
-    if re.match(
-        rf"^{_WEATHER_LEADING_RE}(?:(?:what(?:'s|\s+is)|whats)\s+(?:the\s+)?{_WEATHER_WORD_RE}|(?:the\s+)?{_WEATHER_TERM_RE})(?:\b|$)",
-        low,
-    ):
-        return True
-    if re.match(rf"^{_WEATHER_TERM_RE}\s*$", low):
-        return True
-    if re.match(rf"^{_WEATHER_TERM_RE}\s+(?:today|tomorrow|tonight|now|please|near\s+me|outside|here)\b", low):
-        return True
-    if _WEATHER_LOCATION_RE.search(low):
-        return True
-    return any(p in low for p in (
-        "is it raining", "rain near me", "rain coming",
-        "rain radar", "weather radar", "temperature outside",
-        "temp outside",
-    ))
-
-def _weather_location_from_text(text):
-    """Extract an explicit place for wttr.in, else empty for auto-location."""
-    m = _WEATHER_LOCATION_RE.search(text or "")
-    if not m:
-        return ""
-    loc = m.group(1).strip().rstrip(".?!,;:")
-    loc = _WEATHER_DAYS_RE.sub("", loc).strip(" ,")
-    loc = re.sub(
-        r"\b(?:today|tomorrow|tonight|right\s+now|now|please|pls)\b.*$",
-        "",
-        loc,
-        flags=re.IGNORECASE,
-    ).strip(" ,")
-    if loc.lower() in {"me", "near me", "here", "outside", "my area", "this area"}:
-        return ""
-    return loc
-
-def _weather_query_suffix_from_text(text):
-    m = _WEATHER_FORMAT_RE.match((text or "").strip())
-    if m:
-        return f"?{m.group('format')}"
-    return "?2"
-
-_WEATHER_DATE_CMD_FORMAT = "+%m/%d/%Y %I:%M:%S %p %z %Z"
-
-def _weather_url(location, query):
-    import urllib.parse as _up
-    loc_path = _up.quote(location, safe='') if location else ""
-    return f"https://wttr.in/{loc_path}?{query}"
-
-def _weather_time_cmd(location):
-    tz_url = shlex.quote(_weather_url(location, "format=%Z"))
-    fallback_url = shlex.quote(_weather_url(location, "format=Local+time:+%T+%Z"))
-    date_fmt = shlex.quote(_WEATHER_DATE_CMD_FORMAT)
-    return (
-        f"tz=$(curl -fsS {tz_url} 2>/dev/null | awk '{{print $NF}}'); "
-        f"if [ -n \"$tz\" ]; then printf 'Local time: '; TZ=\"$tz\" date {date_fmt}; "
-        f"else curl -fsS {fallback_url} 2>/dev/null; printf '\\n'; fi"
-    )
-
-def _weather_dynamic_time_cmd(path_expr):
-    date_fmt = shlex.quote(_WEATHER_DATE_CMD_FORMAT)
-    return (
-        f"tz=$(curl -fsS \"https://wttr.in/{path_expr}?format=%Z\" 2>/dev/null | awk '{{print $NF}}'); "
-        f"if [ -n \"$tz\" ]; then printf 'Local time: '; TZ=\"$tz\" date {date_fmt}; "
-        f"else curl -fsS \"https://wttr.in/{path_expr}?format=Local+time:+%T+%Z\" 2>/dev/null; printf '\\n'; fi"
-    )
-
-def _weather_auto_location_cmd(suffix):
-    fallback_url = shlex.quote(f"https://wttr.in/{suffix}")
-    return (
-        "loc=$(curl -fsS https://ipinfo.io/loc 2>/dev/null | tr -d '\\r\\n'); "
-        f"if [ -n \"$loc\" ]; then "
-        f"{_weather_dynamic_time_cmd('${loc}')}; curl \"https://wttr.in/${{loc}}{suffix}\"; "
-        f"else {_weather_time_cmd('')}; curl {fallback_url}; fi"
-    )
-
-def _weather_short_circuit(text):
-    """Return a synthesized RUN directive for weather, or None."""
-    stripped = (text or "").strip()
-    low = stripped.lower()
-    words = set(re.findall(r"[a-z0-9']+", low))
-    if not _looks_weather_request(low, words):
-        return None
-
-    loc = _weather_location_from_text(stripped)
-    suffix = _weather_query_suffix_from_text(stripped)
-    if loc:
-        import urllib.parse as _up
-        url = f"https://wttr.in/{_up.quote(loc, safe='')}{suffix}"
-        cmd = f"{_weather_time_cmd(loc)}; curl {shlex.quote(url)}"
-    else:
-        cmd = _weather_auto_location_cmd(suffix)
-    return (
-        "Checking weather with wttr.in terminal view.\n"
-        f"RUN: {cmd}"
-    )
-
-def _clear_cache_weather_short_circuit(text):
-    """Handle combined 'clear cache, weather' without handing weather to a model."""
-    stripped = (text or "").strip()
-    if not _CLEAR_CACHE_RE.search(stripped):
-        return None
-    weather_text = _CLEAR_CACHE_RE.sub("", stripped).strip(" ,;:&+")
-    weather_synth = _weather_short_circuit(weather_text)
-    if not weather_synth:
-        return None
-    cache_cmd = f"rm -f {shlex.quote(str(CACHE_FILE))}"
-    return (
-        "Clearing Master AI response cache, then checking weather.\n"
-        f"RUN: {cache_cmd}\n"
-        f"{weather_synth}"
-    )
-
 
 _DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER")
 
@@ -2222,35 +1896,6 @@ def _memory_recall_payload(user_text):
     # Return the last 800 chars of memory — most recent session summaries live at the end
     return mem[-800:]
 
-_BUILD_VERBS = {
-    "make", "build", "create", "develop", "design", "write", "code", "program",
-    "lets", "let's", "let", "generate", "start",
-}
-# Explicit triggers that flip Sensei FROM brainstorm INTO build mode.
-# If any of these phrases appear, _scope_check_question returns empty so
-# the request proceeds to the real model for code generation.
-_BUILD_TRIGGERS = (
-    "build it", "code it", "make it", "generate it", "write the code",
-    "write code", "let's ship", "lets ship", "ship it", "ok go",
-    "go ahead and build", "go ahead and code", "actually build",
-    "actually code", "now build", "now code",
-)
-_GENERIC_NOUNS = {
-    "app", "apps", "application", "applications", "tool", "tools", "thing",
-    "project", "system", "software", "program", "website", "site", "platform",
-    "bot", "service", "product", "prototype",
-}
-# Presence of ANY of these means the request already has specifics → skip scope check.
-_SPECIFICITY_MARKERS = {
-    "python", "javascript", "typescript", "js", "ts", "rust", "go", "ruby",
-    "react", "vue", "svelte", "flask", "django", "fastapi", "node", "nextjs",
-    "html", "css", "sql", "postgres", "sqlite", "redis", "mongo",
-    "cli", "api", "rest", "graphql", "mobile", "ios", "android", "desktop",
-    "web", "browser", "terminal", "bash", "shell",
-    "chrome", "firefox", "extension",
-}
-
-
 def _project_keywords() -> list:
     """Keywords that mean 'still on the current project':
        - tokens from the active thread label (hyphen-split)
@@ -2329,76 +1974,6 @@ def _maybe_drift_reminder(history_ref) -> None:
           f"or 'task add ...' to log a sidetrack task.{X}\n")
 
 
-def _append_poc_stub(user_text: str) -> None:
-    """Append a brief Ideas / POCs entry so brainstorms are captured even
-    when the user doesn't explicitly run master.sh option 9."""
-    try:
-        p = Path.home() / "scripts" / "PROJECTS.md"
-        if not p.exists():
-            return
-        content = p.read_text()
-        marker = "## Ideas / POCs"
-        if marker not in content:
-            return
-        stub = (
-            f"\n### POC (auto-logged {_fmt_ampm()})\n"
-            f"- **Ask:** {user_text.strip()[:300]}\n"
-            f"- **Status:** brainstorming — scope-check fired\n"
-        )
-        p.write_text(content.rstrip() + "\n" + stub)
-    except Exception as e:
-        log(f"POC_LOG_ERROR: {e}")
-
-
-def _scope_check_question(stripped: str, words, word_set, history) -> str:
-    """Return a clarifying question if this request is vague+ambitious,
-    otherwise empty string (let later routes handle it).
-
-    Triggers when ALL are true:
-      - short (< 15 words)
-      - contains a build-intent verb
-      - contains a generic noun (app / tool / thing / project / ...)
-      - lacks any specificity marker (no language, framework, or target)
-      - this is a FIRST ask on the topic (no prior AI scope reply in history)
-    """
-    if len(words) == 0 or len(words) > 15:
-        return ""
-    low = stripped.lower()
-
-    # Build trigger present? User has explicitly greenlit code generation —
-    # skip the scope gate and let the model work.
-    if any(t in low for t in _BUILD_TRIGGERS):
-        return ""
-
-    # Already in a back-and-forth about scope? Don't ask again.
-    recent = [m.get("content", "") for m in history[-6:]
-              if m.get("role") == "assistant"]
-    for r in recent:
-        if "clarify the scope" in r.lower() or "who is the end user" in r.lower():
-            return ""
-
-    has_build_verb = any(v in low for v in _BUILD_VERBS) or any(
-        w in _BUILD_VERBS for w in word_set
-    )
-    has_generic_noun = bool(word_set & _GENERIC_NOUNS)
-    if not (has_build_verb and has_generic_noun):
-        return ""
-
-    if word_set & _SPECIFICITY_MARKERS:
-        return ""  # already has language / target info
-
-    # Sensei is an administrator — not a chat bot. Vague build asks get a
-    # short redirect to Pupil (where brainstorming + scoping belongs), plus a
-    # one-line offer to act immediately if Elijah adds specifics.
-    return (
-        "That's a brainstorm-shaped ask — Sensei is built for execution, "
-        "not scoping.\n\n"
-        "  • For open-ended idea chat: run `master.sh` → option 5 (Pupil)\n"
-        "  • To act here: add specifics (language / platform / "
-        "first concrete feature) and I'll build it"
-    )
-
-
 def _read_run_mode():
     """Which product mode is the user running in?
       stored default — local-first. Cloud is opt-in per-request.
@@ -2458,8 +2033,8 @@ def orchestrate(history, user_text, image_path=None):
         # so every downstream content-based shortcircuit, score function, and
         # matcher inspects user intent — not [BROWSER PAGE CONTEXT] chrome
         # (button labels, urls, aria-labels, visible_text). Without this,
-        # CODE_WORDS, ALTER_WORDS, _is_tool_required, _scope_check_question,
-        # _looks_time_sensitive, and the apocalypse-path matchers all leak.
+        # CODE_WORDS, ALTER_WORDS, _is_tool_required, _looks_time_sensitive,
+        # and the apocalypse-path matchers all leak.
         # Code that legitimately needs the wrapped envelope still has it as
         # `stripped`. Sibling to 3c83e8e (explicit-prefix half).
         low = user_section_low
@@ -2573,31 +2148,6 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "cloud_fast", "model": "groq",
                 "reason": "chrome_extension automation → cloud_fast (Anthropic-spec PLAN-as-block emits reliably)"}
 
-    cache_weather_synth = _clear_cache_weather_short_circuit(stripped)
-    if cache_weather_synth:
-        return {"route": "weather",
-                "synth_reply": cache_weather_synth,
-                "reason": "clear cache + weather request → deterministic RUN directives"}
-
-    weather_synth = _weather_short_circuit(stripped)
-    if weather_synth:
-        return {"route": "weather",
-                "synth_reply": weather_synth,
-                "reason": "weather request → wttr.in terminal curl"}
-
-    # 2c. Deterministic system-query short-circuit. Catches "where is X",
-    #     "find X", "what's on port N", "is X running/installed", "list files
-    #     in X", "open file X" and synthesizes a RUN: directive directly —
-    #     no LLM call. The 7B local model writes prose for these even when
-    #     the Modelfile says to use directives. Architecture beats prompting.
-    #     Built 2026-04-27 after Sensei couldn't locate biovega_field_manual.md
-    #     while Claude Code found it in one shell call.
-    synth = _system_query_short_circuit(stripped, low, words)
-    if synth:
-        return {"route": "system_query",
-                "synth_reply": synth,
-                "reason": "system query pattern → synthesized RUN: directive"}
-
     # 2d. Desktop-app launch short-circuit. Catches "open/launch/start <app>"
     # for apps in the capability registry's allowlist and synthesizes
     # RUN: <app> &. Bypasses cloud models that refuse with "I'm a browser
@@ -2611,11 +2161,6 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "desktop_launch",
                 "synth_reply": desk_synth,
                 "reason": "desktop-app launch pattern → synthesized RUN: directive (registry-handled)"}
-
-    if _looks_link_lookup(user_section_low, user_section_word_set):
-        return {"route": "link_lookup",
-                "query": stripped,
-                "reason": "link/source request → live search, no guessed URLs"}
 
     generative_video = _is_generative_video_request(low)
     if generative_video:
@@ -2684,12 +2229,6 @@ def orchestrate(history, user_text, image_path=None):
     if payload:
         return {"route": "recall_memory", "payload": payload,
                 "reason": "explicit recall trigger"}
-
-    # 5b. Scope check — vague+ambitious build requests need clarify first
-    scope_q = _scope_check_question(stripped, words, word_set, history)
-    if scope_q:
-        return {"route": "scope_check", "question": scope_q,
-                "reason": "vague+ambitious build → clarify scope first"}
 
     # 5b2. Tool-required intent — must run on local Sensei.
     # Cloud lanes (Groq, DeepSeek, Gemini) are text-only and either refuse
@@ -2929,33 +2468,6 @@ def _looks_time_sensitive(low, word_set):
             return True
     return False
 
-_LINK_LOOKUP_PHRASES = (
-    "link to", "links to", "url for", "urls for",
-    "official website", "official site", "source link", "source links",
-    "citation", "citations", "references", "sources",
-    "download link", "download page", "github repo", "github repository",
-    "official github", "repo for", "website for", "site for",
-    "where can i download", "where do i download",
-    "where is the website", "where's the website",
-    "find the link", "find a link", "find me the link",
-    "pull accurate links", "accurate links",
-)
-
-def _looks_link_lookup(low, word_set):
-    """True when the user needs real URLs/sources, not model prose.
-
-    These requests must go through live search and return source URLs. Local
-    models are prone to placeholder links or plausible-but-fake domains.
-    """
-    if not low:
-        return False
-    if any(p in low for p in _LINK_LOOKUP_PHRASES):
-        return True
-    if ("link" in word_set or "links" in word_set or "url" in word_set or "urls" in word_set):
-        if any(w in word_set for w in ("find", "get", "pull", "show", "give", "need", "accurate", "real")):
-            return True
-    return False
-
 _PLACEHOLDER_HOSTS = {
     "example.com", "example.org", "example.net", "example.edu",
     "placeholder.com", "yourdomain.com", "your-domain.com",
@@ -3017,58 +2529,6 @@ def _filter_placeholder_links(text):
     if not _valid_urls_in_text(cleaned):
         return None
     return cleaned
-
-def _url_exists_with_curl(url, timeout=8):
-    """Validate a candidate URL with curl. Used as a fallback when Python
-    socket/DNS or search libraries are unavailable on the customer box."""
-    if _is_placeholder_url(url) or not shutil.which("curl"):
-        return False
-    try:
-        p = subprocess.run(
-            ["curl", "-I", "-L", "-s", "--max-time", str(timeout), url],
-            capture_output=True,
-            text=True,
-            timeout=timeout + 2,
-        )
-    except Exception as e:
-        log(f"CURL_URL_VALIDATE_ERROR: {url} {e}")
-        return False
-    if p.returncode != 0:
-        return False
-    return bool(re.search(r'^HTTP/\S+\s+(?:2|3)\d\d\b', p.stdout, re.MULTILINE))
-
-def _direct_verified_link_lookup(query):
-    """Small deterministic resolver for exact link requests we can verify.
-
-    This is not a search replacement. It covers cases where the user named a
-    site family plus a concrete handle/repo, then validates before returning.
-    """
-    q = (query or "").strip()
-    low = q.lower()
-    candidates = []
-    if "github" in low:
-        explicit = re.findall(r'https?://github\.com/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?', q)
-        candidates.extend(explicit)
-        words = re.findall(r'\b[A-Za-z0-9][A-Za-z0-9_.-]{1,38}\b', q)
-        stop = {
-            "github", "official", "link", "links", "repo", "repository",
-            "profile", "url", "for", "the", "and", "com", "https", "http",
-        }
-        useful = [w for w in words if w.lower() not in stop]
-        if len(useful) >= 2 and any(w in low for w in ("repo", "repository")):
-            candidates.append(f"https://github.com/{useful[0]}/{useful[1]}")
-        if useful:
-            candidates.append(f"https://github.com/{useful[0]}")
-    seen = set()
-    lines = []
-    for url in candidates:
-        url = url.rstrip(".,;:)")
-        if url in seen:
-            continue
-        seen.add(url)
-        if _url_exists_with_curl(url):
-            lines.append(f"• Verified URL\n  {url}")
-    return "\n".join(lines) if lines else None
 
 def _have_14b():
     """Cheap check — is the 14B big-brain model pulled on this box?
@@ -3456,9 +2916,6 @@ def web_search(query, max_results=4):
     Every engine returns None on error, so the combiner tolerates any
     subset being down. Explicit "Search unavailable" only when ALL fail."""
     log(f"WEB_SEARCH: {query}")
-    direct = _direct_verified_link_lookup(query)
-    if direct:
-        return f"[Direct verified lookup]\n{direct}"
     gem    = gemini_grounded_search(query)
     brave  = brave_search(query, max_results=max_results)
     serper = serper_search(query, max_results=max_results)
@@ -8292,15 +7749,13 @@ def show_doctor():
     try:
         globals()["PINNED_MODEL"] = None
         code_route = detect_route("fix bug in app.py")
-        weather_route = orchestrate([], "what's the weather")
         recall_route = orchestrate([], "remember that I like coffee")
         route_ok = (
             code_route[0] == "local"
             and code_route[1] == MODELS["coder"]
-            and weather_route.get("route") == "weather"
             and recall_route.get("route") == "recall_memory"
         )
-        detail = f"code={code_route[0]}/{code_route[1]} weather={weather_route.get('route')} recall={recall_route.get('route')}"
+        detail = f"code={code_route[0]}/{code_route[1]} recall={recall_route.get('route')}"
         add_probe("Router", route_ok, detail)
     except Exception as e:
         add_probe("Router", False, str(e))
@@ -10749,16 +10204,14 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "assistant", "content": resp})
         return resp
 
-    if decision["route"] in ("system_query", "weather", "desktop_launch"):
+    if decision["route"] == "desktop_launch":
         # Deterministic terminal task — synth_reply contains a
         # RUN:/RUNTERM: directive that process_reply parses and executes through the
         # same path an LLM-emitted RUN: would use (mode-aware confirmation,
         # action-failed chain abort, router metrics). No model call, no
         # tokens, no waiting for the 7B brain to remember to use its tools.
         synth = decision.get("synth_reply", "")
-        label = {
-            "weather": "terminal weather",
-        }.get(decision["route"], "deterministic system query")
+        label = "desktop launch"
         print(f"\n  {BC}[thinking: {label} — running it directly]{X}")
         print(f"  {M}Sensei:{X} {synth}\n", flush=True)
         process_reply(synth, history, streamed=False)
@@ -10853,16 +10306,6 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": msg})
         return msg
-
-    if decision["route"] == "scope_check":
-        q = decision["question"]
-        print(f"\n  {BC}[thinking: clarify the scope before writing code]{X}")
-        print(f"  {M}Sensei:{X} {q}\n", flush=True)
-        history.append({"role": "user", "content": user_text})
-        history.append({"role": "assistant", "content": q})
-        # Auto-log the POC to PROJECTS.md so brainstorms aren't lost.
-        _append_poc_stub(user_text)
-        return q
 
     if decision["route"] == "recall_memory":
         print(f"  {BC}[thinking: checking memory]{X}")

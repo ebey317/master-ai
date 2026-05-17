@@ -26,7 +26,6 @@ class DirectiveParserTests(unittest.TestCase):
         self._orig_metric = master_ai._router_metric
         self._orig_pill = master_ai._pill
         self._orig_log = master_ai.log
-        self._orig_url_exists = master_ai._url_exists_with_curl
         self._orig_launch_desktop = master_ai._launch_desktop_argv
         self._orig_load_last_action = master_ai._load_last_action
         self._orig_run_command = master_ai.run_command
@@ -67,7 +66,6 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai._router_metric = self._orig_metric
         master_ai._pill = self._orig_pill
         master_ai.log = self._orig_log
-        master_ai._url_exists_with_curl = self._orig_url_exists
         master_ai._launch_desktop_argv = self._orig_launch_desktop
         master_ai._load_last_action = self._orig_load_last_action
         master_ai.run_command = self._orig_run_command
@@ -371,11 +369,6 @@ class DirectiveParserTests(unittest.TestCase):
             self.assertFalse(ok, path)
             self.assertIn("self-modification", reason)
 
-    def test_link_lookup_phrase_routes_to_live_search(self):
-        low = "ensure it fetches accurate links not placeholders"
-        words = set(low.split())
-        self.assertTrue(master_ai._looks_link_lookup(low, words))
-
     def test_placeholder_urls_are_removed_from_search_output(self):
         text = (
             "[DuckDuckGo]\n"
@@ -393,78 +386,6 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertIsNone(
             master_ai._filter_placeholder_links("Use https://github.com/username/repo")
         )
-
-    def test_direct_github_lookup_verifies_before_returning(self):
-        seen = []
-        def _exists(url):
-            seen.append(url)
-            return url == "https://github.com/ebey317"
-        master_ai._url_exists_with_curl = _exists
-        result = master_ai._direct_verified_link_lookup("official GitHub ebey317")
-        self.assertIn("https://github.com/ebey317", result)
-        self.assertIn("https://github.com/ebey317", seen)
-
-    def test_weather_routes_to_wttr_terminal_command(self):
-        decision = master_ai.orchestrate([], "what's the weather")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("format=%Z", decision["synth_reply"])
-        self.assertIn("date '+%m/%d/%Y %I:%M:%S %p %z %Z'", decision["synth_reply"])
-        self.assertIn("format=Local+time:+%T+%Z", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-        self.assertNotIn("Indianapolis", decision["synth_reply"])
-
-    def test_weather_with_location_routes_to_wttr_location(self):
-        decision = master_ai.orchestrate([], "weather in Indianapolis")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("https://wttr.in/Indianapolis?format=%Z", decision["synth_reply"])
-        self.assertIn("date '+%m/%d/%Y %I:%M:%S %p %z %Z'", decision["synth_reply"])
-        self.assertIn("curl 'https://wttr.in/Indianapolis?2'", decision["synth_reply"])
-
-    def test_weather_typo_routes_to_wttr_ip_lookup(self):
-        decision = master_ai.orchestrate([], "cheacking weather")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("format=%Z", decision["synth_reply"])
-        self.assertIn("date '+%m/%d/%Y %I:%M:%S %p %z %Z'", decision["synth_reply"])
-        self.assertIn("format=Local+time:+%T+%Z", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-
-    def test_weather_prefix_routes_to_auto_location(self):
-        decision = master_ai.orchestrate([], "first whats the weather")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-
-    def test_weather_format_followup_uses_requested_wttr_format(self):
-        decision = master_ai.orchestrate([], "try format ?7")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("date '+%m/%d/%Y %I:%M:%S %p %z %Z'", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?7", decision["synth_reply"])
-
-    def test_three_day_forcast_typo_uses_default_wttr_view(self):
-        decision = master_ai.orchestrate([], "three day forcast")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-        self.assertNotIn("wttr.in/3", decision["synth_reply"])
-
-    def test_weather_common_typo_routes_to_auto_location(self):
-        decision = master_ai.orchestrate([], "pull up the wether")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-
-    def test_clear_cache_weather_combo_stays_deterministic(self):
-        decision = master_ai.orchestrate([], "clear cache , whats the weather")
-        self.assertEqual(decision["route"], "weather")
-        self.assertIn(f"RUN: rm -f {master_ai.CACHE_FILE}", decision["synth_reply"])
-        self.assertIn("ipinfo.io/loc", decision["synth_reply"])
-        self.assertIn("date '+%m/%d/%Y %I:%M:%S %p %z %Z'", decision["synth_reply"])
-        self.assertIn("https://wttr.in/${loc}?2", decision["synth_reply"])
-        self.assertNotIn("format=3", decision["synth_reply"])
-        self.assertNotIn("harvest.cache", decision["synth_reply"])
 
     def test_agent_prefix_extracts_task_payload(self):
         payload = master_ai._extract_prefixed_payload(
