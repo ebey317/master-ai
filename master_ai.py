@@ -581,6 +581,69 @@ def load_keys():
 
 KEYS = load_keys()
 
+# ── SEND_EMAIL — model emits SEND_EMAIL: directive, dispatcher calls
+# send_email_via_smtp. Polish/template happens at the model layer via
+# Modelfile teaching, NOT in Python. Helper is intentionally minimum-
+# viable: Gmail-only sender, optional single-file attach, stdlib smtplib.
+# Per feedback_improve_before_add (2026-05-17) — addition justified because
+# the existing surface genuinely lacks send capability and this is
+# connector tissue between voice-in (Whisper), model writing, and SMTP.
+def _send_email_log(record):
+    """Append one JSON line to ~/.master_ai_email_log.jsonl. Best-effort."""
+    try:
+        from datetime import datetime as _dt
+        rec = dict(record)
+        rec.setdefault("ts", _dt.now().isoformat())
+        with open(os.path.expanduser("~/.master_ai_email_log.jsonl"), "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:
+        try: log(f"SEND_EMAIL log write failed: {e}")
+        except Exception: pass
+
+
+def send_email_via_smtp(to, subject, body, *, attach=None, sender="ebey317@gmail.com"):
+    """Send one email via Gmail SMTP_SSL using gmail_app_password from
+    ~/.master_ai_keys. Returns {ok, error, recipient}.
+    """
+    import smtplib
+    from email.message import EmailMessage
+    keys = load_keys()
+    pw = keys.get("gmail_app_password") or keys.get("gmail_password")
+    if not pw:
+        err = "no gmail_app_password in ~/.master_ai_keys"
+        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
+        return {"ok": False, "error": err, "recipient": to}
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(body or "")
+    if attach:
+        attach_path = os.path.expanduser(str(attach))
+        if not os.path.isfile(attach_path):
+            err = f"attach path not a file: {attach_path}"
+            _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
+            return {"ok": False, "error": err, "recipient": to}
+        import mimetypes
+        ctype, _enc = mimetypes.guess_type(attach_path)
+        maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
+        with open(attach_path, "rb") as af:
+            data = af.read()
+        msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream",
+                           filename=os.path.basename(attach_path))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+            s.login(sender, pw)
+            s.send_message(msg)
+        _send_email_log({"event": "send_email", "ok": True, "to": to, "subject": subject,
+                         "attach": attach if attach else None})
+        return {"ok": True, "error": None, "recipient": to}
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
+        return {"ok": False, "error": err, "recipient": to}
+
+
 # ── COLORS — matches brand.sh (visible on light + dark terminals) ──
 G    = '\033[92m'    # bright green
 C    = '\033[96m'    # bright cyan
@@ -8360,6 +8423,56 @@ def confirm_create(filepath, content):
         _remember_last_action("create_denied", path=filepath)
         return False
 
+# ── SEND_EMAIL CONFIRM ───────────────────────────────────────
+# Irreversible action — sent = sent. Always prompts in auto mode (no
+# bypass) per the same irreversible-action policy Claude-for-Chrome uses
+# for purchases/sensitive_fill. Plan mode refuses. Review mode prompts.
+@_awaiting_confirm
+def confirm_send_email(spec):
+    to = spec.get("to", "")
+    subject = spec.get("subject", "")
+    body = spec.get("body", "")
+    attach = spec.get("attach")
+    mode = globals().get("MODE", "plan")
+    if mode == "plan":
+        print(_pill("BLOCKED", f"{D}plan mode refuses SEND_EMAIL{X}"))
+        _audit("SEND_EMAIL-PLAN-REFUSE", f"to={to}")
+        return {"ok": False, "error": "refused in plan mode", "recipient": to}
+    body_preview = (body[:300] + " …") if len(body) > 300 else body
+    print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
+    print(f"{D}║  📧 {BOLD}AI wants to send email:{X}")
+    print(f"{D}║  To:      {Y}{to}{X}")
+    print(f"{D}║  Subject: {Y}{subject}{X}")
+    if attach:
+        print(f"{D}║  Attach:  {Y}{attach}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    for ln in body_preview.splitlines()[:20]:
+        print(f"{D}║  {ln}{X}")
+    if len(body_preview.splitlines()) > 20:
+        print(f"{D}║  {D}  … more …{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    print(f"{D}║  1) Send  2) Cancel  3) Edit body{X}")
+    print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
+    ans = (_tui_input("> ") or "").strip().lower()
+    if ans in ("1", "y", "yes", "send"):
+        result = send_email_via_smtp(to, subject, body, attach=attach)
+        if result.get("ok"):
+            print(_pill("SENT", f"{D}to {to}{X}"))
+            _audit("SEND_EMAIL-OK", f"to={to} subject={subject}")
+        else:
+            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
+            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error','')}")
+        return result
+    elif ans in ("3", "e", "edit"):
+        print(_pill("SKIPPED", f"{D}edit-body not wired yet — re-emit directive with revised body{X}"))
+        _audit("SEND_EMAIL-EDIT-REQUEST", f"to={to}")
+        return {"ok": False, "error": "user requested edit", "recipient": to}
+    else:
+        print(_pill("CANCELLED"))
+        _audit("SEND_EMAIL-CANCELLED", f"to={to}")
+        return {"ok": False, "error": "user cancelled", "recipient": to}
+
+
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
 def confirm_edit(filepath, find_text, replace_text):
@@ -8602,6 +8715,28 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
+
+    # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
+    # Parses to a dict spec; dispatcher calls confirm_send_email which gates
+    # by mode (plan refuses, review/auto always prompt — irreversible).
+    def _parse_send_email_spec(line):
+        payload = _extract_directive(line, "SEND_EMAIL")
+        if not payload:
+            return None
+        spec = {}
+        pat = re.compile(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""")
+        for m in pat.finditer(payload):
+            k = m.group(1).lower()
+            v = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
+            spec[k] = v
+        if not spec.get("to") or not spec.get("subject"):
+            return None
+        spec.setdefault("body", "")
+        spec.setdefault("attach", None)
+        return spec
+    send_email_specs = [s for s in (_parse_send_email_spec(l)
+                        for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
+
     # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
     # extraction shape as RUN/READ, BUT block-aware: REMEMBER lines that
     # appear INSIDE a <<<CONTENT>>>CONTENT / <<<FIND>>>FIND /
@@ -9293,6 +9428,23 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return reply
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result("RUNTERM", cmd, result))
+
+    # SEND_EMAIL: runs after RUN/RUNTERM — e.g. RUN: a report-gen command,
+    # then SEND_EMAIL: ship the report. Each spec confirmed individually
+    # via confirm_send_email; irreversible, no auto-mode bypass.
+    for spec in send_email_specs:
+        result = confirm_send_email(spec)
+        if not (isinstance(result, dict) and result.get("ok")):
+            err = (result or {}).get("error", "send_email refused or failed")
+            if _append_tool_blocked_feedback("SEND_EMAIL", f"to={spec.get('to','')} subject={spec.get('subject','')}"):
+                return None
+            print(_pill("BLOCKED", f"{D}SEND_EMAIL failed or was refused — {err}{X}"))
+            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to','')} err={err}")
+            return reply
+        if continue_after_tools:
+            tool_result_feedback.append(
+                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
+            )
 
     if tool_result_feedback:
         history.append({
