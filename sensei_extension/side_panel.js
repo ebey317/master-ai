@@ -2838,8 +2838,19 @@ function startLoop(data) {
   const _replyText = (data && typeof data.reply === "string") ? data.reply.trim() : "";
   const _replyIsAck = _replyText.length > 0 && _replyText.length < 40 && _ackPattern.test(_replyText);
   const _noActionsQueued = !data || !data.actions || data.actions.length === 0;
-  state.loop.last_done = !!(data && (data.done === true || (_replyIsAck && _noActionsQueued)));
-  state.loop.last_terminal_reason = (data && data.terminal_reason) || (_replyIsAck && _noActionsQueued ? "ack_reply" : "");
+  // Wave 2.1 (2026-05-17 PM) — `terminal_authority` is the server's
+  // unconditional stop signal. The server-side dispatcher (Codex's pending
+  // half) sets `terminal_authority: true` whenever it decides the loop must
+  // not continue (DONE emitted, terminal_reason "no_actions", server-side
+  // policy refusal, etc.). Extension reads it defensively: if absent or
+  // false, behavior unchanged. If true, force-stop via the existing
+  // continueLoop guard. Belt-and-suspenders alongside last_done /
+  // last_terminal_reason — the server's authority overrides any local state.
+  const _serverAuthority = !!(data && data.terminal_authority === true);
+  state.loop.last_done = !!(data && (data.done === true || (_replyIsAck && _noActionsQueued) || _serverAuthority));
+  state.loop.last_terminal_reason = (data && data.terminal_reason) ||
+    (_serverAuthority ? "server_terminal_authority" :
+     (_replyIsAck && _noActionsQueued ? "ack_reply" : ""));
 
   const bar = $("#loopBar");
   if (bar) bar.hidden = !willContinue;
