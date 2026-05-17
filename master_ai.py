@@ -2476,19 +2476,22 @@ def orchestrate(history, user_text, image_path=None):
                 "stripped_text": _strip_prefix(prefix_len),
                 "reason": "explicit local/private → local 7b"}
 
-    ack_reply = _acknowledgment_short_circuit(user_section_low)
-    if ack_reply:
-        return {"route": "acknowledgment",
-                "response": ack_reply,
-                "reason": "pure acknowledgment → deterministic one-line reply"}
-
-    deterministic_directive = _deterministic_intent_to_directive(user_section)
-    if deterministic_directive:
-        return {"route": "deterministic_intent",
-                "synth_reply": deterministic_directive,
-                "reason": "pre-parser local/system intent → synthesized directive"}
-
+    # Pre-model short-circuits are disabled for chrome_extension automation
+    # turns (page_context envelope). Those turns must reach a model-bearing
+    # route so the page context can influence tool selection and next steps.
     if not _is_chrome_ext_automation:
+        ack_reply = _acknowledgment_short_circuit(user_section_low)
+        if ack_reply:
+            return {"route": "acknowledgment",
+                    "response": ack_reply,
+                    "reason": "pure acknowledgment → deterministic one-line reply"}
+
+        deterministic_directive = _deterministic_intent_to_directive(user_section)
+        if deterministic_directive:
+            return {"route": "deterministic_intent",
+                    "synth_reply": deterministic_directive,
+                    "reason": "pre-parser local/system intent → synthesized directive"}
+
         fast_route = _route_from_fast_classifier(user_section)
         if fast_route:
             return fast_route
