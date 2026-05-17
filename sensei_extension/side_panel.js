@@ -2824,8 +2824,22 @@ function startLoop(data) {
   state.loop.results = [];
   state.loop.stopped = false;
   state.loop.active = willContinue;
-  state.loop.last_done = !!(data && data.done === true);
-  state.loop.last_terminal_reason = (data && data.terminal_reason) || "";
+  // Ack pre-filter (Wave 1.1, 2026-05-17 PM): if the model's reply is a pure
+  // conversational acknowledgment with no actions queued, treat it as a
+  // closure signal. Without this, the auto-continuation loop POSTs another
+  // /chat/continue and the model echoes another ack, which re-fires the
+  // loop ("nice → 'Action ready for review' → nice → ..."). Pair with the
+  // server-side short-circuit in commit 555cc09 — server catches the model's
+  // ack-shaped reply on its side; this catches it on the client side as
+  // belt-and-suspenders. Pattern is intentionally narrow: short replies
+  // that match a small whitelist of pure-ack tokens with no surrounding
+  // sentence structure. Anything longer or more substantive bypasses.
+  const _ackPattern = /^\s*(ok|okay|nice|cool|thanks|thank you|got it|good|great|sure|fine|alright|yeah|yep|nope|no thanks|sounds good|perfect|all good|no problem|np|done|👍|✅)[\s.!]*$/i;
+  const _replyText = (data && typeof data.reply === "string") ? data.reply.trim() : "";
+  const _replyIsAck = _replyText.length > 0 && _replyText.length < 40 && _ackPattern.test(_replyText);
+  const _noActionsQueued = !data || !data.actions || data.actions.length === 0;
+  state.loop.last_done = !!(data && (data.done === true || (_replyIsAck && _noActionsQueued)));
+  state.loop.last_terminal_reason = (data && data.terminal_reason) || (_replyIsAck && _noActionsQueued ? "ack_reply" : "");
 
   const bar = $("#loopBar");
   if (bar) bar.hidden = !willContinue;
