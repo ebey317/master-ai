@@ -1062,6 +1062,124 @@ def _format_action_results(action_results):
         return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
 
 
+def _format_server_action_results(action_results):
+    """Format server-dispatched RUN/READ results into [PREVIOUS ROUND RESULTS].
+
+    Mirrors the browser continuation contract so a cloud follow-up pass can
+    synthesize a human answer from ground truth instead of echoing raw `$ ...`
+    output back to the operator.
+    """
+    if not isinstance(action_results, list) or not action_results:
+        return ""
+    try:
+        _scripts_on_path()
+        import typed_actions as _ta
+        envelopes = []
+        for idx, row in enumerate(action_results[:20], 1):
+            if not isinstance(row, dict):
+                continue
+            try:
+                observed_text = row.get("observed_text")
+                if isinstance(observed_text, str) and len(observed_text) > 240:
+                    observed_text = observed_text[:240]
+                env = _ta.ActionResult(
+                    action_id=str(row.get("action_id") or f"server-{idx}"),
+                    kind=str(row.get("kind") or "").upper(),
+                    target=str(row.get("target") or "")[:300],
+                    status=str(row.get("status") or _ta.ResultStatus.SUCCESS),
+                    executed=bool(row.get("executed", True)),
+                    mode_at_emission="auto",
+                    error_code=(str(row.get("error_code") or "")[:120] or None),
+                    error_message=(str(row.get("error_message") or "")[:300] or None),
+                    observed_text=observed_text if isinstance(observed_text, str) and observed_text else None,
+                    gated_by=(str(row.get("gated_by") or "")[:160] or None),
+                )
+                envelopes.append(_ta.format_envelope_row(env))
+            except Exception:
+                kind = str(row.get("kind") or "").upper()
+                target = str(row.get("target") or "")[:300]
+                status = str(row.get("status") or "success")
+                executed = "true" if row.get("executed", True) else "false"
+                lines = [f"  · {kind} {target}", f"    status: {status}  executed: {executed}"]
+                if row.get("error_code"):
+                    lines.append(f"    error_code: {row['error_code']}")
+                if row.get("error_message"):
+                    lines.append(f"    error_message: {str(row['error_message'])[:300]}")
+                if row.get("observed_text"):
+                    lines.append(f"    observed_text: {str(row['observed_text'])[:240]}")
+                envelopes.append("\n".join(lines))
+        if not envelopes:
+            return ""
+        return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(envelopes)
+    except Exception:
+        rows = []
+        for row in action_results[:20]:
+            if not isinstance(row, dict):
+                continue
+            kind = str(row.get("kind") or "").upper()
+            target = str(row.get("target") or "")[:300]
+            status = str(row.get("status") or "success")
+            executed = "true" if row.get("executed", True) else "false"
+            lines = [f"  · {kind} {target}", f"    status: {status}  executed: {executed}"]
+            if row.get("error_code"):
+                lines.append(f"    error_code: {row['error_code']}")
+            if row.get("error_message"):
+                lines.append(f"    error_message: {str(row['error_message'])[:300]}")
+            if row.get("observed_text"):
+                lines.append(f"    observed_text: {str(row['observed_text'])[:240]}")
+            rows.append("\n".join(lines))
+        if not rows:
+            return ""
+        return "[PREVIOUS ROUND RESULTS]\n" + "\n".join(rows)
+
+
+def _cloud_followup_provider(model_name):
+    model_name = (model_name or "").strip()
+    if model_name in {
+        "groq", "fireworks", "cerebras", "deepseek-r1", "gemini",
+        "hermes-405b", "gpt-oss-120b", "nemotron", "qwen3-coder",
+        "openrouter", "openai", "anthropic",
+    }:
+        return model_name
+    return "groq"
+
+
+def _synthesize_server_followup(module, history, *, reply_with_results, server_results_block, provider):
+    """Ask the same cloud lane to turn server RUN/READ results into operator text.
+
+    Uses a copied message list so the synthetic follow-up prompt does not pollute
+    persisted history. The caller decides what final assistant text to save.
+    """
+    if not server_results_block:
+        return ""
+    synth_prompt = (
+        "[SERVER RESULT SYNTHESIS]\n"
+        "The previous assistant reply for this SAME user turn emitted server-side directives "
+        "that have now completed. Treat [PREVIOUS ROUND RESULTS] as ground truth.\n"
+        "If the user's goal is satisfied, answer in 1-2 plain-language sentences and end with "
+        "`DONE: <one-line summary>`.\n"
+        "If browser work is next, emit the needed BROWSER_* directives after a one-line lead-in.\n"
+        "Do NOT emit RUN, RUNTERM, READ, CREATE, or EDIT in this follow-up pass.\n"
+        "Do NOT dump raw shell or file output verbatim unless exact text is necessary.\n\n"
+        f"{server_results_block}"
+    )
+    messages = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        messages.append({
+            "role": msg.get("role"),
+            "content": msg.get("content"),
+        })
+    if messages and messages[-1].get("role") == "assistant":
+        messages[-1]["content"] = reply_with_results
+    messages.append({"role": "user", "content": synth_prompt})
+    try:
+        return module.ask_cloud(messages, provider=provider) or ""
+    except Exception:
+        return ""
+
+
 def _audit_approve_action(action_id, action, verdict, envelope):
     """Write a per-action audit row for /extension/approve_action dispatches.
 
@@ -1865,6 +1983,7 @@ def api_handle(payload):
                         setattr(_m, _name, _real[_name])
                 _m.MODE = "auto"
                 _server_out = []
+                _server_results = []
                 _browser_only = []
                 for _action in captured_actions:
                     _kind = (_action.get("kind") or "").upper()
@@ -1893,6 +2012,15 @@ def api_handle(payload):
                             _server_out.append(f"[{_cap.name}] refused: {_decision.reason}")
                             _action["verification_result"] = None
                             _action["blocked_reason"] = _decision.reason
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "blocked",
+                                "executed": False,
+                                "error_code": "dispatcher_blocked",
+                                "error_message": _decision.reason,
+                                "gated_by": _decision.reason,
+                            })
                             continue
                         if _decision.requires_confirmation:
                             # Don't execute server-side; surface as action
@@ -1931,17 +2059,38 @@ def api_handle(payload):
                                     f"[{_cap.name}] verified: {_verify_result.observed} "
                                     f"({_verify_result.elapsed_ms}ms)"
                                 )
+                                _status = "success"
+                                _err_msg = None
                             else:
                                 _lines.append(
                                     f"[{_cap.name}] not verified: {_verify_result.reason}"
                                 )
+                                _status = "failure"
+                                _err_msg = _verify_result.reason
                             _server_out.append("\n".join(_lines))
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": _status,
+                                "executed": True,
+                                "error_code": None if _verify_result.ok else "dispatcher_error",
+                                "error_message": _err_msg,
+                                "observed_text": _exec_stdout or str(_verify_result.observed or ""),
+                            })
                         except Exception as _e:
                             _action["verification_result"] = None
                             _action["executor_error"] = str(_e)
                             _server_out.append(
                                 f"[{_cap.name}] dispatch error: {type(_e).__name__}: {_e}"
                             )
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "failure",
+                                "executed": True,
+                                "error_code": "dispatcher_error",
+                                "error_message": f"{type(_e).__name__}: {_e}",
+                            })
                         continue
 
                     try:
@@ -1949,14 +2098,38 @@ def api_handle(payload):
                             _r = _m.confirm_run(_target)
                             if _r is None:
                                 _server_out.append(f"$ {_target}\n[blocked or refused]")
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "blocked",
+                                    "executed": False,
+                                    "error_code": "dispatcher_blocked",
+                                    "error_message": "blocked or refused",
+                                })
                             else:
                                 _stdout = getattr(_r, "stdout", "") or ""
                                 _ok = getattr(_r, "ok", True)
                                 _suffix = "" if _ok else " (exit nonzero)"
                                 _server_out.append(f"$ {_target}{_suffix}\n{_stdout}".rstrip())
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "success" if _ok else "failure",
+                                    "executed": True,
+                                    "error_code": None if _ok else "dispatcher_error",
+                                    "error_message": None if _ok else "command exited nonzero",
+                                    "observed_text": _stdout,
+                                })
                         elif _kind == "RUNTERM":
                             _m.confirm_runterm(_target)
                             _server_out.append(f"[RUNTERM] dispatched: {_target}")
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success",
+                                "executed": True,
+                                "observed_text": "dispatched in a new terminal",
+                            })
                         elif _kind == "READ":
                             _expanded = os.path.expanduser(_target)
                             # URL guard (sensei_read_dispatcher_guard.sh, 2026-05-16):
@@ -1973,6 +2146,14 @@ def api_handle(payload):
                                     f"then BROWSER_READ_PAGE or BROWSER_OBSERVE to read it. "
                                     f"READ is only for local filesystem paths."
                                 )
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "blocked",
+                                    "executed": False,
+                                    "error_code": "dispatcher_blocked",
+                                    "error_message": "READ target is a URL, not a local path",
+                                })
                                 continue
                             if any(_g in _expanded for _g in ("*", "?", "[")):
                                 import glob as _glob_mod
@@ -1985,6 +2166,14 @@ def api_handle(payload):
                                         f"  RUN: ls {_dir}\n"
                                         f"to see what exists, then READ the exact file path."
                                     )
+                                    _server_results.append({
+                                        "kind": _kind,
+                                        "target": _target,
+                                        "status": "blocked",
+                                        "executed": False,
+                                        "error_code": "dispatcher_blocked",
+                                        "error_message": "glob matched zero files",
+                                    })
                                     continue
                                 _expanded = _matches[0]
                                 if len(_matches) > 1:
@@ -2002,6 +2191,14 @@ def api_handle(payload):
                                     _read_ok, _reason = True, ""
                                 if not _read_ok:
                                     _server_out.append(f"[READ {_target}] blocked: {_reason}")
+                                    _server_results.append({
+                                        "kind": _kind,
+                                        "target": _target,
+                                        "status": "blocked",
+                                        "executed": False,
+                                        "error_code": "dispatcher_blocked",
+                                        "error_message": _reason,
+                                    })
                                     continue
                             try:
                                 with open(_expanded, "r", errors="replace") as _f:
@@ -2009,24 +2206,92 @@ def api_handle(payload):
                                 if len(_content) > 4000:
                                     _content = _content[:4000] + f"\n... [truncated, {len(_content)} chars total]"
                                 _server_out.append(f"READ {_target}:\n{_content}")
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "success",
+                                    "executed": True,
+                                    "observed_text": _content,
+                                })
                             except Exception as _e:
                                 _server_out.append(f"[READ {_target}] error: {_e}")
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "failure",
+                                    "executed": True,
+                                    "error_code": "dispatcher_error",
+                                    "error_message": str(_e),
+                                })
                         elif _kind == "CREATE":
                             _content_body = _action.get("content") or _action.get("body") or ""
                             _ok = _m.confirm_create(_target, _content_body)
                             _server_out.append(f"[CREATE {_target}] {'written' if _ok else 'blocked or refused'}")
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success" if _ok else "blocked",
+                                "executed": bool(_ok),
+                                "error_code": None if _ok else "dispatcher_blocked",
+                                "error_message": None if _ok else "blocked or refused",
+                            })
                         elif _kind == "EDIT":
                             _find = _action.get("find") or _action.get("find_text") or ""
                             _replace = _action.get("replace") or _action.get("replace_text") or ""
                             _ok = _m.confirm_edit(_target, _find, _replace)
                             _server_out.append(f"[EDIT {_target}] {'applied' if _ok else 'blocked or refused'}")
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success" if _ok else "blocked",
+                                "executed": bool(_ok),
+                                "error_code": None if _ok else "dispatcher_blocked",
+                                "error_message": None if _ok else "blocked or refused",
+                            })
                         else:
                             _browser_only.append(_action)
                     except Exception as _e:
                         _server_out.append(f"[{_kind} {_target}] dispatch error: {_e}")
+                        _server_results.append({
+                            "kind": _kind,
+                            "target": _target,
+                            "status": "failure",
+                            "executed": True,
+                            "error_code": "dispatcher_error",
+                            "error_message": str(_e),
+                        })
                 if _server_out:
-                    reply = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
+                    reply_with_results = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
+                    reply = reply_with_results
+                    if history and history[-1].get("role") == "assistant":
+                        history[-1]["content"] = reply_with_results
                     _server_progressed = True
+                    _has_run_read = any(
+                        str(_row.get("kind") or "").upper() in ("RUN", "READ")
+                        for _row in _server_results
+                    )
+                    if route in ("cloud", "cloud_fast", "cloud_deep") and not _browser_only and _has_run_read:
+                        _server_results_block = _format_server_action_results(_server_results)
+                        _synth_reply = _synthesize_server_followup(
+                            _m,
+                            history,
+                            reply_with_results=reply_with_results,
+                            server_results_block=_server_results_block,
+                            provider=_cloud_followup_provider(model),
+                        )
+                        if _synth_reply:
+                            reply = _synth_reply
+                            if history and history[-1].get("role") == "assistant":
+                                history[-1]["content"] = _synth_reply
+                            _browser_only = _api_parse_actions(
+                                reply or "",
+                                mode=effective_mode,
+                                model=model,
+                                source=source,
+                                session_id=session_id,
+                                schedule_id=schedule_id,
+                                page_context=page_context,
+                            )
                 captured_actions = _browser_only
 
             try:
