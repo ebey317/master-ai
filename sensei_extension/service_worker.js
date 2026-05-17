@@ -657,6 +657,90 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
+  // Wave 1.4 (2026-05-17 PM) — file-input upload via CDP. Content script
+  // forwards BROWSER_UPLOAD_FILE actions here because chrome.debugger only
+  // works from the service worker context. Two-step CDP: Runtime.evaluate to
+  // resolve the selector → objectId, then DOM.setFileInputFiles to push the
+  // file by absolute path. After the set, dispatch input+change events so
+  // page-side handlers react. Returns the post-set files.length as proof.
+  if (message?.type === "SENSEI_UPLOAD_FILE") {
+    // tabId comes either explicitly (side_panel.js calling directly) OR
+    // implicitly from the sender (content_script.js forwarding a directive).
+    const tabId = Number.isInteger(message.tabId)
+      ? message.tabId
+      : (Number.isInteger(_sender?.tab?.id) ? _sender.tab.id : null);
+    const selector = String(message.selector || "").trim();
+    const absolutePath = String(message.path || "").trim();
+    if (tabId === null || !selector || !absolutePath) {
+      sendResponse({ ok: false, error: "tabId, selector, and path required" });
+      return false;
+    }
+    if (!absolutePath.startsWith("/") && !absolutePath.startsWith("~")) {
+      sendResponse({ ok: false, error: `path must be absolute (got ${absolutePath})` });
+      return false;
+    }
+    (async () => {
+      try {
+        await _ensureDebuggerAttached(tabId);
+        // Resolve selector → objectId via Runtime.evaluate. JSON.stringify
+        // gives us a safely-quoted JS string literal for the selector.
+        const evalResult = await _cdpSend(tabId, "Runtime.evaluate", {
+          expression: `document.querySelector(${JSON.stringify(selector)})`,
+          returnByValue: false,
+        });
+        const objectId = evalResult?.result?.objectId;
+        if (!objectId) {
+          sendResponse({ ok: false, error: `element not found: ${selector}` });
+          return;
+        }
+        // Push the file. CDP accepts an array of absolute paths; the browser
+        // reads the file from disk and treats it as a user-selected file.
+        await _cdpSend(tabId, "DOM.setFileInputFiles", {
+          objectId,
+          files: [absolutePath],
+        });
+        // Dispatch input + change events so page-side validators / framework
+        // listeners (React onChange, Vue v-on:change, vanilla form-validators)
+        // see the file land. CDP setFileInputFiles does NOT auto-fire these.
+        const verifyExpr = `(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return { ok: false, error: "selector resolved during set but missing during verify" };
+          try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (_e) {}
+          try { el.dispatchEvent(new Event("change", { bubbles: true })); } catch (_e) {}
+          const f = el.files && el.files[0];
+          return {
+            ok: true,
+            files_length: (el.files && el.files.length) || 0,
+            file_name: f ? f.name : "",
+            file_size: f ? f.size : 0,
+            file_type: f ? (f.type || "") : "",
+          };
+        })()`;
+        const verifyResult = await _cdpSend(tabId, "Runtime.evaluate", {
+          expression: verifyExpr,
+          returnByValue: true,
+        });
+        const value = verifyResult?.result?.value;
+        if (!value || value.ok !== true) {
+          sendResponse({ ok: false, error: (value && value.error) || "verify step failed" });
+          return;
+        }
+        sendResponse({
+          ok: true,
+          selector,
+          path: absolutePath,
+          files_length: value.files_length,
+          file_name: value.file_name,
+          file_size: value.file_size,
+          file_type: value.file_type,
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
+    })();
+    return true;
+  }
+
   // Phase 5.3 — return the captured Network ring buffer for a tab. Filter is
   // "all" (default), "xhr" / "fetch", or "subresource" (everything else).
   if (message?.type === "SENSEI_READ_NETWORK_EVENTS") {

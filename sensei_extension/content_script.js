@@ -2596,6 +2596,94 @@ async function executeBrowserAction(action) {
     };
   }
 
+  // Wave 1.4 (2026-05-17 PM) — BROWSER_UPLOAD_FILE: <selector> :: <absolute path>
+  // File-input upload via CDP. content_script can't use chrome.debugger
+  // directly, so we forward to service_worker (which has chrome.debugger and
+  // knows our tabId from _sender). Two-step CDP under the hood:
+  // Runtime.evaluate to resolve the selector, then DOM.setFileInputFiles to
+  // push the file by absolute path. Page-side input+change events fire
+  // server-side too. Mode-aware confirm gate lives in side_panel.js via
+  // classifyBrowserAction → SENSITIVE_FILL — that gate runs BEFORE this
+  // handler is reached. Existing setFileInputValue() at line ~1472 is a
+  // base64-payload fallback for the rare case where a path-based upload
+  // isn't viable; this new directive is the canonical path-based primitive.
+  if (kind === "BROWSER_UPLOAD_FILE") {
+    const raw = String(action?.target || "").trim();
+    // Accept "<selector> :: <path>" OR "<selector> => <path>" OR "<selector> := <path>"
+    const sepMatch = raw.match(/^(.+?)\s*(?:::|=>|:=)\s*(.+)$/);
+    if (!sepMatch) {
+      return {
+        ok: false,
+        error: "BROWSER_UPLOAD_FILE requires '<selector> :: <absolute path>' (sep '::' or '=>' or ':=')",
+      };
+    }
+    const selector = sepMatch[1].trim();
+    let absolutePath = sepMatch[2].trim();
+    // Strip surrounding quotes if the model wrapped the path
+    if ((absolutePath.startsWith('"') && absolutePath.endsWith('"')) ||
+        (absolutePath.startsWith("'") && absolutePath.endsWith("'"))) {
+      absolutePath = absolutePath.slice(1, -1);
+    }
+    // Reject relative paths; CDP needs absolute
+    if (!absolutePath.startsWith("/") && !absolutePath.startsWith("~")) {
+      return {
+        ok: false,
+        error: `BROWSER_UPLOAD_FILE path must be absolute (got '${absolutePath}'). Use $HOME or ~ prefix.`,
+      };
+    }
+    // Pre-flight: does the selector resolve to a file input on this page?
+    // Don't bail on a miss — let service_worker's CDP path do the real
+    // resolution since the page may be deep in iframes/shadow DOM that
+    // querySelector here can't reach. Just record a hint for the result.
+    let preflight_hint = "";
+    try {
+      const el = document.querySelector(selector);
+      if (el && String(el.getAttribute("type") || "").toLowerCase() !== "file") {
+        preflight_hint = `warning: element matched but type=${el.getAttribute("type") || "(unset)"}`;
+      } else if (!el) {
+        preflight_hint = "warning: content_script querySelector did not find the element; CDP may still resolve via shadow/iframe";
+      }
+    } catch (_e) {}
+    // Forward to service_worker
+    try {
+      const result = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: "SENSEI_UPLOAD_FILE", selector, path: absolutePath },
+          (resp) => {
+            const err = chrome.runtime.lastError;
+            if (err) {
+              resolve({ ok: false, error: String(err.message || err) });
+              return;
+            }
+            resolve(resp || { ok: false, error: "no response from service_worker" });
+          },
+        );
+      });
+      if (!result?.ok) {
+        return {
+          ok: false,
+          error: result?.error || "upload failed",
+          selector,
+          path: absolutePath,
+          preflight_hint,
+        };
+      }
+      return {
+        ok: true,
+        uploaded: selector,
+        path: absolutePath,
+        file_name: result.file_name,
+        file_size: result.file_size,
+        file_type: result.file_type,
+        files_length: result.files_length,
+        preflight_hint,
+        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 200 }),
+      };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err), selector, path: absolutePath };
+    }
+  }
+
   if (kind === "BROWSER_SUBMIT") {
     if (_isAbortCommand(action)) {
       const pauseState = _pauseState();
