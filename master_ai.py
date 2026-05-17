@@ -1517,7 +1517,7 @@ def detect_route(text, has_image=False):
 
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
 # Returns a decision dict instead of dispatching a model directly.
-# Possible routes: local | cloud_fast | cloud_vision | ask_user | recall_memory | save_refresh
+# Possible routes: local | cloud_fast | cloud_vision | acknowledgment | ask_user | recall_memory | save_refresh
 # First match wins.
 
 _RECALL_TRIGGERS = (
@@ -1534,6 +1534,28 @@ _GREETINGS = {"hi", "hello", "hey", "yo", "sup", "howdy", "hola",
               "ok", "okay", "k", "cool", "nice", "great", "good",
               "yes", "yep", "yeah", "y", "no", "nope", "nah", "n",
               "bye", "goodbye", "cya", "later"}
+
+_ACKNOWLEDGMENT_RESPONSES = {
+    "nice": "Okay.",
+    "ok": "Okay.",
+    "okay": "Okay.",
+    "cool": "Okay.",
+    "thanks": "You're welcome.",
+    "thank you": "You're welcome.",
+    "thx": "You're welcome.",
+    "ty": "You're welcome.",
+    "got it": "Okay.",
+}
+
+
+def _acknowledgment_short_circuit(text):
+    low = (text or "").strip().lower()
+    if not low or "\n" in low or ":" in low or "/" in low:
+        return ""
+    normalized = " ".join(re.findall(r"[a-z0-9']+", low))
+    if not normalized or len(normalized.split()) > 2:
+        return ""
+    return _ACKNOWLEDGMENT_RESPONSES.get(normalized, "")
 
 def _is_tool_required(stripped_low):
     if _looks_terminal_visual_request(stripped_low):
@@ -2178,6 +2200,12 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "local", "model": MODELS["master"],
                 "stripped_text": _strip_prefix(prefix_len),
                 "reason": "explicit local/private → local 7b"}
+
+    ack_reply = _acknowledgment_short_circuit(user_section_low)
+    if ack_reply:
+        return {"route": "acknowledgment",
+                "response": ack_reply,
+                "reason": "pure acknowledgment → deterministic one-line reply"}
 
     # 2b. Self-determining route for chrome_extension automation turns.
     #
@@ -10342,6 +10370,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
         history.append({"role": "user", "content": user_text})
         history.append({"role": "assistant", "content": q})
         return q
+
+    if decision["route"] == "acknowledgment":
+        resp = decision["response"]
+        print(f"\n  {BC}[thinking: acknowledgment — no directive]{X}")
+        print(f"  {M}Sensei:{X} {resp}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": resp})
+        _router_metric("acknowledgment_short_circuit", prompt=user_text[:200])
+        return resp
 
     if decision["route"] == "cached":
         # Harvest cache hit — a near-duplicate prompt was answered before.
