@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid, importlib.util
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
@@ -33,20 +33,94 @@ def _chats_dir():
 # Module-level alias for backwards-compat; per-request handlers should call _chats_dir()
 CHATS_DIR = _DEFAULT_CHATS_DIR
 
-_API_HANDLE_LOCK = threading.Lock()
 # Wedge protection (2026-05-14). api_handle wraps the dispatch path in this
-# global lock because _m.handle() monkey-patches module-level globals
-# (process_reply, confirm_run, MODE, PINNED_MODEL). When a runaway local
-# Ollama inference holds the lock 8+ min, every /chat behind it blocks —
-# including cloud lanes that never touch Ollama, plus the Chrome extension.
-# Ceiling so the lock is never held indefinitely; callers surface HTTP 503.
+# lane lock because _m.handle() monkey-patches module-level globals
+# (process_reply, confirm_run, MODE, PINNED_MODEL). A single shared module
+# made every request queue behind local Ollama inference, including Groq /
+# DeepSeek lanes that never touch Ollama. Keep one imported master_ai module
+# per execution lane and serialize only within that lane's module instance.
+# Ceiling so a wedged lane is never held indefinitely; callers surface HTTP 503.
 _API_HANDLE_LOCK_TIMEOUT_S = 120.0
+_API_HANDLE_LANES = ("local", "cloud_fast", "cloud_deep", "cloud", "cloud_vision", "router")
+_API_HANDLE_LOCKS = {lane: threading.Lock() for lane in _API_HANDLE_LANES}
+_API_MASTER_AI_MODULES = {}
+_API_MASTER_AI_MODULES_LOCK = threading.Lock()
 
 
 class ApiHandleBusy(Exception):
-    """Raised when api_handle cannot acquire _API_HANDLE_LOCK within the
+    """Raised when api_handle cannot acquire a per-lane dispatch lock within the
     configured timeout. Caller maps this to HTTP 503 + retry_after so
     clients (Pupil, Chrome extension) fail fast instead of hanging."""
+
+
+def _api_lane_for_route(route, model=""):
+    route = str(route or "").strip().lower()
+    model = str(model or "").strip().lower()
+    if route == "cloud_fast":
+        return "cloud_fast"
+    if route == "cloud_deep":
+        return "cloud_deep"
+    if route == "cloud_vision":
+        return "cloud_vision"
+    if route == "cloud":
+        return "cloud_deep" if model == "deepseek-r1" else "cloud"
+    return "local"
+
+
+def _api_master_module_name(lane):
+    safe_lane = re.sub(r"[^a-z0-9_]+", "_", str(lane or "local").lower())
+    return f"_master_ai_api_{safe_lane}"
+
+
+def _load_api_master_ai_module(lane):
+    _scripts_on_path()
+    lane = str(lane or "local").strip().lower() or "local"
+    module_name = _api_master_module_name(lane)
+    module_path = os.path.join(SCRIPTS, "master_ai.py")
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load master_ai module for lane {lane}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _get_api_master_ai_module(lane):
+    lane = str(lane or "local").strip().lower() or "local"
+    with _API_MASTER_AI_MODULES_LOCK:
+        module = _API_MASTER_AI_MODULES.get(lane)
+        if module is None:
+            module = _load_api_master_ai_module(lane)
+            _API_MASTER_AI_MODULES[lane] = module
+        return module
+
+
+def _predict_api_handle_lane(history, api_user_text, requested_model=""):
+    requested_model = str(requested_model or "").strip().lower()
+    if requested_model == "deepseek-r1":
+        return "cloud_deep"
+    if requested_model in {"groq"}:
+        return "cloud_fast"
+    if requested_model in {"fireworks", "cerebras"}:
+        return "cloud"
+    if requested_model in {"gemini"}:
+        return "cloud_vision"
+    try:
+        _router = _get_api_master_ai_module("router")
+        decision = _router.orchestrate(list(history or []), api_user_text or "")
+        if isinstance(decision, dict):
+            return _api_lane_for_route(decision.get("route"), decision.get("model"))
+    except Exception:
+        pass
+    lowered = str(api_user_text or "").lower()
+    if "[user prompt]" in lowered:
+        lowered = lowered.split("[user prompt]", 1)[-1].lstrip()
+    if lowered.startswith("fast:"):
+        return "cloud_fast"
+    if lowered.startswith("deep:"):
+        return "cloud_deep"
+    return "local"
 
 
 _API_HISTORY_LOCK = threading.Lock()
@@ -1841,19 +1915,23 @@ def api_handle(payload):
         mode=effective_mode,
     )
 
+    lane = _predict_api_handle_lane(history, api_user_text, requested_model=requested_model)
+    lane_lock = _API_HANDLE_LOCKS.get(lane, _API_HANDLE_LOCKS["local"])
+
     # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
-    # comment near the lock definition. Without this, a single wedged local
-    # inference can hang every /chat (including cloud lanes) for the duration
-    # of master_ai.py's 600s Ollama urlopen timeout.
-    if not _API_HANDLE_LOCK.acquire(timeout=_API_HANDLE_LOCK_TIMEOUT_S):
+    # comment near the lane-lock definition. Without this, a runaway request
+    # can wedge its own lane for minutes. Different lanes run through separate
+    # imported master_ai module copies, so Groq/DeepSeek traffic no longer
+    # waits behind a local Ollama inference.
+    if not lane_lock.acquire(timeout=_API_HANDLE_LOCK_TIMEOUT_S):
         raise ApiHandleBusy(
             f"timed out after {_API_HANDLE_LOCK_TIMEOUT_S:.0f}s waiting for "
-            f"/chat dispatch lock; likely runaway local inference. "
+            f"/chat dispatch lock for lane {lane}; likely runaway inference in that lane. "
             f"Retry after the current request completes."
         )
     try:
         _scripts_on_path()
-        import master_ai as _m
+        _m = _get_api_master_ai_module(lane)
         import capabilities as _caps
         import verifiers as _verifiers  # noqa: F401  -- resolved lazily by Capability.resolve_verifier(), imported here so import errors surface at request time, not mid-dispatch
         import prompt_versions as _pv
@@ -2310,7 +2388,7 @@ def api_handle(payload):
             except Exception:
                 pass
     finally:
-        _API_HANDLE_LOCK.release()
+        lane_lock.release()
 
     if session_key:
         with _API_HISTORY_LOCK:
