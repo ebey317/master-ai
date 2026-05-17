@@ -601,18 +601,65 @@ def _send_email_log(record):
         except Exception: pass
 
 
-def send_email_via_smtp(to, subject, body, *, attach=None, sender="ebey317@gmail.com"):
-    """Send one email via Gmail SMTP_SSL using gmail_app_password from
-    ~/.master_ai_keys. Returns {ok, error, recipient}.
+# Multi-provider SMTP routing — Gmail / AOL / Outlook. Provider picked from
+# sender domain. Each provider has its own app-password slot in
+# ~/.master_ai_keys. Per feedback_improve_before_add — orchestration of
+# existing capability (Elijah's three real email accounts), not duplication.
+_EMAIL_PROVIDERS = {
+    "gmail": {
+        "host": "smtp.gmail.com", "port": 465, "ssl": True,
+        "key": "gmail_app_password",
+        "domains": ("gmail.com", "googlemail.com"),
+    },
+    "aol": {
+        "host": "smtp.aol.com", "port": 465, "ssl": True,
+        "key": "aol_app_password",
+        "domains": ("aol.com", "verizon.net", "yahoo.com"),
+    },
+    "outlook": {
+        "host": "smtp-mail.outlook.com", "port": 587, "ssl": False,  # STARTTLS
+        "key": "outlook_app_password",
+        "domains": ("outlook.com", "hotmail.com", "live.com", "msn.com"),
+    },
+}
+
+
+def _email_provider_for_sender(sender):
+    """Return provider name for a sender address by domain match. Defaults to gmail."""
+    domain = (sender.split("@", 1)[-1] if "@" in sender else "").lower()
+    for name, cfg in _EMAIL_PROVIDERS.items():
+        if domain in cfg["domains"]:
+            return name
+    return "gmail"
+
+
+def send_email_via_smtp(to, subject, body, *, attach=None, sender=None):
+    """Send one email via Gmail/AOL/Outlook SMTP using the provider-appropriate
+    app-password from ~/.master_ai_keys. Provider routed from sender domain.
+    Returns {ok, error, recipient, provider}.
     """
     import smtplib
     from email.message import EmailMessage
     keys = load_keys()
-    pw = keys.get("gmail_app_password") or keys.get("gmail_password")
+    # Default sender: first available account, preferring gmail.
+    if not sender:
+        for guess_provider in ("gmail", "aol", "outlook"):
+            if keys.get(_EMAIL_PROVIDERS[guess_provider]["key"]):
+                sender_key = f"{guess_provider}_sender"
+                sender = keys.get(sender_key) or ("ebey317@gmail.com" if guess_provider == "gmail" else None)
+                if sender:
+                    break
+        if not sender:
+            sender = "ebey317@gmail.com"
+    provider = _email_provider_for_sender(sender)
+    cfg = _EMAIL_PROVIDERS[provider]
+    pw = keys.get(cfg["key"])
+    if not pw and provider == "gmail":
+        pw = keys.get("gmail_password")  # legacy fallback for the original slot name
     if not pw:
-        err = "no gmail_app_password in ~/.master_ai_keys"
-        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-        return {"ok": False, "error": err, "recipient": to}
+        err = f"no {cfg['key']} in ~/.master_ai_keys (sender={sender}, provider={provider})"
+        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err, "provider": provider})
+        return {"ok": False, "error": err, "recipient": to, "provider": provider}
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = to
@@ -622,8 +669,8 @@ def send_email_via_smtp(to, subject, body, *, attach=None, sender="ebey317@gmail
         attach_path = os.path.expanduser(str(attach))
         if not os.path.isfile(attach_path):
             err = f"attach path not a file: {attach_path}"
-            _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-            return {"ok": False, "error": err, "recipient": to}
+            _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err, "provider": provider})
+            return {"ok": False, "error": err, "recipient": to, "provider": provider}
         import mimetypes
         ctype, _enc = mimetypes.guess_type(attach_path)
         maintype, _, subtype = (ctype or "application/octet-stream").partition("/")
@@ -632,16 +679,24 @@ def send_email_via_smtp(to, subject, body, *, attach=None, sender="ebey317@gmail
         msg.add_attachment(data, maintype=maintype, subtype=subtype or "octet-stream",
                            filename=os.path.basename(attach_path))
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-            s.login(sender, pw)
-            s.send_message(msg)
+        if cfg["ssl"]:
+            with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=30) as s:
+                s.login(sender, pw)
+                s.send_message(msg)
+        else:  # STARTTLS path (Outlook)
+            with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as s:
+                s.ehlo()
+                s.starttls()
+                s.ehlo()
+                s.login(sender, pw)
+                s.send_message(msg)
         _send_email_log({"event": "send_email", "ok": True, "to": to, "subject": subject,
-                         "attach": attach if attach else None})
-        return {"ok": True, "error": None, "recipient": to}
+                         "attach": attach if attach else None, "provider": provider, "sender": sender})
+        return {"ok": True, "error": None, "recipient": to, "provider": provider}
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
-        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err})
-        return {"ok": False, "error": err, "recipient": to}
+        _send_email_log({"event": "send_email", "ok": False, "to": to, "subject": subject, "error": err, "provider": provider})
+        return {"ok": False, "error": err, "recipient": to, "provider": provider}
 
 
 # ── COLORS — matches brand.sh (visible on light + dark terminals) ──
@@ -10733,7 +10788,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "BROWSER_FIND: <text>                     — find visible elements containing text and return selectors; semantic fallback uses the a11y tree when regex finds nothing\n"
         "BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items\n"
         "BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — extract the current Google Drive view only (items, empty flag, selectors); it does not search or open folders\n"
-        "SEND_EMAIL: to=<addr> subject=\"<...>\" body=\"<...>\" attach=<optional path> — send an email via Gmail SMTP; irreversible action, dispatcher always prompts; see EMAIL COMPOSITION DISCIPLINE below\n"
+        "SEND_EMAIL: to=<addr> subject=\"<...>\" body=\"<...>\" attach=<optional path> from=<optional sender addr> — send via Gmail/AOL/Outlook SMTP; provider routed from `from=` domain (gmail.com → Gmail, aol.com → AOL, outlook.com/hotmail.com → Outlook); default sender = Gmail; irreversible action, dispatcher always prompts; see EMAIL COMPOSITION DISCIPLINE below\n"
         "REMOTE_MCP: {\"server\":\"name-or-url\",\"method\":\"tools/list\"|\"tools/call\",\"params\":{...}} — call a configured remote MCP server after extension-side REMOTE_MCP approval\n"
         "REMEMBER: <fact>                         — save a durable note to memory\n"
         "DONE: <one-line summary>                 — explicit completion signal; ends the agent loop\n\n"
