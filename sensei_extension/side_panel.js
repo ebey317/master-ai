@@ -3453,11 +3453,32 @@ async function dispatchMcpAction(action) {
       if (!capture?.ok) return { ok: false, error: capture?.error || "capture failed" };
       return { ok: true, screenshot: "visible_tab_png", dataUrl: capture.dataUrl };
     }
+    if (kind === "BROWSER_GET_DOM") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const selector = String(action.target || action.selector || "");
+      const [frame] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel) => {
+          try {
+            const el = sel ? document.querySelector(sel) : document.documentElement;
+            if (!el) return { ok: false, error: "selector not found" };
+            const html = el.outerHTML;
+            return { ok: true, html: html.length > 50000 ? html.slice(0, 50000) + "...[truncated]" : html };
+          } catch (e) { return { ok: false, error: e.message }; }
+        },
+        args: [selector],
+      });
+      return frame?.result || { ok: false, error: "script injection failed" };
+    }
     // All other BROWSER_* actions route through the existing content-script path
     if (kind.startsWith("BROWSER_")) {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
-      const result = await sendToContent(tab, action, {});
+      const result = await Promise.race([
+        sendToContent(tab, action, {}),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("sendToContent timeout")), 15000)),
+      ]).catch((err) => ({ ok: false, error: err.message }));
       if (result?.ok) await waitForTabSettled(tab.id, 3000).catch(() => {});
       invalidatePageContext(tab.id);
       return result || { ok: false, error: "no result" };
@@ -3487,8 +3508,8 @@ async function mcpPoll() {
       await backendFetch("/extension/mcp_result", {
         method: "POST",
         body: { action_id: actionId, session_id: MCP_DEFAULT_SESSION, result },
-        timeoutMs: 3000,
-      }).catch(() => {});
+        timeoutMs: 5000,
+      }).catch((err) => console.warn("[mcp-poll] result post failed:", err.message));
     }
   } finally {
     _mcpPollRunning = false;
