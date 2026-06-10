@@ -170,6 +170,12 @@ _DOMAIN_CLASSES_TTL_S = 60.0
 _DOMAIN_CLASSES_CACHE = {"ts": 0.0, "data": None, "mtime": 0.0}
 _DOMAIN_RESULT_TTL_S = 300
 
+# MCP bridge queue — sensei_mcp_server.py pushes actions here; side_panel.js
+# polls /extension/pending, executes in-browser, and posts results back.
+_MCP_QUEUE = {}   # session_id -> [{"action_id": str, "action": dict}]
+_MCP_RESULTS = {}  # action_id -> result dict
+_MCP_QUEUE_LOCK = threading.Lock()
+
 
 def _load_domain_classes():
     """Return the parsed domain-classes dict. Reloads when the file mtime changes
@@ -3078,6 +3084,34 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self.wfile.write(json.dumps(sessions).encode())
             except Exception as e:
                 self._error(str(e))
+        # MCP bridge — alive check
+        if self.path == '/extension/queue_state':
+            with _MCP_QUEUE_LOCK:
+                pending = sum(len(v) for v in _MCP_QUEUE.values())
+            self._json({"ok": True, "pending": pending})
+            return
+
+        # MCP bridge — extension polls for work
+        parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        mcp_path = urllib.parse.urlparse(self.path).path
+        if mcp_path == '/extension/pending':
+            session = (parsed_qs.get('session_id') or ['mcp-default'])[0]
+            with _MCP_QUEUE_LOCK:
+                actions = list(_MCP_QUEUE.get(session, []))
+            self._json({"ok": True, "actions": actions})
+            return
+
+        # MCP bridge — poll result
+        if mcp_path == '/extension/result':
+            action_id = (parsed_qs.get('action_id') or [''])[0]
+            with _MCP_QUEUE_LOCK:
+                res = _MCP_RESULTS.get(action_id)
+            if res is None:
+                self._json({"ok": False, "pending": True})
+            else:
+                self._json({"ok": True, "result": res})
+            return
+
         else:
             try:
                 super().do_GET()
@@ -3454,6 +3488,46 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # Body: {action_id, action: {kind, target, content?, find?, replace?},
         #        verdict: 'accept'|'reject', mode_at_decision}.
         # Requires X-Master-AI-Token.
+        # MCP bridge — push action onto queue
+        if self.path == '/extension/queue':
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            session = str(payload.get('session_id') or 'mcp-default')
+            actions = payload.get('actions') or []
+            added = []
+            with _MCP_QUEUE_LOCK:
+                queue = _MCP_QUEUE.setdefault(session, [])
+                for act in actions:
+                    if not isinstance(act, dict):
+                        continue
+                    if not act.get('id'):
+                        act['id'] = str(uuid.uuid4())
+                    queue.append({'action_id': act['id'], 'action': act})
+                    added.append(act['id'])
+            self._json({'ok': True, 'action_ids': added})
+            return
+
+        # MCP bridge — extension submits result
+        if self.path == '/extension/mcp_result':
+            try:
+                payload = json.loads(data or b'{}')
+            except Exception:
+                return self._json({'error': 'bad json'}, 400)
+            action_id = str(payload.get('action_id') or '')
+            result = payload.get('result') or {}
+            session = str(payload.get('session_id') or 'mcp-default')
+            if not action_id:
+                return self._json({'error': 'action_id required'}, 400)
+            with _MCP_QUEUE_LOCK:
+                _MCP_RESULTS[action_id] = result
+                # Remove from queue so pending count stays accurate
+                queue = _MCP_QUEUE.get(session, [])
+                _MCP_QUEUE[session] = [e for e in queue if e['action_id'] != action_id]
+            self._json({'ok': True})
+            return
+
         if self.path == '/extension/approve_action':
             if not self._require_extension_auth():
                 return

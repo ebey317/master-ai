@@ -169,7 +169,9 @@ def _dispatch(kind, payload, session=DEFAULT_SESSION, wait=WAIT_SECONDS):
         return {"ok": False, "reason": "push_failed", "detail": push}
     aid = _action_id_from_push(push)
     result = _await_result(aid, session=session, wait_seconds=wait)
-    return {"ok": result.get("ok", True), "result": result, "action_id": aid}
+    if result.get("ok") and result.get("result") is not None:
+        return result["result"]  # unwrap the bridge envelope
+    return result
 
 
 # ---------------------------------------------------------------------------

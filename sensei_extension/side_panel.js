@@ -3394,3 +3394,95 @@ async function init() {
 }
 
 init().catch((err) => appendError(err.message));
+
+// ── MCP bridge poller ──────────────────────────────────────────────────────
+// sensei_mcp_server.py pushes BROWSER_* actions to the backend queue. We poll
+// /extension/pending every 2 s, execute them headlessly, and post results back.
+
+const MCP_POLL_INTERVAL_MS = 2000;
+const MCP_DEFAULT_SESSION = "mcp-default";
+
+async function dispatchMcpAction(action) {
+  const kind = String(action.kind || "").toUpperCase();
+  try {
+    // Tab-management actions that the normal approveAction flow doesn't cover
+    if (kind === "BROWSER_TAB_LIST") {
+      const tabs = await chrome.tabs.query({});
+      return {
+        ok: true,
+        tabs: tabs.slice(0, 50).map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active,
+          windowId: t.windowId, index: t.index,
+        })),
+      };
+    }
+    if (kind === "BROWSER_TAB_SWITCH") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.update(tabId, { active: true });
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CLOSE") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.remove(tabId);
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CREATE") {
+      const url = normalizeUrl(action.target || "about:blank");
+      const newTab = await chrome.tabs.create({ url, active: false });
+      if (newTab?.id) await addTabToSessionGroup(newTab.id).catch(() => {});
+      return { ok: true, tab_created: { id: newTab?.id, url, windowId: newTab?.windowId } };
+    }
+    if (kind === "BROWSER_SCREENSHOT") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab) return { ok: false, error: "no active tab" };
+      const capture = await chrome.runtime.sendMessage({
+        type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
+      });
+      if (!capture?.ok) return { ok: false, error: capture?.error || "capture failed" };
+      return { ok: true, screenshot: "visible_tab_png", dataUrl: capture.dataUrl };
+    }
+    // All other BROWSER_* actions route through the existing content-script path
+    if (kind.startsWith("BROWSER_")) {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const result = await sendToContent(tab, action, {});
+      if (result?.ok) await waitForTabSettled(tab.id, 3000).catch(() => {});
+      invalidatePageContext(tab.id);
+      return result || { ok: false, error: "no result" };
+    }
+    return { ok: false, error: `unsupported kind: ${kind}` };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+let _mcpPollRunning = false;
+
+async function mcpPoll() {
+  if (_mcpPollRunning) return;
+  _mcpPollRunning = true;
+  try {
+    const data = await backendFetch(
+      `/extension/pending?session_id=${encodeURIComponent(MCP_DEFAULT_SESSION)}`,
+      { timeoutMs: 3000 }
+    ).catch(() => null);
+    if (!data?.actions?.length) return;
+    for (const entry of data.actions) {
+      const action = entry.action || entry;
+      const actionId = entry.action_id || action.id;
+      if (!actionId) continue;
+      const result = await dispatchMcpAction(action);
+      await backendFetch("/extension/mcp_result", {
+        method: "POST",
+        body: { action_id: actionId, session_id: MCP_DEFAULT_SESSION, result },
+        timeoutMs: 3000,
+      }).catch(() => {});
+    }
+  } finally {
+    _mcpPollRunning = false;
+  }
+}
+
+setInterval(mcpPoll, MCP_POLL_INTERVAL_MS);
