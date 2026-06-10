@@ -3407,12 +3407,22 @@ async function dispatchMcpAction(action) {
   try {
     // Tab-management actions that the normal approveAction flow doesn't cover
     if (kind === "BROWSER_TAB_LIST") {
+      const sessionGroupId = state.sessionTabGroup?.groupId || null;
       const tabs = await chrome.tabs.query({});
+      const sessionTabs = sessionGroupId
+        ? tabs.filter((t) => t.groupId === sessionGroupId)
+        : [];
       return {
         ok: true,
-        tabs: tabs.slice(0, 50).map((t) => ({
+        session_group_id: sessionGroupId,
+        session_tabs: sessionTabs.map((t) => ({
           id: t.id, title: t.title, url: t.url, active: t.active,
           windowId: t.windowId, index: t.index,
+        })),
+        all_tabs: tabs.slice(0, 50).map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active,
+          windowId: t.windowId, index: t.index,
+          in_session: t.groupId === sessionGroupId,
         })),
       };
     }
