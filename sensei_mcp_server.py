@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import Optional, Tuple, Iterator
 
 BRIDGE = "http://127.0.0.1:8080"
@@ -293,6 +294,65 @@ def tool_search(args):
     out = _dispatch("BROWSER_NAV", {"target": url})
     rep = f"search '{query}' -> {json.dumps(out)[:400]}"
     return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_find_doc_link(args):
+    """Fetch a docs landing page and return links whose URL or anchor text match a term.
+
+    Use this when the user asks for documentation/help but didn't give the exact URL.
+    Example: start_url='https://docs.anthropic.com/en/docs/claude-code/overview',
+    term='cli reference'.
+    """
+    start_url = str(args.get("start_url") or "").strip()
+    term = str(args.get("term") or "").strip().lower()
+    if not start_url:
+        return {"content": [{"type": "text", "text": "find_doc_link: start_url is required"}]}
+    if not term:
+        return {"content": [{"type": "text", "text": "find_doc_link: term is required"}]}
+    try:
+        req = urllib.request.Request(
+            start_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+            base = resp.geturl()
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"find_doc_link: fetch failed: {e}"}]}
+
+    # Pull out href and link text, keep only http(s) links.
+    matches = []
+    seen = set()
+    for m in re.finditer(r'<a\s+([^>]*?)href="([^"]+)"([^>]*)>(.*?)</a>', html, re.IGNORECASE | re.DOTALL):
+        attrs_before, href, attrs_after, text = m.groups()
+        href = href.strip()
+        if href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        abs_url = urllib.parse.urljoin(base, href)
+        if not abs_url.startswith(("http://", "https://")):
+            continue
+        # Strip simple HTML tags from anchor text.
+        clean_text = re.sub(r"<[^>]+>", " ", text)
+        clean_text = re.sub(r"\s+", " ", clean_text).strip()
+        haystack = (abs_url + " " + clean_text).lower()
+        if term not in haystack:
+            continue
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        matches.append({"url": abs_url, "text": clean_text[:120]})
+        if len(matches) >= 10:
+            break
+
+    if not matches:
+        return {"content": [{"type": "text", "text": f"find_doc_link: no links matched '{term}' on {base}"}]}
+    lines = [f"find_doc_link: {len(matches)} matches for '{term}' on {base}"]
+    for i, m in enumerate(matches, 1):
+        lines.append(f"{i}. {m['url']} — {m['text']}")
+    return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
 
 def tool_run(args):
@@ -948,6 +1008,7 @@ HANDLERS = {
     "fill": tool_fill,
     "read": tool_read,
     "search": tool_search,
+    "find_doc_link": tool_find_doc_link,
     "run": tool_run,
     "write_file": tool_write_file,
     "read_file": tool_read_file,
@@ -1055,6 +1116,22 @@ TOOLS = [
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
+        },
+    },
+    {
+        "name": "find_doc_link",
+        "description": (
+            "Find a documentation page on a docs site when the user asks for docs/help but didn't provide the exact URL. "
+            "Fetch the start_url (e.g. a docs overview/sitemap page), scan links, and return URLs whose address or anchor text match the term. "
+            "Example: start_url='https://docs.anthropic.com/en/docs/claude-code/overview', term='cli reference'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_url": {"type": "string", "description": "Docs landing/overview page URL to crawl for links."},
+                "term": {"type": "string", "description": "Keyword or phrase to match in link URL or anchor text (case-insensitive)."},
+            },
+            "required": ["start_url", "term"],
         },
     },
     {
