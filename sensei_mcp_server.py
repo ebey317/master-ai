@@ -1122,8 +1122,7 @@ TOOLS = [
         "name": "find_doc_link",
         "description": (
             "Find a documentation page on a docs site when the user asks for docs/help but didn't provide the exact URL. "
-            "Fetch the start_url (e.g. a docs overview/sitemap page), scan links, and return URLs whose address or anchor text match the term. "
-            "Example: start_url='https://docs.anthropic.com/en/docs/claude-code/overview', term='cli reference'."
+            "Fetch the start_url (a docs overview or sitemap page you have already located), scan links, and return URLs whose address or anchor text match the term."
         ),
         "inputSchema": {
             "type": "object",
