@@ -258,7 +258,7 @@ def tool_browse(args):
 def tool_click(args):
     what = str(args.get("what") or "").strip()
     if not what:
-        return {"content": [{"type": "text", "text": "click: what is required"}]}
+        return {"content": [{"type": "text", "text": "click: what is required — pass the visible label, ref_N name, or CSS selector from the last read_full."}]}
     payload = {"target": what}
     if args.get("intercept_popup"):
         payload["intercept_popup"] = True
@@ -1018,11 +1018,11 @@ TOOLS = [
     },
     {
         "name": "click",
-        "description": "Click an element by visible label or selector. Set intercept_popup=true to bypass first_submit_pause AND intercept window.open (required for Indeed Apply button).",
+        "description": "Click an element by visible label, ref_N name, or CSS selector. The `what` parameter is REQUIRED — never call click without a concrete target taken from the last read_full. Set intercept_popup=true to bypass first_submit_pause AND intercept window.open (required for Indeed Apply button).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "what": {"type": "string"},
+                "what": {"type": "string", "description": "Exact visible text, ref_N label, or CSS selector of the element to click (from the last read_full)."},
                 "intercept_popup": {"type": "boolean", "description": "If true, bypasses first_submit_pause and intercepts window.open — use for Indeed's Apply button."},
             },
             "required": ["what"],
