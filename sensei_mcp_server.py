@@ -8,6 +8,7 @@ JSON-RPC over stdio. Talks to the Sensei bridge at 127.0.0.1:8080.
 """
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import urllib.error
 from typing import Optional, Tuple, Iterator
 
 BRIDGE = "http://127.0.0.1:8080"
+CDP_URL = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
 DEFAULT_SESSION = "mcp-default"
 WAIT_SECONDS = 30
 POLL_MS = 100
@@ -77,6 +79,39 @@ def _http(method, path, body=None, timeout=5.0):
 def _bridge_alive():
     r = _http("GET", "/extension/queue_state", timeout=1.0)
     return bool(r.get("ok"))
+
+def _cdp_alive():
+    r = _http_abs("GET", f"{CDP_URL}/json/version", timeout=1.0)
+    return r.get("ok")
+
+
+def _cdp_new_tab(url="about:blank"):
+    import urllib.parse
+    target = urllib.parse.quote(url, safe=":/?=&%#")
+    r = _http_abs("PUT", f"{CDP_URL}/json/new?{target}", timeout=5.0)
+    if r.get("ok"):
+        tab = r.get("json") or {}
+        return {"ok": True, "tab_id": tab.get("id"), "url": tab.get("url"), "title": tab.get("title")}
+    return {"ok": False, "reason": r.get("error", "cdp_new_tab_failed")}
+
+
+def _ensure_cdp():
+    """Lazy-launch a CDP Chrome instance if none is listening on port 9222."""
+    if _cdp_alive():
+        return True
+    import subprocess, time
+    env = dict(__import__('os').environ, DISPLAY=':0')
+    subprocess.Popen(
+        ['google-chrome', '--remote-debugging-port=9222',
+         '--user-data-dir=/tmp/chrome-cdp', '--no-first-run',
+         '--no-default-browser-check'],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    for _ in range(12):
+        time.sleep(0.5)
+        if _cdp_alive():
+            return True
+    return False
 
 def _claf_alive():
     r = _http_abs("GET", CLAF_HEALTHZ, timeout=1.5)
@@ -758,6 +793,15 @@ def tool_tab_create(args):
     """Open a new browser tab. url: the URL to navigate to (optional — blank tab if omitted)."""
     url = str(args.get("url") or "").strip()
     out = _dispatch("BROWSER_TAB_CREATE", {"target": url or "about:blank"})
+    # Auto-focus: the extension creates tabs in the BACKGROUND, so the operator
+    # never sees them open. Pull the new tab id out of the result and switch to
+    # it so the created tab is the screen the operator is viewing.
+    try:
+        _m = re.search(r'"tab_created"\s*:\s*{[^}]*"id"\s*:\s*(\d+)', json.dumps(out))
+        if _m:
+            _dispatch("BROWSER_TAB_SWITCH", {"target": _m.group(1)})
+    except Exception:
+        pass
     rep = f"tab_create url='{url}' -> {json.dumps(out)[:300]}"
     return {"content": [{"type": "text", "text": rep}]}
 
