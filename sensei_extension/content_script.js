@@ -2475,6 +2475,22 @@ async function executeBrowserAction(action) {
     return { ok: true, double_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
+  if (kind === "BROWSER_HOVER") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+    el.dispatchEvent(new MouseEvent("mouseenter", opts));
+    el.dispatchEvent(new MouseEvent("mouseover", opts));
+    el.dispatchEvent(new MouseEvent("mousemove", opts));
+    await waitForPageStable(250, 800);
+    return { ok: true, hovered: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+  }
+
   if (kind === "BROWSER_FILL") {
     const parsed = parseFillTarget(action);
     const fileUpload = action?.extras?.fileUpload || null;

@@ -16,7 +16,19 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
+from pathlib import Path
 from typing import Optional, Tuple, Iterator
+
+# Optional universal form-fill engine lives in the CLAF tools directory.
+_SFF_ERR = None
+try:
+    sys.path.insert(0, str(Path.home() / "projects/claf/tools"))
+    import smart_form_fill as _sff
+    _HAS_SFF = True
+except Exception as _e:
+    _HAS_SFF = False
+    _sff = None
+    _SFF_ERR = str(_e)
 
 BRIDGE = "http://127.0.0.1:8080"
 CDP_URL = os.environ.get("CDP_URL", "http://127.0.0.1:9222")
@@ -278,12 +290,132 @@ def tool_fill(args):
     return {"content": [{"type": "text", "text": rep}]}
 
 
+def tool_fill_form(args):
+    """Universal form filler. X-rays the page, discovers every field, picks a
+    sensible value, and fills it. Works around the extension's BROWSER_FILL
+    value bug by using the :: delimiter internally."""
+    if not _HAS_SFF:
+        return {"content": [{"type": "text", "text": f"fill_form: smart_form_fill engine not available ({_SFF_ERR})"}]}
+
+    dry_run = str(args.get("dry_run") or "").lower() in ("true", "1", "yes")
+    submit = bool(args.get("submit"))
+
+    profile = {}
+    raw_profile = args.get("profile") or "{}"
+    if isinstance(raw_profile, str):
+        try:
+            profile = json.loads(raw_profile)
+        except Exception as e:
+            return {"content": [{"type": "text", "text": f"fill_form: profile must be valid JSON: {e}"}]}
+    elif isinstance(raw_profile, dict):
+        profile = raw_profile
+
+    # Snapshot the page. _dispatch returns the bridge's inner envelope, so unwrap
+    # one more level to reach the actual BROWSER_READ_PAGE_FULL result dict.
+    page = _dispatch("BROWSER_READ_PAGE_FULL", {}, wait=20)
+    page = page.get("result", page)
+    url = page.get("url", "")
+    title = page.get("title", "")
+    soup = _sff._fetch_page_source(url) if url else None
+
+    # Apply custom profile values to the engine defaults for this call.
+    original_defaults = dict(_sff.DEFAULTS)
+    _sff.DEFAULTS.update(profile)
+    _sff.refresh_patterns()
+    try:
+        fields = _sff.discover_fields({"result": page})
+
+        plan = []
+        radio_groups = set()
+        for field in fields:
+            value, reason = _sff.decide_value(field, soup)
+            radio_target = None
+            if value is not None:
+                src = _sff._source_lookup(field["selector"], soup) if soup else None
+                if src and src.name == "input" and src.get("type", "").lower() == "radio":
+                    name = src.get("name") or field["selector"]
+                    if name in radio_groups:
+                        value, reason = None, "radio: duplicate group member"
+                    else:
+                        radio_groups.add(name)
+                        radio_target = f'input[name="{name}"][value="{value}"]'
+            plan.append({**field, "value": value, "reason": reason, "radio_target": radio_target})
+
+        if dry_run:
+            lines = [f"fill_form plan for {title} ({url}):"]
+            for p in plan:
+                status = p["value"] if p["value"] is not None else "SKIP"
+                lines.append(f"  {p['selector']:30} {p['type']:10} -> {status!r} ({p['reason']})")
+            return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+        filled = skipped = failed = 0
+        filled_sels = []
+        for p in plan:
+            if p["value"] is None:
+                skipped += 1
+                continue
+            if p.get("radio_target"):
+                out = _dispatch("BROWSER_CLICK", {"target": p["radio_target"], "intercept_popup": True})
+            else:
+                out = _dispatch("BROWSER_FILL", {"target": f"{p['selector']} :: {p['value']}"})
+            inner = out.get("result", out)
+            if inner.get("ok"):
+                filled += 1
+                filled_sels.append(p["selector"])
+            else:
+                failed += 1
+
+        # Optional submit click.
+        submit_result = None
+        if submit:
+            submit_sel = None
+            for el in page.get("elements", []):
+                if el.get("role") == "button" and "submit" in (el.get("name") or "").lower():
+                    submit_sel = el.get("selector")
+                    break
+            if submit_sel:
+                submit_result = _dispatch("BROWSER_CLICK", {"target": submit_sel, "intercept_popup": True})
+
+        # Verify by re-reading.
+        page2 = _dispatch("BROWSER_READ_PAGE_FULL", {}, wait=20)
+        page2 = page2.get("result", page2)
+        fields2 = {f["selector"]: f for f in _sff.discover_fields({"result": page2})}
+        verified = 0
+        for sel in filled_sels:
+            f2 = fields2.get(sel)
+            if f2 and f2.get("value_present"):
+                verified += 1
+
+        summary = (
+            f"fill_form: {title}\n"
+            f"  discovered: {len(fields)} | filled: {filled} | skipped: {skipped} | failed: {failed} | verified: {verified}/{len(filled_sels)}"
+        )
+        if submit_result:
+            summary += f"\n  submit: {json.dumps(submit_result.get('result', submit_result))[:200]}"
+        return {"content": [{"type": "text", "text": summary}]}
+    finally:
+        _sff.DEFAULTS.update(original_defaults)
+        _sff.refresh_patterns()
+
+
 def tool_read(args):
     out = _dispatch("BROWSER_READ_PAGE", {})
     rep = json.dumps(out)
     if len(rep) > 500:
         rep = rep[:500] + " ...[truncated]"
     return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_get_dom(args):
+    """Return the outerHTML of the current page or a selected element.
+    selector: optional CSS selector (empty returns the whole page HTML)."""
+    selector = str(args.get("selector") or "").strip()
+    out = _dispatch("BROWSER_GET_DOM", {"selector": selector})
+    inner = out.get("result", out) if isinstance(out, dict) else {}
+    html = inner.get("html", "") if isinstance(inner, dict) else ""
+    if len(html) > 5000:
+        html = html[:5000] + " ...[truncated]"
+    return {"content": [{"type": "text", "text": json.dumps({"ok": bool(html), "html": html, "selector": selector})}]}
 
 
 def tool_search(args):
@@ -715,23 +847,17 @@ def tool_autofill_job_form(args):
     return {"content": [{"type": "text", "text": "\n".join(lines)}]}
 
 
-def tool_key_press(args):
-    """Send a keyboard key to the focused element. key: Tab, Enter, Escape, ArrowDown, etc."""
-    key = str(args.get("key") or "").strip()
-    if not key:
-        return {"content": [{"type": "text", "text": "key_press: key is required (e.g. Tab, Enter, Escape, ArrowDown)"}]}
-    out = _dispatch("BROWSER_KEY", {"target": key})
-    rep = f"key_press '{key}' -> {json.dumps(out)[:300]}"
-    return {"content": [{"type": "text", "text": rep}]}
-
-
 def tool_read_full(args):
     """Read the FULL accessibility tree of the current page including all interactive elements and ref IDs.
     Use this when read() truncates and you need to see all form fields."""
     out = _dispatch("BROWSER_READ_PAGE_FULL", {}, wait=20)
     rep = json.dumps(out)
-    if len(rep) > 8000:
-        rep = rep[:8000] + " ...[truncated]"
+    # Allow operators to lift the truncation cap for deep DOM reads (e.g. the
+    # Daddy DOM Tool). Default stays conservative so normal MCP chatter isn't
+    # swamped by huge pages.
+    max_chars = int(os.environ.get("SENSEI_READ_FULL_MAX_CHARS", "8000"))
+    if max_chars > 0 and len(rep) > max_chars:
+        rep = rep[:max_chars] + " ...[truncated]"
     return {"content": [{"type": "text", "text": rep}]}
 
 
@@ -742,6 +868,17 @@ def tool_double_click(args):
         return {"content": [{"type": "text", "text": "double_click: what is required"}]}
     out = _dispatch("BROWSER_DOUBLE_CLICK", {"target": what})
     rep = f"double_click '{what}' -> {json.dumps(out)[:300]}"
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_key_press(args):
+    """Press a keyboard key on the active page. Useful for Enter, Escape, Tab, arrow keys.
+    key: the key name (e.g. Enter, Escape, Tab, ArrowDown)."""
+    key = str(args.get("key") or "").strip()
+    if not key:
+        return {"content": [{"type": "text", "text": "key_press: key is required"}]}
+    out = _dispatch("BROWSER_CDP_KEY", {"target": f"press {key}"})
+    rep = f"key_press '{key}' -> {json.dumps(out)[:300]}"
     return {"content": [{"type": "text", "text": rep}]}
 
 
@@ -769,8 +906,8 @@ def tool_wait(args):
 
 def tool_batch(args):
     """Execute a sequence of browser actions atomically. actions: JSON array of objects
-    with fields: kind (click/fill/key/scroll/wait/nav), target, value (for fill).
-    Example: [{"kind":"click","target":"Submit"},{"kind":"key","target":"Enter"}]"""
+    with fields: kind (click/fill/scroll/wait/nav/double_click), target, value (for fill).
+    Example: [{"kind":"click","target":"Submit"},{"kind":"fill","target":"#email","value":"me@example.com"}]"""
     raw = args.get("actions") or "[]"
     if isinstance(raw, str):
         try:
@@ -785,15 +922,11 @@ def tool_batch(args):
     KIND_MAP = {
         "click": "BROWSER_CLICK",
         "fill": "BROWSER_FILL",
-        "key": "BROWSER_KEY",
         "scroll": "BROWSER_SCROLL",
         "wait": "BROWSER_WAIT",
         "nav": "BROWSER_NAV",
         "navigate": "BROWSER_NAV",
         "double_click": "BROWSER_DOUBLE_CLICK",
-        "hover": "BROWSER_HOVER",
-        "read": "BROWSER_READ_PAGE",
-        "screenshot": "BROWSER_SCREENSHOT",
     }
 
     results = []
@@ -822,7 +955,9 @@ def tool_batch(args):
 
 
 def tool_hover(args):
-    """Hover over an element to reveal tooltips, dropdowns, or hover states."""
+    """Hover over an element by visible label, ref_N name, or CSS selector.
+    Dispatches mouseenter/mouseover/mousemove in the page so tooltips, dropdowns,
+    and hover states appear."""
     what = str(args.get("what") or "").strip()
     if not what:
         return {"content": [{"type": "text", "text": "hover: what is required"}]}
@@ -981,16 +1116,6 @@ def tool_get_network_body(args):
     return {"content": [{"type": "text", "text": str(rep)}]}
 
 
-def tool_get_dom(args):
-    """Get the raw HTML of the active tab, or a specific element by CSS selector."""
-    selector = str(args.get("selector") or "").strip()
-    out = _dispatch("BROWSER_GET_DOM", {"target": selector})
-    rep = out.get("result", {}).get("result", json.dumps(out))
-    if len(str(rep)) > 8000:
-        rep = str(rep)[:8000] + " ...[truncated]"
-    return {"content": [{"type": "text", "text": str(rep)}]}
-
-
 def tool_get_performance(args):
     """Get performance metrics and resource timing for the active tab."""
     out = _dispatch("BROWSER_GET_PERFORMANCE", {})
@@ -1000,47 +1125,91 @@ def tool_get_performance(args):
     return {"content": [{"type": "text", "text": str(rep)}]}
 
 
+def tool_drive_inspect(args):
+    """Inspect the current Google Drive page and return visible file/folder items
+    with selectors, names, and roles. Useful for finding a target file before
+    clicking or hovering."""
+    out = _dispatch("BROWSER_DRIVE_INSPECT_FOLDER", {})
+    # _dispatch returns the bridge envelope; unwrap the inner result/drive_state.
+    inner = out.get("result", out) if isinstance(out, dict) else out
+    state = inner.get("drive_state") if isinstance(inner, dict) else None
+    if state:
+        items = state.get("items", [])
+        files = [it for it in items if it.get("role") == "row" and it.get("name")]
+        lines = [f"Drive: {state.get('title')} — {len(files)} file(s)/folder(s) visible"]
+        for it in files:
+            lines.append(f"- {it['name']}\n  selector: {it.get('selector','')}\n  text: {it.get('text','')[:120]}")
+        rep = "\n".join(lines)
+    else:
+        rep = json.dumps(out)[:6000]
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_execute_js(args):
+    """Run a CSP-safe JavaScript action in the active tab, across all frames.
+    This reaches inside iframes and shadow DOM that the normal click/fill tools cannot see.
+    command: click_text | click_selector | fill_selector | select_option
+    For click_text: text (required), tag (optional, default "button, a, [role='button']")
+    For click_selector: selector (required)
+    For fill_selector: selector, value (required)
+    For select_option: selector, option_text (required)"""
+    command = str(args.get("command") or "").strip()
+    if not command:
+        return {"content": [{"type": "text", "text": "execute_js: command is required (click_text, click_selector, fill_selector, select_option, query)"}]}
+    payload = {"command": command, "all_frames": args.get("all_frames", True)}
+    for k in ["text", "selector", "value", "option_text", "tag", "attribute", "limit"]:
+        if k in args and args[k] is not None:
+            payload[k] = str(args[k]) if k != "limit" else int(args[k])
+    out = _dispatch("BROWSER_JS", payload, wait=15)
+    rep = json.dumps(out)
+    if len(rep) > 6000:
+        rep = rep[:6000] + " ...[truncated]"
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+# Trimmed tool surface: smart_form_fill.py handles complex universal form filling,
+# so we drop the old profile-based autofill plus a raft of unsupported/duplicate
+# tools that were bloating the model context. Keep the browser primitives.
 HANDLERS = {
-    "chat": tool_chat,
     "health": tool_health,
     "browse": tool_browse,
     "click": tool_click,
     "fill": tool_fill,
+    "fill_form": tool_fill_form,
     "read": tool_read,
+    "read_full": tool_read_full,
+    "get_dom": tool_get_dom,
+    "drive_inspect": tool_drive_inspect,
+    "execute_js": tool_execute_js,
     "search": tool_search,
-    "find_doc_link": tool_find_doc_link,
-    "run": tool_run,
-    "write_file": tool_write_file,
-    "read_file": tool_read_file,
-    "photos_search": tool_photos_search,
     "screenshot": tool_screenshot,
     "scroll": tool_scroll,
-    "js_eval": tool_js_eval,
-    "autofill_job_form": tool_autofill_job_form,
-    "list_client_profiles": tool_list_client_profiles,
-    # Phase 2 — parity additions
-    "key_press": tool_key_press,
-    "read_full": tool_read_full,
-    "double_click": tool_double_click,
-    "upload_file": tool_upload_file,
     "wait": tool_wait,
-    "batch": tool_batch,
+    "double_click": tool_double_click,
     "hover": tool_hover,
-    "right_click": tool_right_click,
+    "key_press": tool_key_press,
+    "upload_file": tool_upload_file,
+    "batch": tool_batch,
     "tab_list": tool_tab_list,
     "tab_create": tool_tab_create,
     "tab_switch": tool_tab_switch,
     "tab_close": tool_tab_close,
+    # DevTools / debugging
     "console_logs": tool_console_logs,
     "network_requests": tool_network_requests,
-    "resize_window": tool_resize_window,
-    "drag": tool_drag,
-    # DevTools surface
     "get_cookies": tool_get_cookies,
     "get_storage": tool_get_storage,
     "get_network_body": tool_get_network_body,
-    "get_dom": tool_get_dom,
     "get_performance": tool_get_performance,
+    # Extra interactions
+    "right_click": tool_right_click,
+    "resize_window": tool_resize_window,
+    "drag": tool_drag,
+    # Shell + filesystem
+    "run": tool_run,
+    # Job workflow
+    "list_client_profiles": tool_list_client_profiles,
+    "autofill_job_form": tool_autofill_job_form,
 }
 
 
@@ -1052,30 +1221,14 @@ HANDLERS = {
 
 TOOLS = [
     {
-        "name": "chat",
-        "description": "Reply to the user with plain text.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"msg": {"type": "string"}},
-            "required": ["msg"],
-        },
-    },
-    {
         "name": "health",
         "description": "Report whether bridge/CLAF/Ollama are reachable (wiring check).",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "browse",
         "description": "Open a URL in the browser.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"url": {"type": "string"}},
-            "required": ["url"],
-        },
+        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
     },
     {
         "name": "click",
@@ -1091,7 +1244,7 @@ TOOLS = [
     },
     {
         "name": "fill",
-        "description": "Type text into a field by label or selector.",
+        "description": "Type text into a single field by label or selector. For the currently-loaded extension you must put the value inside the target with ` :: `, e.g. `#email :: me@example.com`.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1102,128 +1255,77 @@ TOOLS = [
         },
     },
     {
-        "name": "read",
-        "description": "Read the visible content of the current page.",
+        "name": "fill_form",
+        "description": "Universal form filler. X-rays the current page and fills every field it can (text, email, tel, select, radio, checkbox, textarea, date, number, URL). Uses smart defaults; pass a profile JSON object to override any default value.",
         "inputSchema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "profile": {"type": "string", "description": "Optional JSON object mapping default keys (first_name, last_name, email, phone, address1, city, state, zip, country, company, job_title, website, salary, experience_years, start_date, birth_date, number, generic_text) to custom values."},
+                "dry_run": {"type": "string", "description": "Set 'true' to preview the plan without filling anything."},
+                "submit": {"type": "boolean", "description": "If true, click the first submit button after filling."},
+            },
+            "required": [],
         },
+    },
+    {
+        "name": "read",
+        "description": "Read the visible content of the current page.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_full",
+        "description": "Read the FULL accessibility tree of the current page — all interactive elements, ref IDs, selectors, rects. Use this before clicking or filling.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_dom",
+        "description": "Return the outerHTML of the current page or a selected element. Pass a CSS selector to narrow it; omit for the whole page.",
+        "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Optional CSS selector. Empty returns full page HTML."}}},
+    },
+    {
+        "name": "drive_inspect",
+        "description": "Inspect the current Google Drive page and return visible files/folders with selectors, names, and roles.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "execute_js",
+        "description": "Run a CSP-safe JavaScript action in the active tab across all frames, to click/fill/query inside iframes and shadow DOM. Commands: click_text, click_selector, fill_selector, select_option, query.",
+        "inputSchema": {"type": "object", "properties": {"command": {"type": "string", "description": "click_text | click_selector | fill_selector | select_option | query"}, "text": {"type": "string"}, "selector": {"type": "string"}, "value": {"type": "string"}, "option_text": {"type": "string"}, "tag": {"type": "string"}, "attribute": {"type": "string"}, "limit": {"type": "integer"}, "all_frames": {"type": "boolean"}}, "required": ["command"]},
     },
     {
         "name": "search",
         "description": "Search Google for a query.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "find_doc_link",
-        "description": (
-            "Find a documentation page on a docs site when the user asks for docs/help but didn't provide the exact URL. "
-            "Fetch the start_url (a docs overview or sitemap page you have already located), scan links, and return URLs whose address or anchor text match the term."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "start_url": {"type": "string", "description": "Docs landing/overview page URL to crawl for links."},
-                "term": {"type": "string", "description": "Keyword or phrase to match in link URL or anchor text (case-insensitive)."},
-            },
-            "required": ["start_url", "term"],
-        },
-    },
-    {
-        "name": "run",
-        "description": "Run a shell command on this machine (CLI). Use for invoices, file ops, system tasks.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"cmd": {"type": "string"}},
-            "required": ["cmd"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "Write or create a file on this machine. Use for invoices, documents, notes.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["path", "content"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": "Read a file from this machine.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "photos_search",
-        "description": "Search Google Photos for images and return their URLs. Navigates to the authenticated Google Photos search page and extracts image URLs from the rendered thumbnails.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "wait": {"type": "string"},
-            },
-            "required": ["query"],
-        },
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
     },
     {
         "name": "screenshot",
         "description": "Take a screenshot of the current browser page. Returns path to saved PNG file.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-        },
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "scroll",
         "description": "Scroll the current browser page. Use direction: up, down, top, bottom, or a pixel number.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"direction": {"type": "string"}},
-            "required": ["direction"],
-        },
+        "inputSchema": {"type": "object", "properties": {"direction": {"type": "string"}}, "required": ["direction"]},
     },
     {
-        "name": "js_eval",
-        "description": "Execute JavaScript in the current browser page and return the result. Use for DOM inspection, data extraction, or any page manipulation.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"code": {"type": "string"}},
-            "required": ["code"],
-        },
-    },
-    # ── Phase 2 parity tools ────────────────────────────────────────────────
-    {
-        "name": "key_press",
-        "description": "Send a keyboard key to the active/focused element. Use for Tab, Enter, Escape, ArrowDown, ArrowUp, Backspace, etc.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"key": {"type": "string", "description": "Key name: Tab, Enter, Escape, ArrowDown, ArrowUp, Backspace, Delete, Space, Home, End, PageDown, PageUp, or any character."}},
-            "required": ["key"],
-        },
-    },
-    {
-        "name": "read_full",
-        "description": "Read the FULL accessibility tree of the current page — all interactive elements, ref IDs, hidden fields. Use when read() truncates.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "name": "wait",
+        "description": "Pause for ms milliseconds (100–15000) before the next action. Use after page loads or animations.",
+        "inputSchema": {"type": "object", "properties": {"ms": {"type": "integer", "description": "Milliseconds to pause, 100–15000."}}, "required": ["ms"]},
     },
     {
         "name": "double_click",
         "description": "Double-click an element by visible label or CSS selector.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"what": {"type": "string"}},
-            "required": ["what"],
-        },
+        "inputSchema": {"type": "object", "properties": {"what": {"type": "string"}}, "required": ["what"]},
+    },
+    {
+        "name": "hover",
+        "description": "Hover over an element by visible label or CSS selector to reveal tooltips, dropdowns, or hover states before clicking.",
+        "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "description": "Exact visible text, ref_N label, or CSS selector of the element to hover over."}}, "required": ["what"]},
+    },
+    {
+        "name": "key_press",
+        "description": "Press a keyboard key (Enter, Escape, Tab, ArrowDown, etc.) on the active page.",
+        "inputSchema": {"type": "object", "properties": {"key": {"type": "string", "description": "Key name, e.g. Enter, Escape, Tab, ArrowDown."}}, "required": ["key"]},
     },
     {
         "name": "upload_file",
@@ -1231,46 +1333,19 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "selector": {"type": "string", "description": "CSS selector or label for the file input element."},
-                "path": {"type": "string", "description": "Absolute path to the file on the local machine."},
+                "selector": {"type": "string"},
+                "path": {"type": "string"},
             },
             "required": ["selector", "path"],
         },
     },
     {
-        "name": "wait",
-        "description": "Pause for ms milliseconds (100–15000) before the next action. Use after page loads or animations.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"ms": {"type": "string", "description": "Milliseconds to wait (100–15000)."}},
-            "required": ["ms"],
-        },
-    },
-    {
         "name": "batch",
-        "description": "Execute multiple browser actions in sequence atomically. actions: JSON array, each item has kind (click/fill/key/scroll/wait/nav/hover/double_click), target, and optional value (for fill).",
+        "description": "Execute multiple browser actions in sequence atomically. actions: JSON array, each item has kind (click/fill/scroll/wait/nav/double_click), target, and optional value (for fill).",
         "inputSchema": {
             "type": "object",
-            "properties": {"actions": {"type": "string", "description": "JSON array of action objects. Each: {\"kind\":\"click\",\"target\":\"Submit\"} or {\"kind\":\"fill\",\"target\":\"Email\",\"value\":\"me@example.com\"} or {\"kind\":\"key\",\"target\":\"Tab\"}."}},
+            "properties": {"actions": {"type": "string", "description": "JSON array of action objects. Example: [{\"kind\":\"fill\",\"target\":\"#email\",\"value\":\"me@example.com\"}]"}},
             "required": ["actions"],
-        },
-    },
-    {
-        "name": "hover",
-        "description": "Hover the mouse over an element to reveal tooltips, dropdown menus, or hover states.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"what": {"type": "string", "description": "Element label, visible text, or CSS selector to hover over."}},
-            "required": ["what"],
-        },
-    },
-    {
-        "name": "right_click",
-        "description": "Right-click an element to open its context menu. Dispatches mousedown+mouseup+contextmenu with button=2.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"what": {"type": "string", "description": "Element label, visible text, or CSS selector to right-click."}},
-            "required": ["what"],
         },
     },
     {
@@ -1281,175 +1356,87 @@ TOOLS = [
     {
         "name": "tab_create",
         "description": "Open a new browser tab and navigate to a URL. Returns the new tab's ID.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"url": {"type": "string", "description": "URL to open in the new tab. Omit for a blank tab."}},
-            "required": [],
-        },
+        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": []},
     },
     {
         "name": "tab_switch",
         "description": "Switch Chrome focus to a tab by its numeric ID (from tab_list). Use after intercept_popup click opens a new tab to bring it to the front.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"tab_id": {"type": "string", "description": "Numeric tab ID from tab_list."}},
-            "required": ["tab_id"],
-        },
+        "inputSchema": {"type": "object", "properties": {"tab_id": {"type": "string"}}, "required": ["tab_id"]},
     },
     {
         "name": "tab_close",
         "description": "Close a browser tab by its numeric tab ID. Get IDs from tab_list.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"tab_id": {"type": "string", "description": "Numeric tab ID from tab_list."}},
-            "required": ["tab_id"],
-        },
+        "inputSchema": {"type": "object", "properties": {"tab_id": {"type": "string"}}, "required": ["tab_id"]},
     },
     {
         "name": "console_logs",
-        "description": "Read browser console messages (console.log, errors, warnings) from the current page. pattern: optional substring filter.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"pattern": {"type": "string", "description": "Optional substring to filter log messages (e.g. 'error', 'warning')."}},
-            "required": [],
-        },
+        "description": "Read captured browser console messages (errors, warnings, log output). Use pattern to filter, e.g. 'error' or 'fetch'.",
+        "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string", "description": "Optional substring to filter messages. Omit for all messages."}}},
     },
     {
         "name": "network_requests",
-        "description": "Read recent HTTP network requests made by the current page. url_pattern: optional URL substring filter.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"url_pattern": {"type": "string", "description": "Optional URL substring to filter requests (e.g. '/api/', 'example.com')."}},
-            "required": [],
-        },
-    },
-    {
-        "name": "resize_window",
-        "description": "Resize the browser window to specified pixel dimensions.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "width": {"type": "string", "description": "Window width in pixels."},
-                "height": {"type": "string", "description": "Window height in pixels."},
-            },
-            "required": ["width", "height"],
-        },
-    },
-    {
-        "name": "drag",
-        "description": "Drag one element and drop it onto another. Use for file drop zones, sortable lists, sliders.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "from_target": {"type": "string", "description": "Label or selector of the element to drag from."},
-                "to_target": {"type": "string", "description": "Label or selector of the element to drop onto."},
-            },
-            "required": ["from_target", "to_target"],
-        },
-    },
-    # ── End Phase 2 parity tools ─────────────────────────────────────────────
-    {
-        "name": "autofill_job_form",
-        "description": (
-            "Code-first autofill for job application forms (Greenhouse, Lever). "
-            "Phase 1: fingerprints the ATS on the current page, fills all standard fields "
-            "(name, email, phone, LinkedIn, work auth, EEO) from a client profile JSON "
-            "without LLM involvement. "
-            "Phase 2 output: returns the list of unfilled custom/essay fields so the LLM "
-            "can generate targeted answers for just those 2-3 fields. "
-            "Use client_name to load a cached /tmp/profile_{slug}.json (business workflow). "
-            "Use dry_run=true to preview without writing to the page."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "client_name": {
-                    "type": "string",
-                    "description": "Client's full name (e.g. 'John Smith'). Auto-loads /tmp/profile_{slug}.json. Use this for the business workflow instead of profile_path.",
-                },
-                "dry_run": {
-                    "type": "string",
-                    "description": "Set to 'true' to simulate fill without writing to the page.",
-                },
-                "session": {
-                    "type": "string",
-                    "description": "Bridge session id (default: mcp-default).",
-                },
-                "profile_path": {
-                    "type": "string",
-                    "description": "Override path to profile JSON. Ignored when client_name is set. Default: ~/.master_ai_profile.json.",
-                },
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "list_client_profiles",
-        "description": (
-            "List cached client profile JSON files in /tmp (profile_{slug}.json). "
-            "Returns each file's slug, path, size, and age. "
-            "Use to confirm a profile was saved before calling autofill_job_form."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
+        "description": "Read recent network requests made by the current page (XHR, fetch, resources). Use url_pattern to filter, e.g. '/api/'.",
+        "inputSchema": {"type": "object", "properties": {"url_pattern": {"type": "string", "description": "Optional URL substring to filter. Omit for all requests."}}},
     },
     {
         "name": "get_cookies",
-        "description": "Read all cookies for the active tab's URL via CDP.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
+        "description": "Read all cookies for the active tab's URL. Useful for checking auth/session state.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_storage",
         "description": "Read localStorage and/or sessionStorage for the active tab. storage_type: 'local', 'session', or 'both'.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "storage_type": {"type": "string", "description": "local, session, or both (default)"},
-            },
-            "required": [],
-        },
+        "inputSchema": {"type": "object", "properties": {"storage_type": {"type": "string", "description": "'local', 'session', or 'both' (default)"}}},
     },
     {
         "name": "get_network_body",
-        "description": "Get the response body of a recent network request matching url substring. Call network_requests first to find the URL.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "URL substring to match in the network buffer"},
-            },
-            "required": [],
-        },
-    },
-    {
-        "name": "get_dom",
-        "description": "Get raw HTML of the active tab. Pass selector to get a specific element subtree.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "selector": {"type": "string", "description": "CSS selector for a specific element (optional — omit for full page HTML)"},
-            },
-            "required": [],
-        },
+        "description": "Get the response body for a recent network request. url: substring of the request URL to match.",
+        "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL substring to match against recent requests."}}, "required": ["url"]},
     },
     {
         "name": "get_performance",
-        "description": "Get CDP performance metrics and navigation/resource timing for the active tab.",
+        "description": "Get browser performance metrics and resource timing for the active tab.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "right_click",
+        "description": "Right-click an element by visible label or CSS selector to open its context menu.",
+        "inputSchema": {"type": "object", "properties": {"what": {"type": "string", "description": "Visible text, ref_N label, or CSS selector of element to right-click."}}, "required": ["what"]},
+    },
+    {
+        "name": "resize_window",
+        "description": "Resize the browser window. width and height in pixels. Default 1280x900.",
+        "inputSchema": {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}},
+    },
+    {
+        "name": "drag",
+        "description": "Drag from one element to another (drag-and-drop). from_target: source element. to_target: drop destination.",
+        "inputSchema": {"type": "object", "properties": {"from_target": {"type": "string", "description": "Label or CSS selector of source element."}, "to_target": {"type": "string", "description": "Label or CSS selector of drop destination."}}, "required": ["from_target", "to_target"]},
+    },
+    {
+        "name": "run",
+        "description": "Run a shell command on the local machine and return its output (stdout+stderr). Timeout 30s. Use for ls, grep, curl, systemctl, etc.",
+        "inputSchema": {"type": "object", "properties": {"cmd": {"type": "string", "description": "Shell command to execute."}}, "required": ["cmd"]},
+    },
+    {
+        "name": "list_client_profiles",
+        "description": "List cached client profile JSON files in /tmp (profile_{slug}.json). Shows slug, path, size, and age. Use before autofill_job_form to confirm a profile exists.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "autofill_job_form",
+        "description": "Detect the ATS on the current page (Greenhouse, Lever, Workday, SmartRecruiters) and fill all standard fields from a profile JSON. Returns unfilled fields for LLM to answer. dry_run=true to preview.",
         "inputSchema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "dry_run": {"type": "string", "description": "Set 'true' to preview without filling."},
+                "profile_path": {"type": "string", "description": "Absolute path to profile JSON. Defaults to ~/.master_ai_profile.json."},
+                "client_name": {"type": "string", "description": "Client name slug — auto-resolves to /tmp/profile_{slug}.json (Fair Chance workflow)."},
+                "session": {"type": "string", "description": "Bridge session ID (default: mcp-default)."},
+            },
         },
     },
 ]
-
-
 # ---------------------------------------------------------------------------
 # JSON-RPC stdio loop
 # ---------------------------------------------------------------------------

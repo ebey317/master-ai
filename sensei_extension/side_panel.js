@@ -3471,6 +3471,95 @@ async function dispatchMcpAction(action) {
       });
       return frame?.result || { ok: false, error: "script injection failed" };
     }
+    if (kind === "BROWSER_JS") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const command = String(action.command || "").toLowerCase();
+      const allFrames = action.all_frames !== false;
+      // Static, CSP-safe JS runner. We pass a fixed function body and an options
+      // object so Chrome injects real code instead of using eval() in the page.
+      const jsRunner = (opts) => {
+        try {
+          const byText = (tag, text) => {
+            const re = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+            const els = Array.from(document.querySelectorAll(tag));
+            return els.find((el) => re.test(el.textContent.trim()));
+          };
+          if (opts.command === "click_text") {
+            const el = byText(opts.tag || "button, a, [role='button']", opts.text);
+            if (!el) return { ok: false, error: `no element with text "${opts.text}"` };
+            el.click();
+            return { ok: true, clicked: opts.text, url: location.href };
+          }
+          if (opts.command === "click_selector") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            el.click();
+            return { ok: true, clicked: opts.selector, url: location.href };
+          }
+          if (opts.command === "fill_selector") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            el.focus();
+            el.value = opts.value || "";
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.blur();
+            return { ok: true, filled: opts.selector, url: location.href };
+          }
+          if (opts.command === "select_option") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            const opt = Array.from(el.options).find((o) =>
+              new RegExp(opts.option_text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(o.text)
+            );
+            if (!opt) return { ok: false, error: `option "${opts.option_text}" not found` };
+            el.value = opt.value;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, selected: opt.text, url: location.href };
+          }
+          if (opts.command === "query") {
+            const sel = opts.selector || "*";
+            const limit = Number(opts.limit) || 20;
+            const attr = opts.attribute || "textContent";
+            const els = Array.from(document.querySelectorAll(sel)).slice(0, limit);
+            const out = els.map((el) => {
+              const item = { tag: el.tagName, text: el.textContent?.trim().slice(0, 300) };
+              if (attr === "outerHTML") item.html = el.outerHTML?.slice(0, 800);
+              else if (attr !== "textContent") item[attr] = el.getAttribute?.(attr);
+              return item;
+            });
+            return { ok: true, count: out.length, selector: sel, results: out, url: location.href };
+          }
+          return { ok: false, error: `unknown command: ${opts.command}` };
+        } catch (e) {
+          return { ok: false, error: e.message, url: location.href };
+        }
+      };
+      const opts = {
+        command,
+        tag: action.tag,
+        text: action.text,
+        selector: action.selector,
+        value: action.value,
+        option_text: action.option_text,
+        attribute: action.attribute,
+        limit: action.limit,
+      };
+      try {
+        const frames = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames },
+          func: jsRunner,
+          args: [opts],
+        });
+        const successes = (frames || []).filter((f) => f?.result?.ok).map((f) => f.result);
+        if (successes.length) return { ok: true, frames_run: frames.length, results: successes };
+        const errors = (frames || []).filter((f) => f?.result && !f.result.ok).map((f) => f.result);
+        return { ok: false, error: "all frames failed", details: errors.slice(0, 5) };
+      } catch (err) {
+        return { ok: false, error: err.message || String(err) };
+      }
+    }
     // All other BROWSER_* actions route through the existing content-script path
     if (kind.startsWith("BROWSER_")) {
       const tab = await activeTab().catch(() => null);
