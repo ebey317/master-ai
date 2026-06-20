@@ -3,24 +3,52 @@
 # Logs
 *.log
 *.log.1.gz
+sensei_mcp_server.log
 
 # Runtime state + python bytecode
 *.pyc
+*.pyo
 __pycache__/
 sessions/
 voices/
 .cache
 harvest.cache
 
-# Package output
+# Secrets — NEVER commit
+.master_ai_keys
+*.key
+*.pem
+.master_ai_approved
+.master_ai_allowed_commands.json
+
+# Runtime audit/metrics files (ephemeral — regenerated each session)
+.master_ai_audit_typed.jsonl
+.master_ai_router_metrics.jsonl
+.master_ai_history
+
+# Package output / buyer bundles
 master-ai-v*.tar.gz
+master-ai-v*.zip
+*-buyer-bundle.zip
+*-personal-working-archive-*.zip
+*-history.bundle
 
 # Image engine build/model/output churn
 image_engine/models/
 image_engine/stable-diffusion.cpp/
 image_engine/out/
 
-# Secrets (these actually live in $HOME, but defensive)
-.master_ai_keys
-*.key
-*.pem
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~

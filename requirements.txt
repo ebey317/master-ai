@@ -1,0 +1,27 @@
+# Master AI — Python dependencies
+# Install: pip install -r requirements.txt
+# System packages required separately (see notes below)
+
+# ── TUI / terminal interface ──────────────────────────────────────────────────
+prompt_toolkit>=3.0,<4.0
+
+# ── Web scraping (used by harvest.py and sensei_clean) ───────────────────────
+beautifulsoup4>=4.12,<5.0
+
+# ── HTTP client (tts_server.py cloud TTS endpoints) ──────────────────────────
+requests>=2.31,<3.0
+
+# ── sensei_clean optional TUI ────────────────────────────────────────────────
+# already covered by prompt_toolkit above
+
+# ── System packages (install via apt, not pip) ────────────────────────────────
+# python3-gi            -> GTK for on-screen keyboard
+# gir1.2-gtk-3.0
+# mpv                   -> media playback
+# xdotool               -> X11 window/key automation
+# edge-tts              -> pip install edge-tts  (TTS engine)
+# piper                 -> local TTS model runner
+# ollama                -> local LLM runtime (https://ollama.ai)
+
+# ── Dev / test ────────────────────────────────────────────────────────────────
+# pytest>=8.0
